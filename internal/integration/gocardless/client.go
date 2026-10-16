@@ -167,17 +167,68 @@ func (c *Client) ListInstitutions(ctx context.Context, country string) ([]Instit
 	return list, nil
 }
 
+func (c *Client) GetInstitution(ctx context.Context, institutionID string) (*Institution, error) {
+	token, err := c.getAccessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/institutions/%s/", c.baseURL, institutionID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to fetch institution %s (status %d): %s", institutionID, resp.StatusCode, string(respBody))
+	}
+
+	var inst Institution
+	if err := json.NewDecoder(resp.Body).Decode(&inst); err != nil {
+		return nil, err
+	}
+	return &inst, nil
+}
+
 func (c *Client) CreateRequisition(ctx context.Context, institutionID, userRef string) (*Requisition, error) {
 	token, err := c.getAccessToken(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// 1. Create End User Agreement (max 90 days historical, 180 days access)
+	// Fetch institution constraints to respect max historical and access days
+	inst, err := c.GetInstitution(ctx, institutionID)
+	maxHistoricalDays := 90
+	accessValidForDays := 90
+	if err == nil && inst != nil {
+		if inst.TransactionTotalDays != "" {
+			var d int
+			if _, err := fmt.Sscanf(inst.TransactionTotalDays, "%d", &d); err == nil && d > 0 {
+				maxHistoricalDays = d
+			}
+		}
+		if inst.MaxAccessValidForDays != "" {
+			var d int
+			if _, err := fmt.Sscanf(inst.MaxAccessValidForDays, "%d", &d); err == nil && d > 0 {
+				accessValidForDays = d
+			}
+		}
+	}
+
+	// 1. Create End User Agreement
 	agrPayload := map[string]any{
 		"institution_id":        institutionID,
-		"max_historical_days":   90,
-		"access_valid_for_days": 180,
+		"max_historical_days":   maxHistoricalDays,
+		"access_valid_for_days": accessValidForDays,
 		"access_scope":          []string{"balances", "details", "transactions"},
 	}
 	agrBytes, _ := json.Marshal(agrPayload)
@@ -187,6 +238,7 @@ func (c *Client) CreateRequisition(ctx context.Context, institutionID, userRef s
 	}
 	agrReq.Header.Set("Authorization", "Bearer "+token)
 	agrReq.Header.Set("Content-Type", "application/json")
+	agrReq.Header.Set("Accept", "application/json")
 
 	agrResp, err := c.httpClient.Do(agrReq)
 	if err != nil {
@@ -194,9 +246,14 @@ func (c *Client) CreateRequisition(ctx context.Context, institutionID, userRef s
 	}
 	defer agrResp.Body.Close()
 
+	agrRespBody, _ := io.ReadAll(agrResp.Body)
+	if agrResp.StatusCode < 200 || agrResp.StatusCode >= 300 {
+		return nil, fmt.Errorf("create agreement rejected (status %d): %s", agrResp.StatusCode, string(agrRespBody))
+	}
+
 	var agreement EndUserAgreement
-	if err := json.NewDecoder(agrResp.Body).Decode(&agreement); err != nil {
-		return nil, err
+	if err := json.Unmarshal(agrRespBody, &agreement); err != nil {
+		return nil, fmt.Errorf("decode agreement error: %w, response: %s", err, string(agrRespBody))
 	}
 
 	// 2. Create Requisition
@@ -214,6 +271,7 @@ func (c *Client) CreateRequisition(ctx context.Context, institutionID, userRef s
 	}
 	reqReq.Header.Set("Authorization", "Bearer "+token)
 	reqReq.Header.Set("Content-Type", "application/json")
+	reqReq.Header.Set("Accept", "application/json")
 
 	reqResp, err := c.httpClient.Do(reqReq)
 	if err != nil {
@@ -221,9 +279,14 @@ func (c *Client) CreateRequisition(ctx context.Context, institutionID, userRef s
 	}
 	defer reqResp.Body.Close()
 
+	reqRespBody, _ := io.ReadAll(reqResp.Body)
+	if reqResp.StatusCode < 200 || reqResp.StatusCode >= 300 {
+		return nil, fmt.Errorf("create requisition rejected (status %d): %s", reqResp.StatusCode, string(reqRespBody))
+	}
+
 	var requisition Requisition
-	if err := json.NewDecoder(reqResp.Body).Decode(&requisition); err != nil {
-		return nil, err
+	if err := json.Unmarshal(reqRespBody, &requisition); err != nil {
+		return nil, fmt.Errorf("decode requisition error: %w, response: %s", err, string(reqRespBody))
 	}
 	return &requisition, nil
 }
