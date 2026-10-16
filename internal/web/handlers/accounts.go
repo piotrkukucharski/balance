@@ -1186,7 +1186,7 @@ func (h *AccountsHandler) ConnectBankQueue(c echo.Context) error {
 		)
 
 		if req.Provider == "GOCARDLESS" && h.gocardlessClient != nil {
-			userRef := fmt.Sprintf("bal_%s_%s_%d", budgetID, userID, time.Now().Unix())
+			userRef := fmt.Sprintf("bal_%s_%s_%s", budgetID, userID, domain.NewUUIDv7())
 			requisition, err := h.gocardlessClient.CreateRequisition(c.Request().Context(), instID, userRef)
 			if err != nil {
 				logger.Error(ctx, "Failed to create GoCardless requisition for institution",
@@ -1333,7 +1333,7 @@ func (h *AccountsHandler) ReconnectAccount(c echo.Context) error {
 
 	if provider == "GOCARDLESS" && h.gocardlessClient != nil {
 		budgetID := c.Param("budgetId")
-		userRef := fmt.Sprintf("bal_recon_%s_%s_%d", budgetID, userID, time.Now().Unix())
+		userRef := fmt.Sprintf("bal_recon_%s_%s_%s", budgetID, userID, domain.NewUUIDv7())
 		requisition, err := h.gocardlessClient.CreateRequisition(c.Request().Context(), institutionID, userRef)
 		if err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create bank reconnection session: "+err.Error())
