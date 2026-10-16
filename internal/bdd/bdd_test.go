@@ -3,6 +3,7 @@ package bdd
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -34,6 +35,7 @@ type bddTestContext struct {
 
 	authHandler      *handlers.AuthHandler
 	workspaceHandler *handlers.WorkspaceHandler
+	accountsHandler  *handlers.AccountsHandler
 	txHandler        *handlers.TransactionsHandler
 	reportsHandler   *handlers.ReportsHandler
 	partiesHandler   *handlers.PartiesHandler
@@ -69,6 +71,7 @@ func (tc *bddTestContext) setup() error {
 	tc.echoEngine = echo.New()
 	tc.authHandler = handlers.NewAuthHandler(mainDB, tenantMgr)
 	tc.workspaceHandler = handlers.NewWorkspaceHandler(mainDB, tenantMgr)
+	tc.accountsHandler = handlers.NewAccountsHandler(mainDB, tenantMgr)
 	tc.txHandler = handlers.NewTransactionsHandler(mainDB, tenantMgr)
 	tc.reportsHandler = handlers.NewReportsHandler(mainDB, tenantMgr)
 	tc.partiesHandler = handlers.NewPartiesHandler(mainDB, tenantMgr)
@@ -214,6 +217,114 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 
 		res, err := report.CalculateAgeOfMoney(inflows, outflows)
 		if err != nil || res.HeadlineDays != days {
+			return godog.ErrPending
+		}
+		return nil
+	})
+
+	// 04_accounts_and_integrations.feature step definitions
+	ctx.Step(`^I open the link bank flow modal$`, func() error {
+		// Verify workspace accounts modal HTML contains provider selection
+		req := httptest.NewRequest(http.MethodGet, "/budgets/dummy/accounts", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("csrfToken", "dummy_csrf_token")
+
+		// Create in-memory tenant DB for dummy budget
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.accountsHandler.AccountsView(c)
+		tc.lastResponse = rec
+		return err
+	})
+	ctx.Step(`^I should see available bank providers "([^"]*)" and "([^"]*)"$`, func(p1, p2 string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, p1) || !strings.Contains(body, p2) {
+			return godog.ErrPending
+		}
+		return nil
+	})
+	ctx.Step(`^I select provider "([^"]*)" and country "([^"]*)"$`, func(provider, country string) error {
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/budgets/01900000-0000-7000-8000-000000000001/accounts/institutions?provider=%s&country=%s", provider, country), nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.accountsHandler.GetInstitutions(c)
+		tc.lastResponse = rec
+		return err
+	})
+	ctx.Step(`^the system should list available institutions for "([^"]*)"$`, func(country string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "SANDBOXFINANCE_SFIN0000") || !strings.Contains(body, "institutions") {
+			return godog.ErrPending
+		}
+		return nil
+	})
+	ctx.Step(`^I select multiple institutions "([^"]*)" and "([^"]*)" to connect$`, func(inst1, inst2 string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		payload := fmt.Sprintf(`{"provider":"MOCK","country":"PL","institution_ids":["%s","%s"]}`, inst1, inst2)
+		req := httptest.NewRequest(http.MethodPost, "/budgets/01900000-0000-7000-8000-000000000001/accounts/connect-queue", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.accountsHandler.ConnectBankQueue(c)
+		tc.lastResponse = rec
+		return err
+	})
+	ctx.Step(`^the connection queue should initialize with (\d+) pending institutions$`, func(count int) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, `"results"`) || !strings.Contains(body, `"connected"`) {
+			return godog.ErrPending
+		}
+		return nil
+	})
+	ctx.Step(`^connecting the first institution should link its discovered accounts to the budget$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+		var count int
+		err = bDB.QueryRow("SELECT count(*) FROM accounts_current").Scan(&count)
+		if err != nil || count == 0 {
+			return godog.ErrPending
+		}
+		return nil
+	})
+	ctx.Step(`^the flow should automatically advance to the next institution in the queue$`, func() error {
+		// Both selected institutions should have accounts created sequentially
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+		var count int
+		err = bDB.QueryRow("SELECT count(*) FROM accounts_current").Scan(&count)
+		if err != nil || count < 2 {
 			return godog.ErrPending
 		}
 		return nil

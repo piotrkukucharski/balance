@@ -22,3 +22,20 @@ Feature: Accounts Management, Multi-Currency Balances and Bank Integration Links
     When I toggle the close status on "Old Savings"
     Then the "is_closed" flag in "accounts_current" should be updated to 1
     And the account should appear as closed in the accounts view
+
+  Scenario: Starting integrated bank account connection from accounts view
+    Given an authenticated user "jan@example.com" on budget "Family Home"
+    When I open the link bank flow modal
+    Then I should see available bank providers "Mock Sandbox" and "GoCardless"
+
+  Scenario: Selecting bank provider and country in link bank flow
+    Given an authenticated user "jan@example.com" on budget "Family Home"
+    When I select provider "MOCK" and country "PL"
+    Then the system should list available institutions for "PL"
+
+  Scenario: Selecting multiple bank institutions executes sequential connection queue
+    Given an authenticated user "jan@example.com" on budget "Family Home"
+    When I select multiple institutions "SANDBOXFINANCE_SFIN0000" and "MOCK_BANK_PL01" to connect
+    Then the connection queue should initialize with 2 pending institutions
+    And connecting the first institution should link its discovered accounts to the budget
+    And the flow should automatically advance to the next institution in the queue

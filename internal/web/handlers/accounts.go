@@ -5,26 +5,38 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/integration/gocardless"
 	"github.com/balance/balance/internal/integration/mock"
 	"github.com/labstack/echo/v4"
 )
 
 type AccountsHandler struct {
-	mainDB      *sql.DB
-	tenantMgr   *db.TenantDBManager
-	mockAdapter *mock.MockAdapter
+	mainDB           *sql.DB
+	tenantMgr        *db.TenantDBManager
+	mockAdapter      *mock.MockAdapter
+	gocardlessClient *gocardless.Client
 }
 
 func NewAccountsHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *AccountsHandler {
+	secretID := os.Getenv("GOCARDLESS_SECRET_ID")
+	secretKey := os.Getenv("GOCARDLESS_SECRET_KEY")
+	redirectURL := os.Getenv("GOCARDLESS_REDIRECT_URL")
+	var gcClient *gocardless.Client
+	if secretID != "" && secretKey != "" {
+		gcClient = gocardless.NewClient(secretID, secretKey, redirectURL)
+	}
+
 	return &AccountsHandler{
-		mainDB:      mainDB,
-		tenantMgr:   tenantMgr,
-		mockAdapter: mock.NewMockAdapter(),
+		mainDB:           mainDB,
+		tenantMgr:        tenantMgr,
+		mockAdapter:      mock.NewMockAdapter(),
+		gocardlessClient: gcClient,
 	}
 }
 
@@ -307,36 +319,142 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
         <form method="dialog" class="modal-backdrop"><button>close</button></form>
     </dialog>
 
-    <!-- Link Bank Account Modal -->
+    <!-- Link Bank Account Multi-Step Modal (Actual Budget & Open Banking Style) -->
     <dialog id="link_bank_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
+        <div class="modal-box card-border border-base-300 p-6 max-w-2xl">
             <div class="flex justify-between items-center mb-4">
                 <div class="flex items-center gap-2">
                     <span class="text-2xl">🏦</span>
-                    <h3 class="font-extrabold text-xl tracking-tight">Connect via Bank Integration</h3>
+                    <div>
+                        <h3 class="font-extrabold text-xl tracking-tight">Connect Bank Accounts</h3>
+                        <p id="bank_wizard_subtitle" class="text-xs text-base-content/60">Step 1 of 3: Choose Integration Provider</p>
+                    </div>
                 </div>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle" onclick="resetBankWizard()">✕</button></form>
             </div>
-            <p class="text-xs text-base-content/70 mb-4">Connect a live or simulated open banking feed (GoCardless / Mock Adapter) to automatically import statements.</p>
-            <form method="POST" action="/budgets/%s/accounts/link-bank" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Discovered Institution Account</span></label>
-                    <select name="external_account_id" class="select select-bordered w-full select-md focus:select-primary">
-                        %s
-                    </select>
+
+            <!-- Wizard Steps Indicator -->
+            <div class="flex items-center gap-2 mb-6">
+                <div id="step_dot_1" class="h-1.5 flex-1 rounded-full bg-primary transition-all"></div>
+                <div id="step_dot_2" class="h-1.5 flex-1 rounded-full bg-base-300 transition-all"></div>
+                <div id="step_dot_3" class="h-1.5 flex-1 rounded-full bg-base-300 transition-all"></div>
+                <div id="step_dot_4" class="h-1.5 flex-1 rounded-full bg-base-300 transition-all"></div>
+            </div>
+
+            <!-- STEP 1: Choose Provider (Mock vs GoCardless) -->
+            <div id="bank_step_1" class="space-y-4">
+                <p class="text-xs text-base-content/70">Select your bank sync provider to connect accounts and import transactions:</p>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div onclick="selectProvider('MOCK')" class="card card-border border-base-300 bg-base-100 hover:border-primary cursor-pointer p-4 transition-all hover:shadow-md flex flex-col justify-between gap-3">
+                        <div class="flex items-start gap-3">
+                            <span class="text-3xl">🧪</span>
+                            <div>
+                                <h4 class="font-bold text-sm">Mock Sandbox</h4>
+                                <span class="badge badge-warning badge-xs font-semibold mt-1">Dev & Testing</span>
+                                <p class="text-xs text-base-content/60 mt-1">Deterministic instant simulated accounts (mBank PLN, Savings EUR) with auto-generated test transactions.</p>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-outline btn-primary btn-xs w-full">Select Mock Provider</button>
+                    </div>
+
+                    <div onclick="selectProvider('GOCARDLESS')" class="card card-border border-base-300 bg-base-100 hover:border-primary cursor-pointer p-4 transition-all hover:shadow-md flex flex-col justify-between gap-3">
+                        <div class="flex items-start gap-3">
+                            <span class="text-3xl">🇪🇺</span>
+                            <div>
+                                <h4 class="font-bold text-sm">GoCardless</h4>
+                                <span class="badge badge-success badge-xs font-semibold mt-1">Live Open Banking</span>
+                                <p class="text-xs text-base-content/60 mt-1">Connect official European bank feeds via PSD2 Open Banking (Poland, Germany, UK, France, and more).</p>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-primary btn-xs w-full">Select GoCardless</button>
+                    </div>
                 </div>
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Account Label in Balance</span></label>
-                    <input type="text" name="name" required placeholder="e.g. mBank Main Account" class="input input-bordered w-full input-md focus:input-primary" />
+            </div>
+
+            <!-- STEP 2: Choose Country -->
+            <div id="bank_step_2" class="space-y-4 hidden">
+                <div class="flex justify-between items-center">
+                    <p class="text-xs text-base-content/70">Select the country of your financial institution:</p>
+                    <button type="button" onclick="goToStep(1)" class="btn btn-ghost btn-xs text-base-content/60">← Change Provider</button>
                 </div>
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="link_bank_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-secondary font-semibold shadow-md">Link & Sync Feed</button>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <button type="button" onclick="selectCountry('PL')" class="btn btn-outline hover:btn-primary justify-start gap-2 h-auto py-2.5">
+                        <span class="text-lg">🇵🇱</span>
+                        <div class="text-left">
+                            <div class="font-bold text-xs">Poland</div>
+                            <div class="text-[10px] text-base-content/50">PL</div>
+                        </div>
+                    </button>
+                    <button type="button" onclick="selectCountry('DE')" class="btn btn-outline hover:btn-primary justify-start gap-2 h-auto py-2.5">
+                        <span class="text-lg">🇩🇪</span>
+                        <div class="text-left">
+                            <div class="font-bold text-xs">Germany</div>
+                            <div class="text-[10px] text-base-content/50">DE</div>
+                        </div>
+                    </button>
+                    <button type="button" onclick="selectCountry('GB')" class="btn btn-outline hover:btn-primary justify-start gap-2 h-auto py-2.5">
+                        <span class="text-lg">🇬🇧</span>
+                        <div class="text-left">
+                            <div class="font-bold text-xs">United Kingdom</div>
+                            <div class="text-[10px] text-base-content/50">GB</div>
+                        </div>
+                    </button>
+                    <button type="button" onclick="selectCountry('FR')" class="btn btn-outline hover:btn-primary justify-start gap-2 h-auto py-2.5">
+                        <span class="text-lg">🇫🇷</span>
+                        <div class="text-left">
+                            <div class="font-bold text-xs">France</div>
+                            <div class="text-[10px] text-base-content/50">FR</div>
+                        </div>
+                    </button>
                 </div>
-            </form>
+            </div>
+
+            <!-- STEP 3: Choose Institutions (Multi-Select Supported) -->
+            <div id="bank_step_3" class="space-y-4 hidden">
+                <div class="flex justify-between items-center gap-2">
+                    <div class="flex-1">
+                        <input id="bank_search_input" type="text" placeholder="Search banks by name or BIC..." oninput="filterInstitutions()" class="input input-bordered input-sm w-full" />
+                    </div>
+                    <button type="button" onclick="goToStep(2)" class="btn btn-ghost btn-xs text-base-content/60">← Back</button>
+                </div>
+
+                <div class="flex justify-between items-center text-xs px-1 text-base-content/70">
+                    <span>Select one or more banks to connect:</span>
+                    <span id="selected_banks_count" class="badge badge-neutral badge-xs font-semibold">0 selected</span>
+                </div>
+
+                <div id="institutions_list_container" class="max-h-64 overflow-y-auto space-y-2 border border-base-300 rounded-lg p-2 bg-base-200/30">
+                    <div class="py-8 text-center text-xs text-base-content/50 flex flex-col items-center gap-2">
+                        <span class="loading loading-spinner loading-sm text-primary"></span>
+                        <span>Loading available institutions...</span>
+                    </div>
+                </div>
+
+                <div class="modal-action mt-4 flex justify-between items-center">
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="goToStep(2)">Back</button>
+                    <button id="connect_banks_btn" type="button" disabled onclick="startConnectionQueue()" class="btn btn-primary btn-sm font-semibold shadow">
+                        Connect Selected (<span id="btn_selected_count">0</span>)
+                    </button>
+                </div>
+            </div>
+
+            <!-- STEP 4: Execution Queue Progress (Sequential Processing) -->
+            <div id="bank_step_4" class="space-y-4 hidden">
+                <div class="p-4 bg-base-200/50 rounded-lg border border-base-300 space-y-3">
+                    <h4 class="font-bold text-sm flex items-center gap-2">
+                        <span id="queue_spinner" class="loading loading-spinner loading-xs text-primary"></span>
+                        <span id="queue_title">Connecting Banks Sequentially...</span>
+                    </h4>
+                    <p class="text-xs text-base-content/70" id="queue_desc">Processing selected institutions one by one. Please do not close this window.</p>
+                    <div id="queue_items_list" class="space-y-2"></div>
+                </div>
+
+                <div class="modal-action">
+                    <button id="queue_done_btn" type="button" class="btn btn-primary btn-sm hidden font-semibold shadow" onclick="window.location.reload()">Done & View Accounts</button>
+                </div>
+            </div>
         </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+        <form method="dialog" class="modal-backdrop"><button onclick="resetBankWizard()">close</button></form>
     </dialog>
 
     <!-- Edit Account Modal -->
@@ -362,9 +480,187 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
     </dialog>
 
     <script>
+        const ACTIVE_BUDGET_ID = '%s';
+        let wizardState = {
+            provider: 'MOCK',
+            country: 'PL',
+            institutions: [],
+            selectedInstitutionIDs: new Set()
+        };
+
+        function resetBankWizard() {
+            goToStep(1);
+            wizardState.selectedInstitutionIDs.clear();
+            updateSelectedCount();
+        }
+
+        function goToStep(step) {
+            [1, 2, 3, 4].forEach(s => {
+                const el = document.getElementById('bank_step_' + s);
+                const dot = document.getElementById('step_dot_' + s);
+                if (el) {
+                    if (s === step) el.classList.remove('hidden');
+                    else el.classList.add('hidden');
+                }
+                if (dot) {
+                    if (s <= step) {
+                        dot.classList.add('bg-primary');
+                        dot.classList.remove('bg-base-300');
+                    } else {
+                        dot.classList.remove('bg-primary');
+                        dot.classList.add('bg-base-300');
+                    }
+                }
+            });
+
+            const subtitle = document.getElementById('bank_wizard_subtitle');
+            if (subtitle) {
+                if (step === 1) subtitle.innerText = 'Step 1 of 3: Choose Integration Provider';
+                else if (step === 2) subtitle.innerText = 'Step 2 of 3: Select Country (' + wizardState.provider + ')';
+                else if (step === 3) subtitle.innerText = 'Step 3 of 3: Choose Bank Institutions (' + wizardState.country + ')';
+                else if (step === 4) subtitle.innerText = 'Connecting Bank Accounts';
+            }
+        }
+
+        function selectProvider(p) {
+            wizardState.provider = p;
+            goToStep(2);
+        }
+
+        function selectCountry(c) {
+            wizardState.country = c;
+            goToStep(3);
+            loadInstitutions();
+        }
+
+        async function loadInstitutions() {
+            const container = document.getElementById('institutions_list_container');
+            container.innerHTML = '<div class="py-8 text-center text-xs text-base-content/50 flex flex-col items-center gap-2"><span class="loading loading-spinner loading-sm text-primary"></span><span>Loading institutions for ' + wizardState.country + '...</span></div>';
+
+            try {
+                const res = await fetch('/budgets/' + ACTIVE_BUDGET_ID + '/accounts/institutions?provider=' + wizardState.provider + '&country=' + wizardState.country);
+                const data = await res.json();
+                wizardState.institutions = data.institutions || [];
+                renderInstitutions(wizardState.institutions);
+            } catch (err) {
+                container.innerHTML = '<div class="py-6 text-center text-xs text-error">Failed loading institutions. Please try again.</div>';
+            }
+        }
+
+        function renderInstitutions(list) {
+            const container = document.getElementById('institutions_list_container');
+            if (!list || list.length === 0) {
+                container.innerHTML = '<div class="py-6 text-center text-xs text-base-content/50">No banking institutions found for the selected country.</div>';
+                return;
+            }
+
+            let html = '';
+            list.forEach(inst => {
+                const isChecked = wizardState.selectedInstitutionIDs.has(inst.id);
+                html += '<label class="flex items-center justify-between p-3 rounded-lg bg-base-100 hover:bg-base-200/70 border border-base-300 cursor-pointer transition-colors">' +
+                    '<div class="flex items-center gap-3">' +
+                        '<input type="checkbox" value="' + inst.id + '" ' + (isChecked ? 'checked' : '') + ' onchange="toggleInstitutionSelection(\'' + inst.id + '\', this.checked)" class="checkbox checkbox-primary checkbox-sm" />' +
+                        '<div>' +
+                            '<div class="font-bold text-xs text-base-content">' + inst.name + '</div>' +
+                            '<div class="text-[10px] text-base-content/60 font-mono">BIC: ' + (inst.bic || 'N/A') + '</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<span class="badge badge-soft badge-neutral badge-xs">' + inst.id + '</span>' +
+                '</label>';
+            });
+            container.innerHTML = html;
+        }
+
+        function filterInstitutions() {
+            const q = document.getElementById('bank_search_input').value.toLowerCase().trim();
+            if (!q) {
+                renderInstitutions(wizardState.institutions);
+                return;
+            }
+            const filtered = wizardState.institutions.filter(i => (i.name && i.name.toLowerCase().includes(q)) || (i.bic && i.bic.toLowerCase().includes(q)) || (i.id && i.id.toLowerCase().includes(q)));
+            renderInstitutions(filtered);
+        }
+
+        function toggleInstitutionSelection(id, checked) {
+            if (checked) wizardState.selectedInstitutionIDs.add(id);
+            else wizardState.selectedInstitutionIDs.delete(id);
+            updateSelectedCount();
+        }
+
+        function updateSelectedCount() {
+            const count = wizardState.selectedInstitutionIDs.size;
+            document.getElementById('selected_banks_count').innerText = count + ' selected';
+            document.getElementById('btn_selected_count').innerText = count;
+            document.getElementById('connect_banks_btn').disabled = count === 0;
+        }
+
+        async function startConnectionQueue() {
+            const selected = Array.from(wizardState.selectedInstitutionIDs);
+            if (selected.length === 0) return;
+
+            goToStep(4);
+            const listContainer = document.getElementById('queue_items_list');
+            listContainer.innerHTML = '';
+
+            selected.forEach(instId => {
+                const row = document.createElement('div');
+                row.id = 'queue_item_' + instId;
+                row.className = 'flex items-center justify-between p-2.5 rounded border border-base-300 bg-base-100 text-xs';
+                row.innerHTML = '<span class="font-bold font-mono">' + instId + '</span><span class="badge badge-neutral badge-xs">Queued</span>';
+                listContainer.appendChild(row);
+            });
+
+            // Process sequentially one by one
+            for (let i = 0; i < selected.length; i++) {
+                const instId = selected[i];
+                const itemEl = document.getElementById('queue_item_' + instId);
+                if (itemEl) itemEl.querySelector('.badge').className = 'badge badge-warning badge-xs animate-pulse';
+                if (itemEl) itemEl.querySelector('.badge').innerText = 'Connecting...';
+
+                try {
+                    const res = await fetch('/budgets/' + ACTIVE_BUDGET_ID + '/accounts/connect-queue', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
+                        body: JSON.stringify({
+                            provider: wizardState.provider,
+                            country: wizardState.country,
+                            institution_ids: [instId]
+                        })
+                    });
+                    const data = await res.json();
+                    const r = (data.results && data.results[0]) || {};
+
+                    if (itemEl) {
+                        if (r.status === 'awaiting_authorization' && r.auth_url) {
+                            itemEl.querySelector('.badge').className = 'badge badge-info badge-xs';
+                            itemEl.querySelector('.badge').innerHTML = '<a href="' + r.auth_url + '" target="_blank" class="underline font-bold">Authorize Bank ➔</a>';
+                        } else if (r.status === 'connected') {
+                            itemEl.querySelector('.badge').className = 'badge badge-success badge-xs font-semibold';
+                            itemEl.querySelector('.badge').innerText = 'Connected (' + (r.accounts_count || 1) + ' accounts)';
+                        } else {
+                            itemEl.querySelector('.badge').className = 'badge badge-error badge-xs';
+                            itemEl.querySelector('.badge').innerText = r.status || 'Failed';
+                        }
+                    }
+                } catch (err) {
+                    if (itemEl) {
+                        itemEl.querySelector('.badge').className = 'badge badge-error badge-xs';
+                        itemEl.querySelector('.badge').innerText = 'Network error';
+                    }
+                }
+            }
+
+            document.getElementById('queue_spinner').classList.add('hidden');
+            document.getElementById('queue_title').innerText = 'All Bank Connections Processed';
+            document.getElementById('queue_done_btn').classList.remove('hidden');
+        }
+
         function openEditModal(id, name, curr, type) {
             document.getElementById('edit_name').value = name;
-            document.getElementById('edit_account_form').action = '/budgets/%s/accounts/' + id + '/update';
+            document.getElementById('edit_account_form').action = '/budgets/' + ACTIVE_BUDGET_ID + '/accounts/' + id + '/update';
             edit_account_modal.showModal();
         }
     </script>
@@ -374,8 +670,8 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 		accountRows.String(),
 		budgetID, budgetID, budgetID, budgetID, budgetID,
 		budgetID, csrfToken,
-		budgetID, csrfToken, mockOptions.String(),
-		csrfToken, budgetID)
+		csrfToken,
+		budgetID)
 
 	return c.HTML(http.StatusOK, html)
 }
@@ -622,4 +918,197 @@ func (h *AccountsHandler) ensureUserParty(ctx context.Context, db *sql.DB, userI
 		INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
 		VALUES (?, 1, 'User Family', 'INDIVIDUAL', 1, ?, ?)`, partyID, userID, now)
 	return partyID
+}
+
+// InstitutionItem defines the common response model for bank search.
+type InstitutionItem struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	BIC       string   `json:"bic"`
+	Countries []string `json:"countries"`
+	Logo      string   `json:"logo"`
+	Provider  string   `json:"provider"`
+}
+
+// GetInstitutions returns the list of available banks for a selected provider and country.
+func (h *AccountsHandler) GetInstitutions(c echo.Context) error {
+	provider := strings.ToUpper(c.QueryParam("provider"))
+	country := strings.ToUpper(c.QueryParam("country"))
+	if country == "" {
+		country = "PL"
+	}
+
+	var results []InstitutionItem
+
+	if provider == "GOCARDLESS" && h.gocardlessClient != nil {
+		gcInsts, err := h.gocardlessClient.ListInstitutions(c.Request().Context(), country)
+		if err == nil {
+			for _, inst := range gcInsts {
+				results = append(results, InstitutionItem{
+					ID:        inst.ID,
+					Name:      inst.Name,
+					BIC:       inst.BIC,
+					Countries: inst.Countries,
+					Logo:      inst.Logo,
+					Provider:  "GOCARDLESS",
+				})
+			}
+		}
+	}
+
+	// Always provide MOCK institutions as default or fallback
+	if provider == "MOCK" || len(results) == 0 {
+		for _, inst := range h.mockAdapter.ListInstitutions(country) {
+			results = append(results, InstitutionItem{
+				ID:        inst.ID,
+				Name:      inst.Name,
+				BIC:       inst.BIC,
+				Countries: inst.Countries,
+				Logo:      inst.Logo,
+				Provider:  "MOCK",
+			})
+		}
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{
+		"provider":     provider,
+		"country":      country,
+		"institutions": results,
+	})
+}
+
+type ConnectBankRequest struct {
+	Provider       string   `json:"provider"`
+	Country        string   `json:"country"`
+	InstitutionIDs []string `json:"institution_ids"`
+}
+
+// ConnectBankQueue processes selected bank institutions.
+// If multiple institutions are selected, it connects each sequentially.
+func (h *AccountsHandler) ConnectBankQueue(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+
+	var req ConnectBankRequest
+	if err := c.Bind(&req); err != nil {
+		// Fallback to form values
+		req.Provider = c.FormValue("provider")
+		req.Country = c.FormValue("country")
+		if instIDs := c.Request().Form["institution_ids"]; len(instIDs) > 0 {
+			req.InstitutionIDs = instIDs
+		} else if instID := c.FormValue("institution_id"); instID != "" {
+			req.InstitutionIDs = strings.Split(instID, ",")
+		}
+	}
+
+	if len(req.InstitutionIDs) == 0 {
+		return echo.NewHTTPError(http.StatusBadRequest, "No institutions selected")
+	}
+
+	req.Provider = strings.ToUpper(req.Provider)
+	if req.Provider == "" {
+		req.Provider = "MOCK"
+	}
+
+	now := time.Now().UTC().UnixMicro()
+	userPartyID := h.ensureUserParty(c.Request().Context(), tenantDB, userID, now)
+
+	type ConnectedBankResult struct {
+		InstitutionID string `json:"institution_id"`
+		Status        string `json:"status"`
+		AccountsCount int    `json:"accounts_count"`
+		AuthURL       string `json:"auth_url,omitempty"`
+	}
+
+	var results []ConnectedBankResult
+
+	for _, instID := range req.InstitutionIDs {
+		instID = strings.TrimSpace(instID)
+		if instID == "" {
+			continue
+		}
+
+		if req.Provider == "GOCARDLESS" && h.gocardlessClient != nil {
+			userRef := fmt.Sprintf("bal_%s_%d", userID, time.Now().Unix())
+			requisition, err := h.gocardlessClient.CreateRequisition(c.Request().Context(), instID, userRef)
+			if err != nil {
+				results = append(results, ConnectedBankResult{
+					InstitutionID: instID,
+					Status:        "error: " + err.Error(),
+				})
+				continue
+			}
+
+			// Store requisition in user_integrations
+			intID := domain.NewUUIDv7()
+			h.mainDB.ExecContext(c.Request().Context(), `
+				INSERT INTO user_integrations (id, user_id, provider, institution_id, external_reference_id, status, created_at, updated_at)
+				VALUES (?, ?, 'GOCARDLESS', ?, ?, 'PENDING', ?, ?)`,
+				intID, userID, instID, requisition.ID, now, now,
+			)
+
+			results = append(results, ConnectedBankResult{
+				InstitutionID: instID,
+				Status:        "awaiting_authorization",
+				AuthURL:       requisition.Link,
+			})
+			continue
+		}
+
+		// Mock Provider: Deterministic sequential link
+		mockAccounts, _ := h.mockAdapter.FetchAccounts(c.Request().Context(), userID)
+		accountsAdded := 0
+
+		tx, err := tenantDB.BeginTx(c.Request().Context(), nil)
+		if err != nil {
+			continue
+		}
+
+		for idx, ma := range mockAccounts {
+			acctID := domain.NewUUIDv7()
+			accName := fmt.Sprintf("%s (%s #%d)", ma.Name, instID, idx+1)
+
+			_, err = tx.ExecContext(c.Request().Context(), `
+				INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, iban, is_closed, agent_id, updated_at)
+				VALUES (?, 1, ?, ?, 'CHECKING', ?, ?, 0, ?, ?)`,
+				acctID, userPartyID, accName, ma.Currency, ma.IBAN, userID, now,
+			)
+			if err != nil {
+				continue
+			}
+
+			linkID := domain.NewUUIDv7()
+			intID := fmt.Sprintf("mock_int_%s_%s", instID, userID)
+			tx.ExecContext(c.Request().Context(), `
+				INSERT INTO account_integration_links (id, account_id, integration_id, external_account_id, last_synced_at, created_at)
+				VALUES (?, ?, ?, ?, ?, ?)`,
+				linkID, acctID, intID, fmt.Sprintf("%s_%s", ma.ID, instID), now, now,
+			)
+
+			tx.ExecContext(c.Request().Context(), `
+				INSERT INTO account_currency_balances (account_id, currency, balance_minor, updated_at)
+				VALUES (?, ?, ?, ?)`,
+				acctID, ma.Currency, ma.BalanceMinor, now,
+			)
+			accountsAdded++
+		}
+		_ = tx.Commit()
+
+		results = append(results, ConnectedBankResult{
+			InstitutionID: instID,
+			Status:        "connected",
+			AccountsCount: accountsAdded,
+		})
+	}
+
+	// If requested via JSON API or fetch, return structured response
+	if strings.Contains(c.Request().Header.Get("Accept"), "application/json") || c.Request().Header.Get("X-Requested-With") == "XMLHttpRequest" {
+		return c.JSON(http.StatusOK, map[string]any{
+			"budget_id": budgetID,
+			"results":   results,
+		})
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/accounts", budgetID))
 }

@@ -24,6 +24,14 @@ type ExtTransaction struct {
 	Reference        string
 }
 
+type Institution struct {
+	ID        string
+	Name      string
+	BIC       string
+	Countries []string
+	Logo      string
+}
+
 // MockAdapter provides deterministic bank integration data for dev, test, and E2E suites.
 type MockAdapter struct {
 	accounts map[string][]ExtAccount
@@ -37,6 +45,67 @@ func NewMockAdapter() *MockAdapter {
 
 func (m *MockAdapter) ProviderCode() string {
 	return "MOCK"
+}
+
+func (m *MockAdapter) ListInstitutions(country string) []Institution {
+	all := []Institution{
+		{
+			ID:        "SANDBOXFINANCE_SFIN0000",
+			Name:      "Sandbox Finance",
+			BIC:       "SFIN0000",
+			Countries: []string{"PL", "DE", "GB", "FR"},
+			Logo:      "https://cdn-logos.gocardless.com/ais/SANDBOXFINANCE_SFIN0000.png",
+		},
+		{
+			ID:        "MOCK_BANK_PL01",
+			Name:      "mBank Mock Retail",
+			BIC:       "BREXPLPW",
+			Countries: []string{"PL"},
+			Logo:      "",
+		},
+		{
+			ID:        "MOCK_BANK_PL02",
+			Name:      "PKO Bank Polski Mock",
+			BIC:       "BPKOPLPW",
+			Countries: []string{"PL"},
+			Logo:      "",
+		},
+		{
+			ID:        "MOCK_BANK_PL03",
+			Name:      "Santander Bank Polska Mock",
+			BIC:       "WBKAPLP1",
+			Countries: []string{"PL"},
+			Logo:      "",
+		},
+		{
+			ID:        "MOCK_BANK_DE01",
+			Name:      "Deutsche Bank Mock",
+			BIC:       "DEUTDEDD",
+			Countries: []string{"DE"},
+			Logo:      "",
+		},
+		{
+			ID:        "MOCK_BANK_GB01",
+			Name:      "Barclays Mock UK",
+			BIC:       "BARCGB22",
+			Countries: []string{"GB"},
+			Logo:      "",
+		},
+	}
+
+	if country == "" {
+		return all
+	}
+	var filtered []Institution
+	for _, inst := range all {
+		for _, c := range inst.Countries {
+			if c == country {
+				filtered = append(filtered, inst)
+				break
+			}
+		}
+	}
+	return filtered
 }
 
 func (m *MockAdapter) FetchAccounts(ctx context.Context, userID string) ([]ExtAccount, error) {

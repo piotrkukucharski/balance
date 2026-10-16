@@ -65,15 +65,19 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 							<span class="badge badge-neutral badge-sm">%s</span>
 							<span class="text-xs text-base-content/60">Default Currency</span>
 						</div>
-						<div class="card-actions">
-							<a href="/budgets/%s/budget" class="btn btn-primary btn-sm gap-2 shadow-sm font-semibold">
-								<span>Open Budget</span>
+						<div class="card-actions flex items-center gap-2">
+							<a href="/budgets/%s/accounts" class="btn btn-outline btn-secondary btn-sm gap-1.5 shadow-xs font-semibold" title="Link Bank Account or manage accounts">
+								<span>🏦</span>
+								<span>Link Bank</span>
+							</a>
+							<a href="/budgets/%s/budget" class="btn btn-primary btn-sm gap-1.5 shadow-sm font-semibold">
+								<span>Open</span>
 								<span>➔</span>
 							</a>
 						</div>
 					</div>
 				</div>
-			</div>`, name, tz, role, curr, id))
+			</div>`, name, tz, role, curr, id, id))
 	}
 
 	if !hasBudgets {
