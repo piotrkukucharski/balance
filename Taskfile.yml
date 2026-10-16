@@ -1,0 +1,78 @@
+version: '3'
+
+vars:
+  BIN_NAME: balance
+  DATA_DIR: ./data
+  PORT: 8080
+
+tasks:
+  default:
+    desc: "Show available tasks"
+    cmds:
+      - task --list
+
+  # Development tasks
+  dev:init:
+    desc: "Initialize development environment and directories"
+    cmds:
+      - mkdir -p {{.DATA_DIR}}/budgets
+      - go mod tidy
+      - echo "Development environment initialized at {{.DATA_DIR}}"
+
+  dev:build:
+    desc: "Build the Balance server binary"
+    cmds:
+      - go build -o bin/{{.BIN_NAME}} ./cmd/server
+
+  dev:up:
+    desc: "Start the Balance development server"
+    deps: [dev:init]
+    cmds:
+      - DATA_DIR={{.DATA_DIR}} PORT={{.PORT}} go run ./cmd/server
+
+  dev:stop:
+    desc: "Stop running Balance server processes"
+    cmds:
+      - pkill -f "cmd/server" || pkill -f "bin/{{.BIN_NAME}}" || true
+      - echo "Balance server stopped"
+
+  # Test tasks
+  test:all:
+    desc: "Run all unit and integration tests"
+    cmds:
+      - go test -v -race ./...
+
+  test:unit:
+    desc: "Run algorithmic and domain unit tests (primitives, auth, lua, budget, rule, report)"
+    cmds:
+      - go test -v ./internal/domain/... ./internal/auth/... ./internal/lua/... ./internal/budget/... ./internal/rule/... ./internal/report/...
+
+  test:db:
+    desc: "Run database and tenant connection pool tests"
+    cmds:
+      - go test -v ./internal/db/...
+
+  test:transaction:
+    desc: "Run transaction deduplication and resolution tests"
+    cmds:
+      - go test -v ./internal/transaction/...
+
+  test:ai:
+    desc: "Run AI Formula Assistant tests (with Mock provider)"
+    cmds:
+      - go test -v ./internal/ai/...
+
+  test:web:
+    desc: "Run HTTP web routes and handlers integration tests"
+    cmds:
+      - go test -v ./internal/web/handlers/...
+
+  test:heavy:
+    desc: "Run 10-year multi-currency heavy load fixture test"
+    cmds:
+      - go test -v ./internal/testutil/heavyfixture/...
+
+  test:bench:
+    desc: "Run performance benchmarks"
+    cmds:
+      - go test -bench=. -benchmem ./...
