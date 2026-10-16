@@ -1,0 +1,144 @@
+package handlers
+
+import (
+	"database/sql"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/balance/balance/internal/auth"
+	"github.com/balance/balance/internal/db"
+	"github.com/balance/balance/internal/domain"
+	"github.com/labstack/echo/v4"
+)
+
+const (
+	SessionCookieName = "balance_session"
+	ContextUserIDKey  = "userID"
+	ContextSessionKey = "sessionToken"
+	ContextRoleKey    = "budgetRole"
+	ContextBudgetDBKey = "budgetDB"
+)
+
+// CorrelationIDMiddleware assigns a server-generated UUIDv7 to every incoming request.
+func CorrelationIDMiddleware() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			corrID := domain.NewUUIDv7()
+			c.Set("correlationID", corrID)
+			c.Response().Header().Set("X-Correlation-ID", corrID)
+			return next(c)
+		}
+	}
+}
+
+// SessionOrBearerAuthMiddleware enforces dual auth: session cookie OR Bearer PAT.
+func SessionOrBearerAuthMiddleware(mainDB *sql.DB) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			authHeader := c.Request().Header.Get("Authorization")
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				// PAT Authentication
+				token := strings.TrimPrefix(authHeader, "Bearer ")
+				tokenHash := auth.HashToken(token)
+
+				var userID string
+				var expiresAt int64
+				var revokedAt sql.NullInt64
+				now := time.Now().UTC().UnixMicro()
+
+				err := mainDB.QueryRowContext(c.Request().Context(), `
+					SELECT user_id, expires_at, revoked_at FROM api_tokens
+					WHERE token_hash = ?`, tokenHash).Scan(&userID, &expiresAt, &revokedAt)
+				if err != nil || (revokedAt.Valid && revokedAt.Int64 > 0) || (expiresAt > 0 && expiresAt < now) {
+					return echo.NewHTTPError(http.StatusUnauthorized, "Invalid or expired Bearer token")
+				}
+
+				c.Set(ContextUserIDKey, userID)
+				return next(c)
+			}
+
+			// Session Cookie Authentication
+			cookie, err := c.Cookie(SessionCookieName)
+			if err != nil || cookie.Value == "" {
+				// If HTMX / HTML request, redirect to /login
+				if strings.Contains(c.Request().Header.Get("Accept"), "text/html") {
+					return c.Redirect(http.StatusSeeOther, "/login")
+				}
+				return echo.NewHTTPError(http.StatusUnauthorized, "Authentication required")
+			}
+
+			tokenHash := auth.HashToken(cookie.Value)
+			var userID, csrfToken string
+			var expiresAt int64
+			now := time.Now().UTC().UnixMicro()
+
+			err = mainDB.QueryRowContext(c.Request().Context(), `
+				SELECT user_id, csrf_token, expires_at FROM sessions
+				WHERE token_hash = ?`, tokenHash).Scan(&userID, &csrfToken, &expiresAt)
+			if err != nil || expiresAt < now {
+				return echo.NewHTTPError(http.StatusUnauthorized, "Session expired or invalid")
+			}
+
+			// CSRF Check on mutating requests
+			method := c.Request().Method
+			if method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch || method == http.MethodDelete {
+				reqCSRF := c.Request().Header.Get("X-CSRF-Token")
+				if reqCSRF == "" {
+					reqCSRF = c.FormValue("csrf_token")
+				}
+				if reqCSRF == "" || reqCSRF != csrfToken {
+					return echo.NewHTTPError(http.StatusForbidden, "Invalid or missing CSRF token")
+				}
+			}
+
+			c.Set(ContextUserIDKey, userID)
+			c.Set(ContextSessionKey, cookie.Value)
+			c.Set("csrfToken", csrfToken)
+			return next(c)
+		}
+	}
+}
+
+// TenantAuthzMiddleware checks budget UUIDv7 validity, user membership and role before opening tenant DB.
+func TenantAuthzMiddleware(tenantMgr *db.TenantDBManager, minRole string) echo.MiddlewareFunc {
+	roleWeights := map[string]int{
+		"VIEWER": 1,
+		"EDITOR": 2,
+		"ADMIN":  3,
+		"OWNER":  4,
+	}
+
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			budgetID := c.Param("budgetId")
+			if !domain.IsValidUUIDv7(budgetID) {
+				return echo.NewHTTPError(http.StatusBadRequest, "Invalid budget ID format")
+			}
+
+			userID, ok := c.Get(ContextUserIDKey).(string)
+			if !ok || userID == "" {
+				return echo.NewHTTPError(http.StatusUnauthorized, "Unauthorized")
+			}
+
+			role, err := tenantMgr.VerifyUserMembership(c.Request().Context(), budgetID, userID)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusForbidden, err.Error())
+			}
+
+			if roleWeights[role] < roleWeights[minRole] {
+				return echo.NewHTTPError(http.StatusForbidden, "Insufficient budget permissions")
+			}
+
+			tenantDB, err := tenantMgr.GetTenantDB(budgetID, false)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusNotFound, "Tenant database not found")
+			}
+
+			c.Set(ContextRoleKey, role)
+			c.Set(ContextBudgetDBKey, tenantDB)
+			c.Set("budgetID", budgetID)
+			return next(c)
+		}
+	}
+}
