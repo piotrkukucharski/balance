@@ -1,0 +1,14 @@
+# Binaries
+bin/
+server
+balance
+
+# Databases & local data
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Cache & temporary files
+.cache/
+tmp/
