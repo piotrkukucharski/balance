@@ -61,6 +61,7 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 		WHERE p.is_user_owned = 1
 		ORDER BY a.is_closed ASC, a.name ASC`)
 	if err != nil {
+		logger.Error(c.Request().Context(), "Failed querying accounts_current", "budget_id", budgetID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed loading accounts")
 	}
 	defer rows.Close()
