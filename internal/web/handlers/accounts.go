@@ -317,6 +317,10 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
             <span class="text-xl">📊</span>
             <span class="dock-label">Reports</span>
         </a>
+        <a href="/budgets/%s/parties">
+            <span class="text-xl">🏢</span>
+            <span class="dock-label">Parties</span>
+        </a>
         <a href="/budgets/%s/members">
             <span class="text-xl">👥</span>
             <span class="dock-label">Members</span>
@@ -1038,7 +1042,7 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 </html>`, csrfToken,
 		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
 		accountRows.String(),
-		budgetID, budgetID, budgetID, budgetID, budgetID,
+		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
 		budgetID, csrfToken,
 		csrfToken,
 		budgetID, csrfToken)

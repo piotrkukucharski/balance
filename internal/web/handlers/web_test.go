@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -47,6 +48,10 @@ func TestAuthAndWorkspaceFlow(t *testing.T) {
 	authHandler := NewAuthHandler(mainDB, tenantMgr)
 	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr)
 	txHandler := NewTransactionsHandler(mainDB, tenantMgr)
+	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+	partiesHandler := NewPartiesHandler(mainDB, tenantMgr)
+	membersHandler := NewMembersHandler(mainDB, tenantMgr)
+	accountsHandler := NewAccountsHandler(mainDB, tenantMgr)
 
 	// 1. Test Register
 	form := url.Values{}
@@ -167,5 +172,48 @@ func TestAuthAndWorkspaceFlow(t *testing.T) {
 	tenantDB.QueryRowContext(context.Background(), "SELECT count(*) FROM raw_transactions_current").Scan(&rawCount)
 	if rawCount == 0 {
 		t.Fatalf("expected imported raw transactions from mock sync, got 0")
+	}
+
+	// 6. Test that all budget views render "💳 2. Accounts" in navigation menu
+	viewsToTest := []struct {
+		name    string
+		handler func(echo.Context) error
+		path    string
+	}{
+		{"Transactions", txHandler.TransactionsView, "/budgets/" + budgetID + "/transactions"},
+		{"Reports", reportsHandler.ReportsView, "/budgets/" + budgetID + "/reports"},
+		{"Parties", partiesHandler.PartiesView, "/budgets/" + budgetID + "/parties"},
+		{"Members", membersHandler.MembersView, "/budgets/" + budgetID + "/members"},
+		{"Accounts", accountsHandler.AccountsView, "/budgets/" + budgetID + "/accounts"},
+		{"Budget", workspaceHandler.BudgetView, "/budgets/" + budgetID + "/budget"},
+	}
+
+	for _, vt := range viewsToTest {
+		t.Run("NavigationMenu_"+vt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, vt.path, nil)
+			rec := httptest.NewRecorder()
+			c := e.NewContext(req, rec)
+			c.SetParamNames("budgetId")
+			c.SetParamValues(budgetID)
+			c.Set(ContextUserIDKey, userID)
+			c.Set(ContextRoleKey, "OWNER")
+			c.Set(ContextBudgetDBKey, tenantDB)
+			c.Set("csrfToken", "dummy_csrf")
+
+			if err := vt.handler(c); err != nil {
+				t.Fatalf("%s view failed: %v", vt.name, err)
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200 OK for %s, got %d", vt.name, rec.Code)
+			}
+			body := rec.Body.String()
+			expectedMenuItem := fmt.Sprintf(`<li><a href="/budgets/%s/accounts"`, budgetID)
+			if !strings.Contains(body, expectedMenuItem) {
+				t.Fatalf("expected %s view to contain Accounts menu item", vt.name)
+			}
+			if !strings.Contains(body, "💳 2. Accounts") {
+				t.Fatalf("expected %s view to display '💳 2. Accounts'", vt.name)
+			}
+		})
 	}
 }
