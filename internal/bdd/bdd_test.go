@@ -30,11 +30,11 @@ type bddTestContext struct {
 	tenantMgr  *db.TenantDBManager
 	tmpDir     string
 
-	lastResponse *httptest.ResponseRecorder
-	sessionCookie *http.Cookie
-	activeUserID  string
+	lastResponse   *httptest.ResponseRecorder
+	sessionCookie  *http.Cookie
+	activeUserID   string
 	activeBudgetID string
-	activeCSRF    string
+	activeCSRF     string
 
 	authHandler      *handlers.AuthHandler
 	workspaceHandler *handlers.WorkspaceHandler
@@ -498,6 +498,240 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		// Popover API or non-clipping container allows menu to float into top-layer
 		if !strings.Contains(body, "popover") && !strings.Contains(body, "overflow-visible") {
 			return godog.ErrPending
+		}
+		return nil
+	})
+
+	// Favicon BDD step definitions
+	ctx.Step(`^I create an account named "([^"]*)" of type "([^"]*)" with currency "([^"]*)" and favicon emoji "([^"]*)"$`, func(name, aType, curr, emoji string) error {
+		form := url.Values{}
+		form.Set("name", name)
+		form.Set("account_type", aType)
+		form.Set("primary_currency", curr)
+		form.Set("favicon_type", "EMOJI")
+		form.Set("favicon_value", emoji)
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/01900000-0000-7000-8000-000000000001/accounts", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.accountsHandler.CreateAccount(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^I create an account named "([^"]*)" of type "([^"]*)" with currency "([^"]*)" and favicon URL "([^"]*)"$`, func(name, aType, curr, favURL string) error {
+		form := url.Values{}
+		form.Set("name", name)
+		form.Set("account_type", aType)
+		form.Set("primary_currency", curr)
+		form.Set("favicon_type", "URL")
+		form.Set("favicon_value", favURL)
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/01900000-0000-7000-8000-000000000001/accounts", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.accountsHandler.CreateAccount(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the account should be stored in "([^"]*)" and projected in "([^"]*)" with favicon "([^"]*)" and type "([^"]*)"$`, func(table1, table2, expectedFavicon, expectedType string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var fType, fVal string
+		err = bDB.QueryRow(fmt.Sprintf("SELECT favicon_type, favicon_value FROM %s ORDER BY created_at DESC LIMIT 1", table1)).Scan(&fType, &fVal)
+		if err != nil || fType != expectedType || fVal != expectedFavicon {
+			return fmt.Errorf("table %s mismatch: got (%s, %s), want (%s, %s)", table1, fType, fVal, expectedType, expectedFavicon)
+		}
+
+		err = bDB.QueryRow(fmt.Sprintf("SELECT favicon_type, favicon_value FROM %s ORDER BY updated_at DESC LIMIT 1", table2)).Scan(&fType, &fVal)
+		if err != nil || fType != expectedType || fVal != expectedFavicon {
+			return fmt.Errorf("table %s mismatch: got (%s, %s), want (%s, %s)", table2, fType, fVal, expectedType, expectedFavicon)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the account "([^"]*)" in the accounts view should display the emoji icon "([^"]*)"$`, func(acctName, emoji string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/budgets/01900000-0000-7000-8000-000000000001/accounts", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("csrfToken", "dummy_csrf_token")
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.accountsHandler.AccountsView(c)
+		if err != nil {
+			return err
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, acctName) || !strings.Contains(body, emoji) {
+			return fmt.Errorf("accounts view does not display emoji %s for account %s", emoji, acctName)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the account "([^"]*)" in the accounts view should render the favicon image$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/budgets/01900000-0000-7000-8000-000000000001/accounts", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("csrfToken", "dummy_csrf_token")
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.accountsHandler.AccountsView(c)
+		if err != nil {
+			return err
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, acctName) || !strings.Contains(body, "<img") {
+			return fmt.Errorf("accounts view does not render img for %s", acctName)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I request to discover favicon for website "([^"]*)"$`, func(targetURL string) error {
+		os.Setenv("ALLOW_PRIVATE_FAVICON_HOSTS", "true")
+		req := httptest.NewRequest(http.MethodGet, "/budgets/01900000-0000-7000-8000-000000000001/accounts/extract-favicon?url="+url.QueryEscape(targetURL), nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.accountsHandler.ExtractFavicon(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the server should inspect the HTML markup$`, func() error {
+		if tc.lastResponse.Code != http.StatusOK {
+			return fmt.Errorf("expected 200 OK, got %d", tc.lastResponse.Code)
+		}
+		return nil
+	})
+
+	ctx.Step(`^return the resolved best-quality favicon URL matching icon links or fallback to standard "\/favicon\.ico"$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, `"best_favicon"`) || !strings.Contains(body, `"success"`) {
+			return fmt.Errorf("expected success with best_favicon in response: %s", body)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I update the account "([^"]*)" favicon to emoji "([^"]*)"$`, func(acctName, emoji string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var acctID string
+		err = bDB.QueryRow("SELECT id FROM accounts_current WHERE name = ?", acctName).Scan(&acctID)
+		if err != nil {
+			return err
+		}
+
+		form := url.Values{}
+		form.Set("name", acctName)
+		form.Set("favicon_type", "EMOJI")
+		form.Set("favicon_value", emoji)
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/01900000-0000-7000-8000-000000000001/accounts/%s/update", acctID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "id")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001", acctID)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.accountsHandler.UpdateAccount(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the "([^"]*)" projection should be updated with favicon "([^"]*)" and type "([^"]*)"$`, func(table, emoji, fType string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var currentType, currentVal string
+		err = bDB.QueryRow(fmt.Sprintf("SELECT favicon_type, favicon_value FROM %s WHERE name = 'mBank Checking'", table)).Scan(&currentType, &currentVal)
+		if err != nil || currentType != fType || currentVal != emoji {
+			return fmt.Errorf("projection mismatch: got (%s, %s), want (%s, %s)", currentType, currentVal, fType, emoji)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the account should display the updated icon in the UI$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/budgets/01900000-0000-7000-8000-000000000001/accounts", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("csrfToken", "dummy_csrf_token")
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.accountsHandler.AccountsView(c)
+		if err != nil {
+			return err
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "🏦") {
+			return fmt.Errorf("expected 🏦 in accounts view body")
 		}
 		return nil
 	})

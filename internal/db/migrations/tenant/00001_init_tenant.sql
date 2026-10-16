@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     )),
     primary_currency TEXT NOT NULL DEFAULT 'PLN', -- Default UI currency; account can hold any currency
     iban TEXT, -- Optional IBAN or external identifier
+    favicon_type TEXT NOT NULL DEFAULT 'EMOJI' CHECK(favicon_type IN ('EMOJI', 'URL')),
+    favicon_value TEXT,
     is_closed INTEGER NOT NULL DEFAULT 0,
     action TEXT NOT NULL CHECK(action IN ('CREATE', 'UPDATE', 'RESTORE', 'SOFT_DELETE')),
     agent_id TEXT NOT NULL,
@@ -262,6 +264,8 @@ CREATE TABLE IF NOT EXISTS accounts_current (
     account_type TEXT NOT NULL,
     primary_currency TEXT NOT NULL,
     iban TEXT,
+    favicon_type TEXT NOT NULL DEFAULT 'EMOJI' CHECK(favicon_type IN ('EMOJI', 'URL')),
+    favicon_value TEXT,
     is_closed INTEGER NOT NULL,
     agent_id TEXT NOT NULL,
     updated_at INTEGER NOT NULL,

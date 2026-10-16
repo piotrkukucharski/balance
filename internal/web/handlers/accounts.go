@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"html"
 	"net/http"
 	"os"
 	"strings"
@@ -50,7 +51,9 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 		SELECT a.id, a.name, a.account_type, a.primary_currency, COALESCE(a.iban, ''),
 		       a.is_closed, COALESCE(acb.balance_minor, 0),
 		       COALESCE(ail.external_account_id, ''),
-		       COALESCE(ail.integration_id, '')
+		       COALESCE(ail.integration_id, ''),
+		       COALESCE(a.favicon_type, 'EMOJI'),
+		       COALESCE(a.favicon_value, '')
 		FROM accounts_current a
 		JOIN parties_current p ON a.party_id = p.id
 		LEFT JOIN account_currency_balances acb ON a.id = acb.account_id AND a.primary_currency = acb.currency
@@ -68,10 +71,10 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 	hasAccounts := false
 	for rows.Next() {
 		hasAccounts = true
-		var id, name, aType, curr, iban, extID, intID string
+		var id, name, aType, curr, iban, extID, intID, favType, favVal string
 		var isClosed int
 		var balanceMinor int64
-		rows.Scan(&id, &name, &aType, &curr, &iban, &isClosed, &balanceMinor, &extID, &intID)
+		rows.Scan(&id, &name, &aType, &curr, &iban, &isClosed, &balanceMinor, &extID, &intID, &favType, &favVal)
 
 		// Check if bank integration is expired in main.db
 		isConsentExpired := false
@@ -124,11 +127,28 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 			`, id, strings.ReplaceAll(name, "'", "\\'"), btnClass, btnText)
 		}
 
+		// Render favicon avatar
+		faviconHTML := ""
+		if favType == "URL" && favVal != "" {
+			faviconHTML = fmt.Sprintf(`<div class="avatar"><div class="w-8 h-8 rounded-lg bg-base-200 border border-base-300 flex items-center justify-center p-1"><img src="%s" alt="%s favicon" class="w-full h-full object-contain" onerror="this.parentElement.innerHTML='💳'" /></div></div>`, html.EscapeString(favVal), html.EscapeString(name))
+		} else {
+			emojiChar := favVal
+			if emojiChar == "" {
+				emojiChar = "💳"
+			}
+			faviconHTML = fmt.Sprintf(`<div class="w-8 h-8 rounded-lg bg-base-200 border border-base-300 flex items-center justify-center text-lg select-none" title="%s">%s</div>`, html.EscapeString(favType), emojiChar)
+		}
+
 		accountRows.WriteString(fmt.Sprintf(`
 			<tr class="hover">
 				<td>
-					<div class="font-bold text-sm">%s</div>
-					<div class="text-xs font-mono opacity-50">%s</div>
+					<div class="flex items-center gap-3">
+						%s
+						<div>
+							<div class="font-bold text-sm">%s</div>
+							<div class="text-xs font-mono opacity-50">%s</div>
+						</div>
+					</div>
 				</td>
 				<td><span class="badge %s text-xs font-bold">%s</span></td>
 				<td>%s</td>
@@ -141,7 +161,7 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 						%s
 						<button popovertarget="account-menu-%s" style="anchor-name:--account-anchor-%s" class="btn btn-ghost btn-xs">•••</button>
 						<ul class="dropdown dropdown-end menu p-2 shadow-lg bg-base-100 rounded-box w-36 text-xs border border-base-300" popover id="account-menu-%s" style="position-anchor:--account-anchor-%s">
-							<li><a onclick="openEditModal('%s', '%s', '%s', '%s')">✏️ Edit</a></li>
+							<li><a onclick="openEditModal('%s', '%s', '%s', '%s', '%s', '%s')">✏️ Edit</a></li>
 							<li>
 								<form method="POST" action="/budgets/%s/accounts/%s/toggle-close">
 									<input type="hidden" name="csrf_token" value="%s" />
@@ -158,11 +178,11 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 					</div>
 				</td>
 			</tr>`,
-			name, iban, typeBadge, aType, integrationBadge, statusBadge,
+			faviconHTML, name, iban, typeBadge, aType, integrationBadge, statusBadge,
 			float64(balanceMinor)/100.0, curr,
 			reconnectBtn,
 			id, id, id, id,
-			id, strings.ReplaceAll(name, "'", "\\'"), curr, aType,
+			id, strings.ReplaceAll(name, "'", "\\'"), curr, aType, favType, strings.ReplaceAll(favVal, "'", "\\'"),
 			budgetID, id, c.Get("csrfToken"), toggleActionText(isClosed),
 			budgetID, id, c.Get("csrfToken"),
 		))
@@ -304,7 +324,7 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 
     <!-- New Manual Account Modal -->
     <dialog id="new_account_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
+        <div class="modal-box card-border border-base-300 p-6 max-w-lg">
             <div class="flex justify-between items-center mb-4">
                 <h3 class="font-extrabold text-xl tracking-tight">Add Financial Account</h3>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
@@ -315,6 +335,62 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Account Name</span></label>
                     <input type="text" name="name" required placeholder="e.g. Main Checking, Emergency Savings" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
+
+                <!-- Account Icon / Favicon Selector -->
+                <div class="card card-border border-base-300 bg-base-200/40 p-3 space-y-3">
+                    <div class="flex justify-between items-center">
+                        <label class="label p-0"><span class="label-text font-bold text-xs">Account Favicon / Icon</span></label>
+                        <div id="new_icon_preview" class="w-8 h-8 rounded-lg bg-base-100 border border-base-300 flex items-center justify-center text-xl shadow-xs">💵</div>
+                    </div>
+
+                    <!-- Hidden inputs submitted with form -->
+                    <input type="hidden" id="new_favicon_type" name="favicon_type" value="EMOJI" />
+                    <input type="hidden" id="new_favicon_value" name="favicon_value" value="💵" />
+
+                    <!-- Tabs: Emoji vs URL -->
+                    <div role="tablist" class="tabs tabs-box bg-base-100 p-1">
+                        <button type="button" role="tab" id="tab_new_emoji" class="tab tab-active text-xs font-semibold" onclick="switchNewFaviconTab('EMOJI')">Emoji Picker</button>
+                        <button type="button" role="tab" id="tab_new_url" class="tab text-xs font-semibold" onclick="switchNewFaviconTab('URL')">URL / Web Favicon</button>
+                    </div>
+
+                    <!-- Panel: Emoji Picker -->
+                    <div id="panel_new_emoji" class="space-y-2">
+                        <div class="flex items-center gap-2">
+                            <input type="text" id="new_emoji_custom_input" placeholder="Paste custom emoji..." maxlength="4" class="input input-bordered input-sm flex-1 font-emoji text-center text-lg" oninput="setNewEmoji(this.value)" />
+                            <span class="text-xs text-base-content/60">or quick pick:</span>
+                        </div>
+                        <div class="grid grid-cols-8 gap-1.5 p-2 bg-base-100 rounded-lg border border-base-300">
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('💵')">💵</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('💳')">💳</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('🏦')">🏦</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('💰')">💰</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('🪙')">🪙</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('👛')">👛</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('🐷')">🐷</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('📈')">📈</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('💎')">💎</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('🏠')">🏠</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('🚗')">🚗</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('🛒')">🛒</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('✈️')">✈️</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('💼')">💼</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('🛡️')">🛡️</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('⭐')">⭐</button>
+                        </div>
+                    </div>
+
+                    <!-- Panel: URL / Web Picker -->
+                    <div id="panel_new_url" class="space-y-2 hidden">
+                        <div class="flex gap-2">
+                            <input type="url" id="new_url_input" placeholder="https://mbank.pl or direct icon URL" class="input input-bordered input-sm flex-1 text-xs" oninput="setNewUrlManual(this.value)" />
+                            <button type="button" id="new_url_fetch_btn" class="btn btn-sm btn-secondary font-semibold text-xs" onclick="fetchFaviconForNewAccount()">
+                                <span>Fetch</span>
+                            </button>
+                        </div>
+                        <div id="new_url_status" class="text-[11px] text-base-content/60">Enter website (e.g. https://revolut.com) to automatically extract best favicon, or paste direct image URL.</div>
+                    </div>
+                </div>
+
                 <div class="grid grid-cols-2 gap-4">
                     <div class="form-control">
                         <label class="label pb-1"><span class="label-text font-medium text-xs">Account Type</span></label>
@@ -495,7 +571,7 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 
     <!-- Edit Account Modal -->
     <dialog id="edit_account_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
+        <div class="modal-box card-border border-base-300 p-6 max-w-lg">
             <div class="flex justify-between items-center mb-4">
                 <h3 class="font-extrabold text-xl tracking-tight">Edit Account</h3>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
@@ -506,6 +582,62 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Account Name</span></label>
                     <input id="edit_name" type="text" name="name" required class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
+
+                <!-- Account Icon / Favicon Selector for Edit -->
+                <div class="card card-border border-base-300 bg-base-200/40 p-3 space-y-3">
+                    <div class="flex justify-between items-center">
+                        <label class="label p-0"><span class="label-text font-bold text-xs">Account Favicon / Icon</span></label>
+                        <div id="edit_icon_preview" class="w-8 h-8 rounded-lg bg-base-100 border border-base-300 flex items-center justify-center text-xl shadow-xs">💳</div>
+                    </div>
+
+                    <!-- Hidden inputs submitted with edit form -->
+                    <input type="hidden" id="edit_favicon_type" name="favicon_type" value="EMOJI" />
+                    <input type="hidden" id="edit_favicon_value" name="favicon_value" value="💳" />
+
+                    <!-- Tabs: Emoji vs URL -->
+                    <div role="tablist" class="tabs tabs-box bg-base-100 p-1">
+                        <button type="button" role="tab" id="tab_edit_emoji" class="tab tab-active text-xs font-semibold" onclick="switchEditFaviconTab('EMOJI')">Emoji Picker</button>
+                        <button type="button" role="tab" id="tab_edit_url" class="tab text-xs font-semibold" onclick="switchEditFaviconTab('URL')">URL / Web Favicon</button>
+                    </div>
+
+                    <!-- Panel: Emoji Picker -->
+                    <div id="panel_edit_emoji" class="space-y-2">
+                        <div class="flex items-center gap-2">
+                            <input type="text" id="edit_emoji_custom_input" placeholder="Paste custom emoji..." maxlength="4" class="input input-bordered input-sm flex-1 font-emoji text-center text-lg" oninput="setEditEmoji(this.value)" />
+                            <span class="text-xs text-base-content/60">or quick pick:</span>
+                        </div>
+                        <div class="grid grid-cols-8 gap-1.5 p-2 bg-base-100 rounded-lg border border-base-300">
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('💵')">💵</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('💳')">💳</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('🏦')">🏦</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('💰')">💰</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('🪙')">🪙</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('👛')">👛</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('🐷')">🐷</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('📈')">📈</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('💎')">💎</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('🏠')">🏠</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('🚗')">🚗</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('🛒')">🛒</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('✈️')">✈️</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('💼')">💼</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('🛡️')">🛡️</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('⭐')">⭐</button>
+                        </div>
+                    </div>
+
+                    <!-- Panel: URL / Web Picker -->
+                    <div id="panel_edit_url" class="space-y-2 hidden">
+                        <div class="flex gap-2">
+                            <input type="url" id="edit_url_input" placeholder="https://mbank.pl or direct icon URL" class="input input-bordered input-sm flex-1 text-xs" oninput="setEditUrlManual(this.value)" />
+                            <button type="button" id="edit_url_fetch_btn" class="btn btn-sm btn-secondary font-semibold text-xs" onclick="fetchFaviconForEditAccount()">
+                                <span>Fetch</span>
+                            </button>
+                        </div>
+                        <div id="edit_url_status" class="text-[11px] text-base-content/60">Enter website (e.g. https://mbank.pl) to automatically extract best favicon, or paste direct image URL.</div>
+                    </div>
+                </div>
+
                 <div class="modal-action mt-6 gap-2">
                     <button type="button" class="btn btn-ghost" onclick="edit_account_modal.close()">Cancel</button>
                     <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Changes</button>
@@ -723,9 +855,165 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
             }
         }
 
-        function openEditModal(id, name, curr, type) {
+        function switchNewFaviconTab(t) {
+            document.getElementById('new_favicon_type').value = t;
+            if (t === 'EMOJI') {
+                document.getElementById('tab_new_emoji').classList.add('tab-active');
+                document.getElementById('tab_new_url').classList.remove('tab-active');
+                document.getElementById('panel_new_emoji').classList.remove('hidden');
+                document.getElementById('panel_new_url').classList.add('hidden');
+                const v = document.getElementById('new_emoji_custom_input').value || '💵';
+                setNewEmoji(v);
+            } else {
+                document.getElementById('tab_new_url').classList.add('tab-active');
+                document.getElementById('tab_new_emoji').classList.remove('tab-active');
+                document.getElementById('panel_new_url').classList.remove('hidden');
+                document.getElementById('panel_new_emoji').classList.add('hidden');
+                setNewUrlManual(document.getElementById('new_url_input').value);
+            }
+        }
+
+        function setNewEmoji(em) {
+            const val = em ? em.trim() : '💵';
+            document.getElementById('new_favicon_type').value = 'EMOJI';
+            document.getElementById('new_favicon_value').value = val;
+            document.getElementById('new_icon_preview').innerHTML = val || '💵';
+        }
+
+        function setNewUrlManual(u) {
+            const val = u ? u.trim() : '';
+            document.getElementById('new_favicon_type').value = 'URL';
+            document.getElementById('new_favicon_value').value = val;
+            if (val) {
+                document.getElementById('new_icon_preview').innerHTML = '<img src="' + val + '" class="w-full h-full object-contain p-0.5" onerror="this.parentElement.innerText=\'🌐\'" />';
+            } else {
+                document.getElementById('new_icon_preview').innerHTML = '🌐';
+            }
+        }
+
+        async function fetchFaviconForNewAccount() {
+            const input = document.getElementById('new_url_input');
+            const status = document.getElementById('new_url_status');
+            const btn = document.getElementById('new_url_fetch_btn');
+            const targetUrl = input.value.trim();
+            if (!targetUrl) {
+                status.innerText = 'Please enter a valid website URL first.';
+                status.className = 'text-[11px] text-error font-medium';
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading loading-spinner loading-xs"></span>';
+            status.innerText = 'Fetching and parsing site for highest quality favicon...';
+            status.className = 'text-[11px] text-primary font-medium animate-pulse';
+
+            try {
+                const res = await fetch('/budgets/' + ACTIVE_BUDGET_ID + '/accounts/extract-favicon?url=' + encodeURIComponent(targetUrl));
+                const data = await res.json();
+                if (res.ok && data.best_favicon) {
+                    input.value = data.best_favicon;
+                    setNewUrlManual(data.best_favicon);
+                    status.innerText = '✓ Resolved icon: ' + data.best_favicon;
+                    status.className = 'text-[11px] text-success font-medium truncate';
+                } else {
+                    status.innerText = 'Could not find high quality favicon, default icon assigned.';
+                    status.className = 'text-[11px] text-warning font-medium';
+                }
+            } catch (err) {
+                status.innerText = 'Discovery network error. You can still paste direct icon image URL.';
+                status.className = 'text-[11px] text-error font-medium';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = 'Fetch';
+            }
+        }
+
+        function switchEditFaviconTab(t) {
+            document.getElementById('edit_favicon_type').value = t;
+            if (t === 'EMOJI') {
+                document.getElementById('tab_edit_emoji').classList.add('tab-active');
+                document.getElementById('tab_edit_url').classList.remove('tab-active');
+                document.getElementById('panel_edit_emoji').classList.remove('hidden');
+                document.getElementById('panel_edit_url').classList.add('hidden');
+                const v = document.getElementById('edit_emoji_custom_input').value || '💳';
+                setEditEmoji(v);
+            } else {
+                document.getElementById('tab_edit_url').classList.add('tab-active');
+                document.getElementById('tab_edit_emoji').classList.remove('tab-active');
+                document.getElementById('panel_edit_url').classList.remove('hidden');
+                document.getElementById('panel_edit_emoji').classList.add('hidden');
+                setEditUrlManual(document.getElementById('edit_url_input').value);
+            }
+        }
+
+        function setEditEmoji(em) {
+            const val = em ? em.trim() : '💳';
+            document.getElementById('edit_favicon_type').value = 'EMOJI';
+            document.getElementById('edit_favicon_value').value = val;
+            document.getElementById('edit_icon_preview').innerHTML = val || '💳';
+        }
+
+        function setEditUrlManual(u) {
+            const val = u ? u.trim() : '';
+            document.getElementById('edit_favicon_type').value = 'URL';
+            document.getElementById('edit_favicon_value').value = val;
+            if (val) {
+                document.getElementById('edit_icon_preview').innerHTML = '<img src="' + val + '" class="w-full h-full object-contain p-0.5" onerror="this.parentElement.innerText=\'🌐\'" />';
+            } else {
+                document.getElementById('edit_icon_preview').innerHTML = '🌐';
+            }
+        }
+
+        async function fetchFaviconForEditAccount() {
+            const input = document.getElementById('edit_url_input');
+            const status = document.getElementById('edit_url_status');
+            const btn = document.getElementById('edit_url_fetch_btn');
+            const targetUrl = input.value.trim();
+            if (!targetUrl) {
+                status.innerText = 'Please enter a valid website URL first.';
+                status.className = 'text-[11px] text-error font-medium';
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading loading-spinner loading-xs"></span>';
+            status.innerText = 'Fetching and parsing site for highest quality favicon...';
+            status.className = 'text-[11px] text-primary font-medium animate-pulse';
+
+            try {
+                const res = await fetch('/budgets/' + ACTIVE_BUDGET_ID + '/accounts/extract-favicon?url=' + encodeURIComponent(targetUrl));
+                const data = await res.json();
+                if (res.ok && data.best_favicon) {
+                    input.value = data.best_favicon;
+                    setEditUrlManual(data.best_favicon);
+                    status.innerText = '✓ Resolved icon: ' + data.best_favicon;
+                    status.className = 'text-[11px] text-success font-medium truncate';
+                } else {
+                    status.innerText = 'Could not find high quality favicon, default icon assigned.';
+                    status.className = 'text-[11px] text-warning font-medium';
+                }
+            } catch (err) {
+                status.innerText = 'Discovery network error. You can still paste direct icon image URL.';
+                status.className = 'text-[11px] text-error font-medium';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = 'Fetch';
+            }
+        }
+
+        function openEditModal(id, name, curr, type, favType, favVal) {
             document.getElementById('edit_name').value = name;
             document.getElementById('edit_account_form').action = '/budgets/' + ACTIVE_BUDGET_ID + '/accounts/' + id + '/update';
+            if (favType === 'URL') {
+                document.getElementById('edit_url_input').value = favVal || '';
+                switchEditFaviconTab('URL');
+                setEditUrlManual(favVal);
+            } else {
+                const emoji = favVal || '💳';
+                document.getElementById('edit_emoji_custom_input').value = emoji;
+                switchEditFaviconTab('EMOJI');
+                setEditEmoji(emoji);
+            }
             edit_account_modal.showModal();
         }
     </script>
@@ -762,6 +1050,17 @@ func (h *AccountsHandler) CreateAccount(c echo.Context) error {
 	curr := c.FormValue("primary_currency")
 	iban := c.FormValue("iban")
 	initBalStr := c.FormValue("initial_balance")
+	favType := c.FormValue("favicon_type")
+	favVal := c.FormValue("favicon_value")
+
+	if favType != "URL" {
+		favType = "EMOJI"
+	}
+	if favVal == "" {
+		if favType == "EMOJI" {
+			favVal = "💵"
+		}
+	}
 
 	logger.Info(ctx, "Initiating manual financial account creation",
 		"budget_id", budgetID,
@@ -770,6 +1069,8 @@ func (h *AccountsHandler) CreateAccount(c echo.Context) error {
 		"account_type", aType,
 		"currency", curr,
 		"iban", iban,
+		"favicon_type", favType,
+		"favicon_value", favVal,
 		"initial_balance_raw", initBalStr,
 	)
 
@@ -796,9 +1097,9 @@ func (h *AccountsHandler) CreateAccount(c echo.Context) error {
 
 	// Append account log
 	_, err = tx.ExecContext(c.Request().Context(), `
-		INSERT INTO accounts (id, version, party_id, name, account_type, primary_currency, iban, is_closed, action, agent_id, correlation_id, created_at)
-		VALUES (?, 1, ?, ?, ?, ?, ?, 0, 'CREATE', ?, ?, ?)`,
-		acctID, userPartyID, name, aType, curr, iban, userID, corrID, now,
+		INSERT INTO accounts (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, action, agent_id, correlation_id, created_at)
+		VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, 0, 'CREATE', ?, ?, ?)`,
+		acctID, userPartyID, name, aType, curr, iban, favType, favVal, userID, corrID, now,
 	)
 	if err != nil {
 		logger.Error(ctx, "Failed writing to accounts ledger events table", "account_id", acctID, "error", err.Error())
@@ -807,9 +1108,9 @@ func (h *AccountsHandler) CreateAccount(c echo.Context) error {
 
 	// Upsert accounts_current
 	_, err = tx.ExecContext(c.Request().Context(), `
-		INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, iban, is_closed, agent_id, updated_at)
-		VALUES (?, 1, ?, ?, ?, ?, ?, 0, ?, ?)`,
-		acctID, userPartyID, name, aType, curr, iban, userID, now,
+		INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, agent_id, updated_at)
+		VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+		acctID, userPartyID, name, aType, curr, iban, favType, favVal, userID, now,
 	)
 	if err != nil {
 		logger.Error(ctx, "Failed projecting to accounts_current", "account_id", acctID, "error", err.Error())
@@ -960,22 +1261,31 @@ func (h *AccountsHandler) LinkBankAccount(c echo.Context) error {
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/accounts", budgetID))
 }
 
-// UpdateAccount updates account name.
+// UpdateAccount updates account name and favicon.
 func (h *AccountsHandler) UpdateAccount(c echo.Context) error {
 	budgetID := c.Param("budgetId")
 	acctID := c.Param("id")
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	userID := c.Get(ContextUserIDKey).(string)
 	name := c.FormValue("name")
+	favType := c.FormValue("favicon_type")
+	favVal := c.FormValue("favicon_value")
 
 	if name == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "Name required")
 	}
 
+	if favType != "URL" {
+		favType = "EMOJI"
+	}
+	if favVal == "" && favType == "EMOJI" {
+		favVal = "💳"
+	}
+
 	now := time.Now().UTC().UnixMicro()
 	_, err := tenantDB.ExecContext(c.Request().Context(), `
-		UPDATE accounts_current SET name = ?, updated_at = ?, agent_id = ? WHERE id = ?`,
-		name, now, userID, acctID,
+		UPDATE accounts_current SET name = ?, favicon_type = ?, favicon_value = ?, updated_at = ?, agent_id = ? WHERE id = ?`,
+		name, favType, favVal, now, userID, acctID,
 	)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Update error")
@@ -1021,15 +1331,15 @@ func (h *AccountsHandler) DeleteAccount(c echo.Context) error {
 	// Append soft delete to historical table
 	var version int
 	var partyID, name, aType, curr string
-	var iban sql.NullString
+	var iban, favType, favVal sql.NullString
 	err = tx.QueryRowContext(c.Request().Context(), `
-		SELECT version, party_id, name, account_type, primary_currency, iban
-		FROM accounts_current WHERE id = ?`, acctID).Scan(&version, &partyID, &name, &aType, &curr, &iban)
+		SELECT version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value
+		FROM accounts_current WHERE id = ?`, acctID).Scan(&version, &partyID, &name, &aType, &curr, &iban, &favType, &favVal)
 	if err == nil {
 		tx.ExecContext(c.Request().Context(), `
-			INSERT INTO accounts (id, version, party_id, name, account_type, primary_currency, iban, is_closed, action, agent_id, correlation_id, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'SOFT_DELETE', ?, ?, ?)`,
-			acctID, version+1, partyID, name, aType, curr, iban, userID, corrID, now)
+			INSERT INTO accounts (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, action, agent_id, correlation_id, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'SOFT_DELETE', ?, ?, ?)`,
+			acctID, version+1, partyID, name, aType, curr, iban, favType.String, favVal.String, userID, corrID, now)
 	}
 
 	// Remove from accounts_current
@@ -1563,4 +1873,26 @@ func (h *AccountsHandler) GoCardlessCallback(c echo.Context) error {
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/accounts", targetBudgetID))
 }
 
+// ExtractFavicon handles website URL discovery to extract the highest-quality favicon link.
+func (h *AccountsHandler) ExtractFavicon(c echo.Context) error {
+	rawURL := c.QueryParam("url")
+	if rawURL == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "URL query param is required")
+	}
 
+	bestFavicon, err := DiscoverFavicon(c.Request().Context(), rawURL)
+	if err != nil {
+		return c.JSON(http.StatusOK, FaviconDiscoveryResult{
+			URL:         rawURL,
+			BestFavicon: "",
+			Status:      "error",
+			Message:     err.Error(),
+		})
+	}
+
+	return c.JSON(http.StatusOK, FaviconDiscoveryResult{
+		URL:         rawURL,
+		BestFavicon: bestFavicon,
+		Status:      "success",
+	})
+}

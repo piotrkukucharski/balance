@@ -69,4 +69,26 @@ Feature: Accounts Management, Multi-Currency Balances and Bank Integration Links
     When I request the accounts view "/budgets/:budgetId/accounts"
     Then the response status should be 200 OK
     And the accounts table or dropdown should allow dropdown actions visibility beyond table boundaries
+  Scenario: Setting an emoji favicon when creating an account
+    Given an authenticated user "jan@example.com" on budget "Family Home"
+    When I create an account named "Cash Wallet" of type "CASH" with currency "PLN" and favicon emoji "💵"
+    Then the account should be stored in "accounts" and projected in "accounts_current" with favicon "💵" and type "EMOJI"
+    And the account "Cash Wallet" in the accounts view should display the emoji icon "💵"
 
+  Scenario: Setting a direct favicon URL when creating an account
+    Given an authenticated user "jan@example.com" on budget "Family Home"
+    When I create an account named "Crypto Stash" of type "CHECKING" with currency "EUR" and favicon URL "https://example.com/icons/stash.png"
+    Then the account should be stored in "accounts" and projected in "accounts_current" with favicon "https://example.com/icons/stash.png" and type "URL"
+    And the account "Crypto Stash" in the accounts view should render the favicon image
+
+  Scenario: Fetching best quality favicon automatically from website URL
+    Given an authenticated user "jan@example.com" on budget "Family Home"
+    When I request to discover favicon for website "https://bank.example.com"
+    Then the server should inspect the HTML markup
+    And return the resolved best-quality favicon URL matching icon links or fallback to standard "/favicon.ico"
+
+  Scenario: Updating account favicon via account edit modal
+    Given an active account "mBank Checking" in budget "Family Home"
+    When I update the account "mBank Checking" favicon to emoji "🏦"
+    Then the "accounts_current" projection should be updated with favicon "🏦" and type "EMOJI"
+    And the account should display the updated icon in the UI

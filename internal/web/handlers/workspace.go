@@ -326,7 +326,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
 	// Fetch user-owned accounts and balances for sidebar summary
 	accRows, err := tenantDB.QueryContext(c.Request().Context(), `
-		SELECT a.name, COALESCE(acb.balance_minor, 0), a.primary_currency
+		SELECT a.name, COALESCE(acb.balance_minor, 0), a.primary_currency,
+		       COALESCE(a.favicon_type, 'EMOJI'), COALESCE(a.favicon_value, '')
 		FROM accounts_current a
 		JOIN parties_current p ON a.party_id = p.id
 		LEFT JOIN account_currency_balances acb ON a.id = acb.account_id AND a.primary_currency = acb.currency
@@ -341,15 +342,29 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	hasAccounts := false
 	for accRows.Next() {
 		hasAccounts = true
-		var aName, aCurr string
+		var aName, aCurr, fType, fVal string
 		var aBalance int64
-		accRows.Scan(&aName, &aBalance, &aCurr)
+		accRows.Scan(&aName, &aBalance, &aCurr, &fType, &fVal)
+
+		iconEl := ""
+		if fType == "URL" && fVal != "" {
+			iconEl = fmt.Sprintf(`<img src="%s" class="w-4 h-4 object-contain inline-block shrink-0 rounded" onerror="this.outerHTML='💳'" />`, fVal)
+		} else {
+			emojiChar := fVal
+			if emojiChar == "" {
+				emojiChar = "💳"
+			}
+			iconEl = fmt.Sprintf(`<span class="text-sm shrink-0 select-none">%s</span>`, emojiChar)
+		}
 
 		accountSummaryRows.WriteString(fmt.Sprintf(`
-			<div class="flex justify-between items-center text-xs">
-				<span class="font-medium text-base-content/70 truncate max-w-[120px]" title="%s">%s</span>
-				<span class="font-mono font-bold">%.2f %s</span>
-			</div>`, aName, aName, float64(aBalance)/100.0, aCurr))
+			<div class="flex justify-between items-center text-xs gap-2">
+				<div class="flex items-center gap-1.5 min-w-0">
+					%s
+					<span class="font-medium text-base-content/70 truncate max-w-[120px]" title="%s">%s</span>
+				</div>
+				<span class="font-mono font-bold shrink-0">%.2f %s</span>
+			</div>`, iconEl, aName, aName, float64(aBalance)/100.0, aCurr))
 	}
 
 	if !hasAccounts {
