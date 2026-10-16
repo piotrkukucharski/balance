@@ -1447,11 +1447,42 @@ func (h *AccountsHandler) GoCardlessCallback(c echo.Context) error {
 		if reqLookupID == "" {
 			reqLookupID = ref
 		}
-		reqDetails, err := h.gocardlessClient.GetRequisition(c.Request().Context(), reqLookupID)
-		if err != nil {
-			logger.Error(ctx, "Failed to fetch GoCardless requisition details", "requisition_id", reqLookupID, "ref", ref, "error", err.Error())
+
+		// Polling loop: banks often take 1-3 seconds to finalize PSD2 account consent and link accounts to requisition
+		var reqDetails *gocardless.Requisition
+		var reqErr error
+		for attempt := 1; attempt <= 4; attempt++ {
+			reqDetails, reqErr = h.gocardlessClient.GetRequisition(c.Request().Context(), reqLookupID)
+			if reqErr != nil {
+				logger.Warn(ctx, "GoCardless GetRequisition attempt failed", "attempt", attempt, "requisition_id", reqLookupID, "error", reqErr.Error())
+			} else if reqDetails != nil {
+				logger.Info(ctx, "GoCardless requisition status polled",
+					"attempt", attempt,
+					"requisition_id", reqLookupID,
+					"status", reqDetails.Status,
+					"accounts_count", len(reqDetails.Accounts),
+				)
+				if len(reqDetails.Accounts) > 0 || reqDetails.Status == "EX" || reqDetails.Status == "RJ" {
+					break
+				}
+			}
+			if attempt < 4 {
+				select {
+				case <-c.Request().Context().Done():
+					break
+				case <-time.After(time.Duration(attempt*800) * time.Millisecond):
+				}
+			}
+		}
+
+		if reqErr != nil {
+			logger.Error(ctx, "Failed to fetch GoCardless requisition details after polling", "requisition_id", reqLookupID, "ref", ref, "error", reqErr.Error())
 		} else if reqDetails == nil || len(reqDetails.Accounts) == 0 {
-			logger.Warn(ctx, "GoCardless requisition returned no accounts", "requisition_id", reqLookupID, "ref", ref)
+			var status string
+			if reqDetails != nil {
+				status = reqDetails.Status
+			}
+			logger.Warn(ctx, "GoCardless requisition returned no accounts", "requisition_id", reqLookupID, "ref", ref, "status", status)
 		} else {
 			tenantDB, err := h.tenantMgr.GetTenantDB(targetBudgetID, false)
 			if err != nil || tenantDB == nil {

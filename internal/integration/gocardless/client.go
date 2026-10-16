@@ -309,9 +309,14 @@ func (c *Client) GetRequisition(ctx context.Context, requisitionID string) (*Req
 	}
 	defer resp.Body.Close()
 
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("requisition request failed (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
 	var requisition Requisition
-	if err := json.NewDecoder(resp.Body).Decode(&requisition); err != nil {
-		return nil, err
+	if err := json.Unmarshal(respBody, &requisition); err != nil {
+		return nil, fmt.Errorf("decode requisition error: %w, response: %s", err, string(respBody))
 	}
 	return &requisition, nil
 }
@@ -334,9 +339,14 @@ func (c *Client) GetAccountDetails(ctx context.Context, accountID string) (*Acco
 	}
 	defer resp.Body.Close()
 
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("account details request failed (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
 	var details AccountDetails
-	if err := json.NewDecoder(resp.Body).Decode(&details); err != nil {
-		return nil, err
+	if err := json.Unmarshal(respBody, &details); err != nil {
+		return nil, fmt.Errorf("decode account details error: %w, response: %s", err, string(respBody))
 	}
 	return &details, nil
 }
@@ -359,9 +369,14 @@ func (c *Client) GetAccountBalances(ctx context.Context, accountID string) (*Bal
 	}
 	defer resp.Body.Close()
 
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("account balances request failed (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
 	var balances BalancesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&balances); err != nil {
-		return nil, err
+	if err := json.Unmarshal(respBody, &balances); err != nil {
+		return nil, fmt.Errorf("decode account balances error: %w, response: %s", err, string(respBody))
 	}
 	return &balances, nil
 }
