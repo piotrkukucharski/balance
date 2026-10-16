@@ -160,33 +160,33 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 				<td class="text-right">
 					<div class="flex items-center justify-end gap-1.5">
 						%s
-						<button popovertarget="account-menu-%s" style="anchor-name:--account-anchor-%s" class="btn btn-ghost btn-xs">•••</button>
-						<ul class="dropdown dropdown-end menu p-2 shadow-lg bg-base-100 rounded-box w-36 text-xs border border-base-300" popover id="account-menu-%s" style="position-anchor:--account-anchor-%s">
-							<li><a onclick="openEditModal('%s', '%s', '%s', '%s', '%s', '%s')">✏️ Edit</a></li>
-							<li>
-								<form method="POST" action="/budgets/%s/accounts/%s/toggle-close">
-									<input type="hidden" name="csrf_token" value="%s" />
-									<button type="submit" class="text-left w-full">%s</button>
-								</form>
-							</li>
-							<li>
-								<form method="POST" action="/budgets/%s/accounts/%s/delete" onsubmit="return confirm('Delete this account?')">
-									<input type="hidden" name="csrf_token" value="%s" />
-									<button type="submit" class="text-error text-left w-full">🗑️ Delete</button>
-								</form>
-							</li>
-						</ul>
+						%s
 					</div>
 				</td>
 			</tr>`,
 			faviconHTML, name, iban, typeBadge, aType, integrationBadge, statusBadge,
 			float64(balanceMinor)/100.0, curr,
 			reconnectBtn,
-			id, id, id, id,
-			id, strings.ReplaceAll(name, "'", "\\'"), curr, aType, favType, strings.ReplaceAll(favVal, "'", "\\'"),
-			budgetID, id, c.Get("csrfToken"), toggleActionText(isClosed),
-			budgetID, id, c.Get("csrfToken"),
+			RenderPopoverActionMenu("account", id, []TableActionItem{
+				{
+					Label:   "✏️ Edit",
+					OnClick: fmt.Sprintf("openEditModal('%s', '%s', '%s', '%s', '%s', '%s')", id, strings.ReplaceAll(name, "'", "\\'"), curr, aType, favType, strings.ReplaceAll(favVal, "'", "\\'")),
+				},
+				{
+					Label:      toggleActionText(isClosed),
+					FormAction: fmt.Sprintf("/budgets/%s/accounts/%s/toggle-close", budgetID, id),
+					CSRFToken:  c.Get("csrfToken").(string),
+				},
+				{
+					Label:      "🗑️ Delete",
+					FormAction: fmt.Sprintf("/budgets/%s/accounts/%s/delete", budgetID, id),
+					CSRFToken:  c.Get("csrfToken").(string),
+					IsDanger:   true,
+					ConfirmMsg: "Delete this account?",
+				},
+			}),
 		))
+
 	}
 
 	if !hasAccounts {

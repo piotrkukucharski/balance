@@ -105,6 +105,20 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		escapedNotes := strings.ReplaceAll(notes, "'", "\\'")
 		escapedNotes = strings.ReplaceAll(escapedNotes, "\"", "&quot;")
 
+		actionMenu := RenderPopoverActionMenu("tx", id, []TableActionItem{
+			{
+				Label:   "✏️ Edit",
+				OnClick: fmt.Sprintf("openEditTxModal('%s', '%.2f', '%s', '%s', '%s', '%s')", id, amountMajor, dateStr, escapedNotes, bucketIDVal, srcAcctID),
+			},
+			{
+				Label:      "🗑️ Delete",
+				FormAction: fmt.Sprintf("/budgets/%s/transactions/%s/delete", budgetID, id),
+				CSRFToken:  csrfToken,
+				IsDanger:   true,
+				ConfirmMsg: "Are you sure you want to delete this transaction?",
+			},
+		})
+
 		txRows.WriteString(fmt.Sprintf(`
 			<tr class="hover">
 				<td class="font-mono text-xs">%s</td>
@@ -114,33 +128,14 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 					-%.2f <span class="text-xs font-normal text-base-content/60">%s</span>
 				</td>
 				<td class="text-right">
-					<div class="dropdown dropdown-end">
-						<div tabindex="0" role="button" class="btn btn-ghost btn-xs btn-circle">
-							<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-							</svg>
-						</div>
-						<ul tabindex="0" class="dropdown-content menu menu-sm bg-base-100 rounded-box z-50 w-36 p-2 shadow-lg border border-base-300">
-							<li>
-								<button type="button" onclick="openEditTxModal('%s', '%.2f', '%s', '%s', '%s', '%s')" class="text-left w-full">
-									✏️ Edit
-								</button>
-							</li>
-							<li>
-								<form method="POST" action="/budgets/%s/transactions/%s/delete" onsubmit="return confirm('Are you sure you want to delete this transaction?')">
-									<input type="hidden" name="csrf_token" value="%s" />
-									<button type="submit" class="text-error text-left w-full">🗑️ Delete</button>
-								</form>
-							</li>
-						</ul>
-					</div>
+					%s
 				</td>
 			</tr>`,
 			dateStr, bucketName, notes, amountMajor, curr,
-			id, amountMajor, dateStr, escapedNotes, bucketIDVal, srcAcctID,
-			budgetID, id, csrfToken,
+			actionMenu,
 		))
 	}
+
 
 	if !hasTxs {
 		txRows.WriteString(`
