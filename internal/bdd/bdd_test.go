@@ -19,6 +19,7 @@ import (
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/lua"
 	"github.com/balance/balance/internal/report"
+	"github.com/balance/balance/internal/transaction"
 	"github.com/balance/balance/internal/web/handlers"
 	"github.com/cucumber/godog"
 	"github.com/labstack/echo/v4"
@@ -1474,6 +1475,211 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 			return fmt.Errorf("expected 429 Too Many Requests, got %v", tc.lastResponse.Code)
 		}
 		return nil
+	})
+
+	// Raw Transactions View & Reconcile Workbench steps
+	var activeRawID string
+	ctx.Step(`^an active checking account "([^"]*)" with (\d+) pending raw transactions$`, func(acctName string, count int) error {
+		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		userAcctID := domain.NewUUIDv7()
+
+		tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, created_at, updated_at)
+			VALUES (?, 'Family Home', 'PLN', ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name`, tc.activeBudgetID, now, now)
+
+		bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, 'user_1', ?)`, pID, now)
+		bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, acctName, now)
+
+		for i := 0; i < count; i++ {
+			rawID := domain.NewUUIDv7()
+			dedup := transaction.ComputeCanonicalDedupHash(userAcctID, fmt.Sprintf("ext_tx_%d", i), now-int64(i*1000), -5000, "PLN", "Zabka", "Payment")
+			bDB.Exec(`
+				INSERT INTO raw_transactions_current (
+					id, version, account_id, external_transaction_id, dedup_hash, booking_date,
+					amount_minor, currency, raw_payee, reference, status, updated_at
+				) VALUES (?, 1, ?, ?, ?, ?, -5000, 'PLN', 'Żabka', 'Payment', 'PENDING', ?)`,
+				rawID, userAcctID, fmt.Sprintf("ext_tx_%d", i), dedup, now-int64(i*1000), now)
+		}
+		tc.activeUserID = "user_1"
+		return nil
+	})
+
+	ctx.Step(`^I visit the transactions ledger page$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		req := httptest.NewRequest(http.MethodGet, "/budgets/"+tc.activeBudgetID+"/transactions", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set(handlers.ContextRoleKey, "OWNER")
+		c.Set("csrfToken", "dummy_csrf_token")
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.TransactionsView(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^I should see a tab or workbench for "([^"]*)"$`, func(tabLabel string) error {
+		if tc.lastResponse == nil || !strings.Contains(tc.lastResponse.Body.String(), tabLabel) {
+			return fmt.Errorf("expected tab or workbench with text %q", tabLabel)
+		}
+		return nil
+	})
+
+	ctx.Step(`^each raw transaction should display its booking date, raw payee, and amount$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "Żabka") || !strings.Contains(body, "-50.00") {
+			return fmt.Errorf("expected booking date, payee Żabka and amount -50.00 in response body")
+		}
+		return nil
+	})
+
+	ctx.Step(`^a pending raw transaction of "([^"]*)" from "([^"]*)" in account "([^"]*)"$`, func(amountStr, payee, acctName string) error {
+		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		userAcctID := domain.NewUUIDv7()
+
+		tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, created_at, updated_at)
+			VALUES (?, 'Family Home', 'PLN', ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name`, tc.activeBudgetID, now, now)
+
+		bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, 'user_1', ?)`, pID, now)
+		bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, acctName, now)
+
+		// Parse amount e.g. "-50.00 PLN"
+		cleaned := strings.TrimSuffix(amountStr, " PLN")
+		var f float64
+		fmt.Sscanf(cleaned, "%f", &f)
+		amtMinor := int64(f * 100)
+
+		activeRawID = domain.NewUUIDv7()
+		dedup := transaction.ComputeCanonicalDedupHash(userAcctID, "single_raw_1", now, amtMinor, "PLN", payee, "Ref")
+		bDB.Exec(`
+			INSERT INTO raw_transactions_current (
+				id, version, account_id, external_transaction_id, dedup_hash, booking_date,
+				amount_minor, currency, raw_payee, reference, status, updated_at
+			) VALUES (?, 1, ?, 'single_raw_1', ?, ?, ?, 'PLN', ?, 'Ref', 'PENDING', ?)`,
+			activeRawID, userAcctID, dedup, now, amtMinor, payee, now)
+
+		tc.activeUserID = "user_1"
+		return nil
+	})
+
+	ctx.Step(`^I resolve the raw transaction into bucket "([^"]*)"$`, func(bucketName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		bucketID := domain.NewUUIDv7()
+		bDB.Exec(`
+			INSERT INTO buckets_projection (id, group_name, name, is_archived, version, updated_at)
+			VALUES (?, 'Default', ?, 0, 1, ?)`, bucketID, bucketName, now)
+
+		form := url.Values{}
+		form.Set("bucket_id", bucketID)
+		form.Set("party_name", "Żabka")
+		form.Set("notes", "Żabka groceries")
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/transactions/raw/%s/resolve", tc.activeBudgetID, activeRawID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "rawId")
+		c.SetParamValues(tc.activeBudgetID, activeRawID)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.ResolveRawTransaction(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the raw transaction status should change to "([^"]*)"$`, func(expectedStatus string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var status string
+		err = bDB.QueryRow(`SELECT status FROM raw_transactions_current WHERE id = ?`, activeRawID).Scan(&status)
+		if err != nil {
+			return fmt.Errorf("failed fetching raw transaction status: %w", err)
+		}
+		if status != expectedStatus {
+			return fmt.Errorf("expected status %s, got %s", expectedStatus, status)
+		}
+		return nil
+	})
+
+	ctx.Step(`^a budget transaction of "([^"]*)" should appear in the budget transactions ledger$`, func(amountStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		cleaned := strings.TrimSuffix(amountStr, " PLN")
+		var f float64
+		fmt.Sscanf(cleaned, "%f", &f)
+		expectedMinor := int64(f * 100)
+
+		var count int
+		err = bDB.QueryRow(`
+			SELECT COUNT(*) FROM budget_transactions_current
+			WHERE source_amount_minor = ? OR destination_amount_minor = ?`,
+			expectedMinor, expectedMinor,
+		).Scan(&count)
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			return fmt.Errorf("expected budget transaction with amount %d minor units not found", expectedMinor)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I trigger "([^"]*)" in the workbench$`, func(action string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/transactions/reconcile/auto-match", tc.activeBudgetID), nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.AutoMatchRawTransactions(c)
+		tc.lastResponse = rec
+		return err
 	})
 }
 

@@ -72,5 +72,24 @@ Feature: Two-Tier Transaction Resolution (Move, Merge, Split) and Deduplication
     When I trigger "Sync with Bank" on budget "Family Home" for account "mBank Checking"
     Then the sync should be rejected with a 429 Rate Limit error explaining the daily quota
 
+  Scenario: Viewing pending raw transactions on the transactions page
+    Given an active checking account "mBank Checking" with 6 pending raw transactions
+    When I visit the transactions ledger page
+    Then I should see a tab or workbench for "Pending Bank Feeds"
+    And each raw transaction should display its booking date, raw payee, and amount
+
+  Scenario: Direct Move resolution of a single raw transaction into budget transaction
+    Given a pending raw transaction of "-50.00 PLN" from "Żabka" in account "mBank Checking"
+    When I resolve the raw transaction into bucket "Groceries"
+    Then the raw transaction status should change to "PROCESSED"
+    And a budget transaction of "50.00 PLN" should appear in the budget transactions ledger
+
+  Scenario: Reconcile Workbench allows batch Auto-Match with matching rules
+    Given a matching rule mapping "Żabka" to bucket "Groceries"
+    And a pending raw transaction of "-50.00 PLN" from "Żabka" in account "mBank Checking"
+    When I trigger "Auto-Match" in the workbench
+    Then the raw transaction status should change to "PROCESSED"
+    And a budget transaction of "50.00 PLN" should appear in the budget transactions ledger
+
 
 

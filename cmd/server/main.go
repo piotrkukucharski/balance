@@ -111,6 +111,9 @@ func main() {
 	tenantEditor.POST("/transactions/:txId/update", txHandler.UpdateTransaction)
 	tenantEditor.POST("/transactions/:txId/delete", txHandler.DeleteTransaction)
 	tenantEditor.POST("/transactions/sync", txHandler.SyncWithBank)
+	tenantEditor.POST("/transactions/raw/:rawId/resolve", txHandler.ResolveRawTransaction)
+	tenantEditor.POST("/transactions/raw/:rawId/ignore", txHandler.IgnoreRawTransaction)
+	tenantEditor.POST("/transactions/reconcile/auto-match", txHandler.AutoMatchRawTransactions)
 	tenantEditor.POST("/parties", partiesHandler.CreateParty)
 
 

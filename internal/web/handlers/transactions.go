@@ -14,6 +14,7 @@ import (
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/integration/mock"
 	"github.com/balance/balance/internal/logger"
+	"github.com/balance/balance/internal/rule"
 	"github.com/balance/balance/internal/transaction"
 	"github.com/labstack/echo/v4"
 )
@@ -152,12 +153,108 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		))
 	}
 
-
 	if !hasTxs {
 		txRows.WriteString(`
 			<tr>
 				<td colspan="5" class="text-center py-8 text-base-content/50">
 					No transactions recorded yet. Use 🔄 Sync with Bank or ➕ Add Transaction.
+				</td>
+			</tr>
+		`)
+	}
+
+	// Fetch pending raw transactions (unresolved bank feeds)
+	rawRows, err := tenantDB.QueryContext(c.Request().Context(), `
+		SELECT r.id, r.account_id, r.booking_date, r.amount_minor, r.currency,
+		       COALESCE(r.raw_payee, ''), COALESCE(r.counterparty_iban, ''), COALESCE(r.reference, ''),
+		       a.name
+		FROM raw_transactions_current r
+		JOIN accounts_current a ON r.account_id = a.id
+		WHERE r.status = 'PENDING'
+		ORDER BY r.booking_date DESC
+		LIMIT 100`)
+	var rawTxRows strings.Builder
+	pendingRawCount := 0
+	if err == nil {
+		defer rawRows.Close()
+
+		// Load rule matching engine to calculate suggested match
+		rulesEngine, _ := rule.LoadRulesFromDB(c.Request().Context(), tenantDB)
+
+		for rawRows.Next() {
+			pendingRawCount++
+			var rID, rAcctID, rCurrency, rPayee, rIBAN, rRef, rAcctName string
+			var rDate, rAmountMinor int64
+			rawRows.Scan(&rID, &rAcctID, &rDate, &rAmountMinor, &rCurrency, &rPayee, &rIBAN, &rRef, &rAcctName)
+
+			rDateStr := time.UnixMicro(rDate).Format("2006-01-02")
+			rAmountMajor := float64(rAmountMinor) / 100.0
+
+			amountBadgeClass := "text-error"
+			amountPrefix := ""
+			if rAmountMinor > 0 {
+				amountBadgeClass = "text-success"
+				amountPrefix = "+"
+			}
+
+			// Suggest rule match if available
+			suggestedBucketID := ""
+			suggestedBadge := `<span class="badge badge-soft badge-ghost text-xs">Unmatched</span>`
+			if rulesEngine != nil {
+				if match := rulesEngine.Match(rPayee, rIBAN, rRef); match != nil && match.DefaultBucketID != nil {
+					suggestedBucketID = *match.DefaultBucketID
+					suggestedBadge = `<span class="badge badge-soft badge-success text-xs font-semibold">Matched Rule</span>`
+				}
+			}
+
+			escapedPayee := strings.ReplaceAll(rPayee, "'", "\\'")
+			escapedPayee = strings.ReplaceAll(escapedPayee, "\"", "&quot;")
+
+			rawActionMenu := RenderPopoverActionMenu("raw", rID, []TableActionItem{
+				{
+					Label:   "➡️ Resolve to Envelope",
+					OnClick: fmt.Sprintf("openResolveRawModal('%s', '%s', '%.2f', '%s', '%s', '%s')", rID, rAcctID, rAmountMajor, rCurrency, escapedPayee, suggestedBucketID),
+				},
+				{
+					Label:      "🚫 Ignore Feed",
+					FormAction: fmt.Sprintf("/budgets/%s/transactions/raw/%s/ignore", budgetID, rID),
+					CSRFToken:  csrfToken,
+					IsDanger:   true,
+					ConfirmMsg: "Ignore this bank transaction feed?",
+				},
+			})
+
+			rawTxRows.WriteString(fmt.Sprintf(`
+				<tr class="hover">
+					<td>
+						<input type="checkbox" name="selected_raw_ids" value="%s" class="checkbox checkbox-primary checkbox-xs raw-select-cb" onchange="updateReconcileBatchCount()" />
+					</td>
+					<td class="font-mono text-xs">%s</td>
+					<td class="text-xs font-medium text-base-content/80">%s</td>
+					<td>
+						<div class="font-bold text-sm">%s</div>
+						<div class="text-xs text-base-content/50">%s</div>
+					</td>
+					<td>%s</td>
+					<td class="font-mono text-right font-bold text-sm %s">
+						%s%.2f <span class="text-xs font-normal text-base-content/60">%s</span>
+					</td>
+					<td class="text-right">
+						%s
+					</td>
+				</tr>`,
+				rID, rDateStr, rAcctName, rPayee, rRef, suggestedBadge, amountBadgeClass,
+				amountPrefix, rAmountMajor, rCurrency,
+				rawActionMenu,
+			))
+		}
+	}
+
+	if pendingRawCount == 0 {
+		rawTxRows.WriteString(`
+			<tr>
+				<td colspan="7" class="text-center py-8 text-base-content/50">
+					🎉 All bank transactions are reconciled. No pending bank feeds!
 				</td>
 			</tr>
 		`)
@@ -230,24 +327,78 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
             <!-- Sync Status & Notification Alerts -->
             <div id="sync-alerts" class="mb-4"></div>
 
-            <!-- Ledger Table Card -->
-            <div class="card card-border bg-base-100 border-base-300 shadow-md">
-                <div class="card-body p-0">
-                    <div class="overflow-x-auto">
-                        <table class="table table-zebra w-full">
-                            <thead>
-                                <tr class="bg-base-200/50">
-                                    <th class="font-bold">Booking Date</th>
-                                    <th class="font-bold">Envelope (Bucket)</th>
-                                    <th class="font-bold">Notes / Payee</th>
-                                    <th class="font-bold text-right">Amount</th>
-                                    <th class="font-bold text-right">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                %s
-                            </tbody>
-                        </table>
+            <!-- Tabs: Envelopes Ledger vs Pending Bank Feeds -->
+            <div class="tabs tabs-box bg-base-100 p-1 rounded-xl shadow-xs border border-base-300 mb-6 flex">
+                <input type="radio" name="tx_tab" id="tab_budget_txs" class="tab flex-1 font-bold text-sm" aria-label="📒 Envelope Ledger" checked />
+                <div class="tab-content pt-4">
+                    <div class="card card-border bg-base-100 border-base-300 shadow-md">
+                        <div class="card-body p-0">
+                            <div class="overflow-x-auto">
+                                <table class="table table-zebra w-full">
+                                    <thead>
+                                        <tr class="bg-base-200/50">
+                                            <th class="font-bold">Booking Date</th>
+                                            <th class="font-bold">Envelope (Bucket)</th>
+                                            <th class="font-bold">Notes / Payee</th>
+                                            <th class="font-bold text-right">Amount</th>
+                                            <th class="font-bold text-right">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        %s
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <input type="radio" name="tx_tab" id="tab_raw_txs" class="tab flex-1 font-bold text-sm" aria-label="🏦 Pending Bank Feeds (%d)" />
+                <div class="tab-content pt-4">
+                    <!-- Workbench Toolbar -->
+                    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-base-100 p-4 rounded-xl border border-base-300 shadow-sm mb-4">
+                        <div>
+                            <h3 class="font-bold text-base flex items-center gap-2">
+                                <span>⚖️</span>
+                                <span>Reconcile Workbench</span>
+                            </h3>
+                            <p class="text-xs text-base-content/60">Resolve raw bank transactions into envelope double-entry ledger items.</p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <form method="POST" action="/budgets/%s/transactions/reconcile/auto-match">
+                                <input type="hidden" name="csrf_token" value="%s" />
+                                <button type="submit" class="btn btn-secondary btn-sm shadow-xs font-semibold gap-1.5" title="Auto-match pending feeds with matching rules">
+                                    <span>⚡</span>
+                                    <span>Auto-Match</span>
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- Raw Transactions Feed Card -->
+                    <div class="card card-border bg-base-100 border-base-300 shadow-md">
+                        <div class="card-body p-0">
+                            <div class="overflow-x-auto">
+                                <table class="table table-zebra w-full">
+                                    <thead>
+                                        <tr class="bg-base-200/50">
+                                            <th class="w-10">
+                                                <input type="checkbox" class="checkbox checkbox-primary checkbox-xs" onclick="toggleAllRawCbs(this)" />
+                                            </th>
+                                            <th class="font-bold">Date</th>
+                                            <th class="font-bold">Bank Account</th>
+                                            <th class="font-bold">Raw Payee / Description</th>
+                                            <th class="font-bold">Match Status</th>
+                                            <th class="font-bold text-right">Amount</th>
+                                            <th class="font-bold text-right">Resolve</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        %s
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -423,6 +574,55 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
         <form method="dialog" class="modal-backdrop"><button>close</button></form>
     </dialog>
 
+    <!-- Resolve Raw Transaction Modal (Move to Envelope) -->
+    <dialog id="resolve_raw_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight flex items-center gap-2">
+                    <span>➡️</span>
+                    <span>Resolve Bank Transaction</span>
+                </h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form id="resolve_raw_form" method="POST" action="" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="%s" />
+                <input type="hidden" id="resolve_raw_id" name="raw_id" value="" />
+                
+                <div class="bg-base-200/60 p-3 rounded-lg border border-base-300 text-sm flex justify-between items-center">
+                    <div>
+                        <div id="resolve_payee_display" class="font-bold"></div>
+                        <div class="text-xs text-base-content/60">Bank Feed Payee</div>
+                    </div>
+                    <div id="resolve_amount_display" class="font-mono font-extrabold text-base"></div>
+                </div>
+
+                <fieldset class="fieldset">
+                    <legend class="fieldset-legend">Assign to Envelope (Bucket)</legend>
+                    <select id="resolve_bucket" name="bucket_id" class="select select-bordered w-full select-md focus:select-primary">
+                        %s
+                    </select>
+                </fieldset>
+
+                <fieldset class="fieldset">
+                    <legend class="fieldset-legend">Counterparty Name / Party</legend>
+                    <input id="resolve_party_name" type="text" name="party_name" placeholder="e.g. Żabka, Biedronka" class="input input-bordered w-full input-md focus:input-primary" />
+                    <span class="text-xs text-base-content/50">Creates or maps counterparty on-the-fly.</span>
+                </fieldset>
+
+                <fieldset class="fieldset">
+                    <legend class="fieldset-legend">Notes / Ledger Description</legend>
+                    <input id="resolve_notes" type="text" name="notes" class="input input-bordered w-full input-md focus:input-primary" />
+                </fieldset>
+
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="resolve_raw_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Resolve into Ledger</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
     <script>
         const ACTIVE_BUDGET_ID = '%s';
         function openEditTxModal(id, amount, dateStr, notes, bucketId, accountId) {
@@ -439,6 +639,26 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
             }
             document.getElementById('edit_tx_form').action = '/budgets/' + ACTIVE_BUDGET_ID + '/transactions/' + id + '/update';
             edit_tx_modal.showModal();
+        }
+
+        function openResolveRawModal(rawId, acctId, amount, currency, rawPayee, suggestedBucketId) {
+            document.getElementById('resolve_raw_id').value = rawId;
+            document.getElementById('resolve_payee_display').innerText = rawPayee;
+            document.getElementById('resolve_amount_display').innerText = amount + ' ' + currency;
+            document.getElementById('resolve_notes').value = rawPayee;
+            document.getElementById('resolve_party_name').value = rawPayee.split(' ')[0] || rawPayee;
+            if (suggestedBucketId) {
+                document.getElementById('resolve_bucket').value = suggestedBucketId;
+            } else {
+                document.getElementById('resolve_bucket').value = '';
+            }
+            document.getElementById('resolve_raw_form').action = '/budgets/' + ACTIVE_BUDGET_ID + '/transactions/raw/' + rawId + '/resolve';
+            resolve_raw_modal.showModal();
+        }
+
+        function toggleAllRawCbs(master) {
+            const boxes = document.querySelectorAll('.raw-select-cb');
+            boxes.forEach(b => b.checked = master.checked);
         }
 
         function toggleAllAccounts(btn) {
@@ -476,7 +696,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
                             '<h4 class="font-bold">Bank Sync Failed</h4>' +
                             '<p class="text-xs">' + (data.error || 'An error occurred during synchronization.') + '</p>' +
                         '</div>' +
-                    '</div>';
+                        '</div>';
                 }
             });
         }
@@ -486,10 +706,14 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		budgetName, csrfToken,
 		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
 		txRows.String(),
+		pendingRawCount,
+		budgetID, csrfToken,
+		rawTxRows.String(),
 		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
 		budgetID, budgetID, csrfToken, acctCheckboxes.String(),
 		budgetID, csrfToken, time.Now().UTC().Format("2006-01-02"), acctOptions.String(), bucketOptions.String(),
 		csrfToken, editAcctOptions.String(), editBucketOptions.String(),
+		csrfToken, bucketOptions.String(),
 		budgetID)
 
 	_ = role
@@ -1098,3 +1322,286 @@ func (h *TransactionsHandler) DeleteTransaction(c echo.Context) error {
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
 }
 
+// ResolveRawTransaction moves a single raw bank transaction into a budget transaction.
+func (h *TransactionsHandler) ResolveRawTransaction(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:transaction:raw:resolve")
+
+	budgetID := c.Param("budgetId")
+	rawID := c.Param("rawId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+	now := time.Now().UTC().UnixMicro()
+
+	// 1. Fetch raw transaction details
+	var userAcctID, currency, rawPayee string
+	var extTxID, counterpartyIBAN, ref sql.NullString
+	var bookingDate sql.NullInt64
+	var amountMinor int64
+	var status string
+	err := tenantDB.QueryRowContext(c.Request().Context(), `
+		SELECT account_id, external_transaction_id, booking_date, amount_minor, currency,
+		       raw_payee, counterparty_iban, reference, status
+		FROM raw_transactions_current WHERE id = ?`, rawID).Scan(
+		&userAcctID, &extTxID, &bookingDate, &amountMinor, &currency,
+		&rawPayee, &counterpartyIBAN, &ref, &status,
+	)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, "Raw transaction not found")
+	}
+	if status != "PENDING" {
+		return echo.NewHTTPError(http.StatusBadRequest, "Raw transaction is not in PENDING status")
+	}
+
+	partyName := strings.TrimSpace(c.FormValue("party_name"))
+	if partyName == "" {
+		partyName = strings.TrimSpace(rawPayee)
+		if partyName == "" {
+			partyName = "External Merchant"
+		}
+	}
+
+	// 2. Find or create counterparty party & external account on-the-fly
+	var counterpartyAcctID string
+	err = tenantDB.QueryRowContext(c.Request().Context(), `
+		SELECT a.id FROM accounts_current a
+		JOIN parties_current p ON a.party_id = p.id
+		WHERE p.name = ? AND p.is_user_owned = 0
+		LIMIT 1`, partyName).Scan(&counterpartyAcctID)
+	if err != nil {
+		pID := domain.NewUUIDv7()
+		counterpartyAcctID = domain.NewUUIDv7()
+		tenantDB.ExecContext(c.Request().Context(), `
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, ?, 'ORGANIZATION', 0, ?, ?)`, pID, partyName, userID, now)
+		tenantDB.ExecContext(c.Request().Context(), `
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'EXTERNAL', ?, 0, ?, ?)`, counterpartyAcctID, pID, partyName, currency, userID, now)
+	}
+
+	var bucketIDPtr *string
+	bucketIDVal := c.FormValue("bucket_id")
+	if bucketIDVal != "" {
+		bucketIDPtr = &bucketIDVal
+	}
+
+	notes := strings.TrimSpace(c.FormValue("notes"))
+	if notes == "" {
+		notes = rawPayee
+	}
+
+	txDate := now
+	if bookingDate.Valid {
+		txDate = bookingDate.Int64
+	}
+
+	// 3. Setup Double-Entry source & destination
+	var srcAcct, dstAcct string
+	var absAmountMinor int64
+	if amountMinor < 0 {
+		// Outflow / Expense: User Account -> External Counterparty
+		srcAcct = userAcctID
+		dstAcct = counterpartyAcctID
+		absAmountMinor = -amountMinor
+	} else {
+		// Inflow / Income: External Counterparty -> User Account
+		srcAcct = counterpartyAcctID
+		dstAcct = userAcctID
+		absAmountMinor = amountMinor
+	}
+
+	opID, err := transaction.ExecuteResolution(c.Request().Context(), tenantDB, transaction.ResolveResolutionInput{
+		OperationType:     transaction.OpDirectMove,
+		RawTransactionIDs: []string{rawID},
+		BudgetTransactions: []transaction.BudgetTxInput{
+			{
+				SourceAccountID:      srcAcct,
+				DestinationAccountID: dstAcct,
+				SourceAmountMinor:    absAmountMinor,
+				SourceCurrency:       currency,
+				DestAmountMinor:      absAmountMinor,
+				DestCurrency:         currency,
+				BucketID:             bucketIDPtr,
+				Notes:                &notes,
+				TransactionDate:      txDate,
+			},
+		},
+		AgentID:       userID,
+		CorrelationID: corrID,
+	})
+	if err != nil {
+		logger.Error(ctx, "Failed resolving raw transaction", "raw_id", rawID, "error", err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to resolve transaction: %v", err))
+	}
+
+	logger.Info(ctx, "Raw transaction resolved successfully",
+		"budget_id", budgetID,
+		"raw_id", rawID,
+		"operation_id", opID,
+	)
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
+}
+
+// IgnoreRawTransaction marks a raw bank transaction as IGNORED.
+func (h *TransactionsHandler) IgnoreRawTransaction(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:transaction:raw:ignore")
+
+	budgetID := c.Param("budgetId")
+	rawID := c.Param("rawId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+	now := time.Now().UTC().UnixMicro()
+
+	var rawVersion int
+	var accountID, dedupHash, currency, rawPayee string
+	var extTxID, counterpartyIBAN, reference sql.NullString
+	var bookingDate, valueDate sql.NullInt64
+	var amountMinor int64
+
+	err := tenantDB.QueryRowContext(c.Request().Context(), `
+		SELECT version, account_id, external_transaction_id, dedup_hash, booking_date, value_date,
+		       amount_minor, currency, raw_payee, counterparty_iban, reference
+		FROM raw_transactions_current WHERE id = ? AND status = 'PENDING'`, rawID).Scan(
+		&rawVersion, &accountID, &extTxID, &dedupHash, &bookingDate, &valueDate,
+		&amountMinor, &currency, &rawPayee, &counterpartyIBAN, &reference,
+	)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, "Pending raw transaction not found")
+	}
+
+	newVersion := rawVersion + 1
+	tx, err := tenantDB.BeginTx(c.Request().Context(), nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(c.Request().Context(), `
+		INSERT INTO raw_transactions (
+			id, version, account_id, external_transaction_id, dedup_hash, booking_date, value_date,
+			amount_minor, currency, raw_payee, counterparty_iban, reference, status, action,
+			agent_id, correlation_id, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IGNORED', 'UPDATE', ?, ?, ?)`,
+		rawID, newVersion, accountID, extTxID, dedupHash, bookingDate, valueDate,
+		amountMinor, currency, rawPayee, counterpartyIBAN, reference,
+		userID, corrID, now,
+	)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.ExecContext(c.Request().Context(), `
+		UPDATE raw_transactions_current
+		SET version = ?, status = 'IGNORED', updated_at = ?
+		WHERE id = ?`, newVersion, now, rawID)
+	if err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	logger.Info(ctx, "Raw transaction ignored successfully", "budget_id", budgetID, "raw_id", rawID)
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
+}
+
+// AutoMatchRawTransactions runs auto-matching rules across all pending raw transactions.
+func (h *TransactionsHandler) AutoMatchRawTransactions(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:transaction:reconcile:auto_match")
+
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+	now := time.Now().UTC().UnixMicro()
+
+	rulesEngine, err := rule.LoadRulesFromDB(c.Request().Context(), tenantDB)
+	if err != nil || rulesEngine == nil {
+		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
+	}
+
+	rows, err := tenantDB.QueryContext(c.Request().Context(), `
+		SELECT id, account_id, booking_date, amount_minor, currency,
+		       COALESCE(raw_payee, ''), COALESCE(counterparty_iban, ''), COALESCE(reference, '')
+		FROM raw_transactions_current
+		WHERE status = 'PENDING'
+		ORDER BY booking_date ASC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type rawItem struct {
+		id          string
+		accountID   string
+		date        int64
+		amountMinor int64
+		currency    string
+		payee       string
+		iban        string
+		ref         string
+	}
+	var items []rawItem
+	for rows.Next() {
+		var it rawItem
+		rows.Scan(&it.id, &it.accountID, &it.date, &it.amountMinor, &it.currency, &it.payee, &it.iban, &it.ref)
+		items = append(items, it)
+	}
+
+	matchedCount := 0
+	for _, it := range items {
+		match := rulesEngine.Match(it.payee, it.iban, it.ref)
+		if match == nil {
+			continue
+		}
+
+		counterpartyAcctID := match.TargetCounterpartyAcctID
+		if counterpartyAcctID == "" {
+			// Create counterparty account if rule had party
+			continue
+		}
+
+		var srcAcct, dstAcct string
+		var absAmountMinor int64
+		if it.amountMinor < 0 {
+			srcAcct = it.accountID
+			dstAcct = counterpartyAcctID
+			absAmountMinor = -it.amountMinor
+		} else {
+			srcAcct = counterpartyAcctID
+			dstAcct = it.accountID
+			absAmountMinor = it.amountMinor
+		}
+
+		notes := it.payee
+		_, sErr := transaction.ExecuteResolution(c.Request().Context(), tenantDB, transaction.ResolveResolutionInput{
+			OperationType:     transaction.OpDirectMove,
+			RawTransactionIDs: []string{it.id},
+			BudgetTransactions: []transaction.BudgetTxInput{
+				{
+					SourceAccountID:      srcAcct,
+					DestinationAccountID: dstAcct,
+					SourceAmountMinor:    absAmountMinor,
+					SourceCurrency:       it.currency,
+					DestAmountMinor:      absAmountMinor,
+					DestCurrency:         it.currency,
+					BucketID:             match.DefaultBucketID,
+					Notes:                &notes,
+					TransactionDate:      it.date,
+				},
+			},
+			AgentID:       userID,
+			CorrelationID: corrID,
+		})
+		if sErr == nil {
+			matchedCount++
+		}
+	}
+
+	logger.Info(ctx, "Auto-match completed", "budget_id", budgetID, "matched_count", matchedCount, "evaluated", len(items))
+	_ = now
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
+}
