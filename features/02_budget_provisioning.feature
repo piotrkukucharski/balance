@@ -18,3 +18,16 @@ Feature: Multi-Tenant Budget Provisioning and Workspace Navigation
     And the view should display the Top Horizon and Ready to Assign pool banner
     And the navigation should contain "Budget", "Accounts", "Transactions", "Reports", "Parties", and "Members"
     And the mobile bottom dock should be rendered for responsive viewports
+
+  Scenario: Viewing Accounts Summary in budget sidebar for empty budget
+    Given an authenticated user "jan@example.com" who owns the budget "Family Home"
+    When I request the budget view "/budgets/:budgetId/budget"
+    Then the response status should be 200 OK
+    And the Accounts Summary should display no connected accounts
+
+  Scenario: Viewing Accounts Summary in budget sidebar with active accounts
+    Given an authenticated user "jan@example.com" who owns the budget "Family Home"
+    And an active account "Main Checking" with balance "1,200.00 PLN" exists in the budget
+    When I request the budget view "/budgets/:budgetId/budget"
+    Then the response status should be 200 OK
+    And the Accounts Summary should display account "Main Checking" with balance "1,200.00 PLN"

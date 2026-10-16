@@ -135,6 +135,12 @@ func TestAuthAndWorkspaceFlow(t *testing.T) {
 	if !strings.Contains(vRec.Body.String(), "Home Budget") {
 		t.Fatalf("expected Home Budget in HTML output")
 	}
+	if !strings.Contains(vRec.Body.String(), "No accounts connected yet") {
+		t.Fatalf("expected 'No accounts connected yet' in Accounts Summary")
+	}
+	if strings.Contains(vRec.Body.String(), "5,420.50") || strings.Contains(vRec.Body.String(), "12,000.00") {
+		t.Fatalf("unexpected hardcoded account balances in Accounts Summary")
+	}
 
 	// 5. Test Bank Sync (Imports mock transactions)
 	sReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/transactions/sync", nil)

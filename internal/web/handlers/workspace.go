@@ -310,6 +310,43 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		`)
 	}
 
+	// Fetch user-owned accounts and balances for sidebar summary
+	accRows, err := tenantDB.QueryContext(c.Request().Context(), `
+		SELECT a.name, COALESCE(acb.balance_minor, 0), a.primary_currency
+		FROM accounts_current a
+		JOIN parties_current p ON a.party_id = p.id
+		LEFT JOIN account_currency_balances acb ON a.id = acb.account_id AND a.primary_currency = acb.currency
+		WHERE p.is_user_owned = 1 AND a.is_closed = 0
+		ORDER BY a.name ASC`)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed loading accounts")
+	}
+	defer accRows.Close()
+
+	var accountSummaryRows strings.Builder
+	hasAccounts := false
+	for accRows.Next() {
+		hasAccounts = true
+		var aName, aCurr string
+		var aBalance int64
+		accRows.Scan(&aName, &aBalance, &aCurr)
+
+		accountSummaryRows.WriteString(fmt.Sprintf(`
+			<div class="flex justify-between items-center text-xs">
+				<span class="font-medium text-base-content/70 truncate max-w-[120px]" title="%s">%s</span>
+				<span class="font-mono font-bold">%.2f %s</span>
+			</div>`, aName, aName, float64(aBalance)/100.0, aCurr))
+	}
+
+	if !hasAccounts {
+		accountSummaryRows.WriteString(fmt.Sprintf(`
+			<div class="text-xs text-base-content/50 py-1">
+				<p>No accounts connected yet.</p>
+				<a href="/budgets/%s/accounts" class="btn btn-xs btn-outline btn-primary mt-2 w-full">+ Add Account</a>
+			</div>
+		`, budgetID))
+	}
+
 	csrfToken, _ := c.Get("csrfToken").(string)
 
 	html := fmt.Sprintf(`<!DOCTYPE html>
@@ -367,14 +404,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             <div class="px-2">
                 <div class="text-xs font-bold uppercase tracking-wider text-base-content/50 mb-2">Accounts Summary</div>
                 <div class="space-y-2">
-                    <div class="flex justify-between items-center text-xs">
-                        <span class="font-medium text-base-content/70">Checking Account</span>
-                        <span class="font-mono font-bold">5,420.50 %s</span>
-                    </div>
-                    <div class="flex justify-between items-center text-xs">
-                        <span class="font-medium text-base-content/70">Savings Reserve</span>
-                        <span class="font-mono font-bold">12,000.00 %s</span>
-                    </div>
+                    %s
                 </div>
             </div>
         </aside>
@@ -462,7 +492,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 </body>
 </html>`, budgetName, budgetName, role, csrfToken,
 		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
-		defaultCurr, defaultCurr,
+		accountSummaryRows.String(),
 		defaultCurr, bucketRows.String(),
 		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID)
 
