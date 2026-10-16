@@ -63,3 +63,10 @@ Feature: Accounts Management, Multi-Currency Balances and Bank Integration Links
     And the integration status should be marked as "ACTIVE"
     And the browser should be redirected to the budget accounts view
 
+  Scenario: Actions dropdown menu in accounts list is not clipped by table overflow
+    Given an authenticated user "jan@example.com" on budget "Family Home"
+    And an active account "mBank Checking" in budget "Family Home"
+    When I request the accounts view "/budgets/:budgetId/accounts"
+    Then the response status should be 200 OK
+    And the accounts table or dropdown should allow dropdown actions visibility beyond table boundaries
+

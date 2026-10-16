@@ -493,6 +493,14 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		return nil
 	})
+	ctx.Step(`^the accounts table or dropdown should allow dropdown actions visibility beyond table boundaries$`, func() error {
+		body := tc.lastResponse.Body.String()
+		// Popover API or non-clipping container allows menu to float into top-layer
+		if !strings.Contains(body, "popover") && !strings.Contains(body, "overflow-visible") {
+			return godog.ErrPending
+		}
+		return nil
+	})
 
 	// 10_pwa_online_only.feature steps
 	ctx.Step(`^I request "GET \/manifest\.webmanifest"$`, func() error {

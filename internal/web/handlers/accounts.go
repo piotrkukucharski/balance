@@ -139,30 +139,29 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 				<td class="text-right">
 					<div class="flex items-center justify-end gap-1.5">
 						%s
-						<div class="dropdown dropdown-end">
-							<button class="btn btn-ghost btn-xs">•••</button>
-							<ul tabindex="0" class="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-36 text-xs z-10 border border-base-300">
-								<li><a onclick="openEditModal('%s', '%s', '%s', '%s')">✏️ Edit</a></li>
-								<li>
-									<form method="POST" action="/budgets/%s/accounts/%s/toggle-close">
-										<input type="hidden" name="csrf_token" value="%s" />
-										<button type="submit" class="text-left w-full">%s</button>
-									</form>
-								</li>
-								<li>
-									<form method="POST" action="/budgets/%s/accounts/%s/delete" onsubmit="return confirm('Delete this account?')">
-										<input type="hidden" name="csrf_token" value="%s" />
-										<button type="submit" class="text-error text-left w-full">🗑️ Delete</button>
-									</form>
-								</li>
-							</ul>
-						</div>
+						<button popovertarget="account-menu-%s" style="anchor-name:--account-anchor-%s" class="btn btn-ghost btn-xs">•••</button>
+						<ul class="dropdown dropdown-end menu p-2 shadow-lg bg-base-100 rounded-box w-36 text-xs border border-base-300" popover id="account-menu-%s" style="position-anchor:--account-anchor-%s">
+							<li><a onclick="openEditModal('%s', '%s', '%s', '%s')">✏️ Edit</a></li>
+							<li>
+								<form method="POST" action="/budgets/%s/accounts/%s/toggle-close">
+									<input type="hidden" name="csrf_token" value="%s" />
+									<button type="submit" class="text-left w-full">%s</button>
+								</form>
+							</li>
+							<li>
+								<form method="POST" action="/budgets/%s/accounts/%s/delete" onsubmit="return confirm('Delete this account?')">
+									<input type="hidden" name="csrf_token" value="%s" />
+									<button type="submit" class="text-error text-left w-full">🗑️ Delete</button>
+								</form>
+							</li>
+						</ul>
 					</div>
 				</td>
 			</tr>`,
 			name, iban, typeBadge, aType, integrationBadge, statusBadge,
 			float64(balanceMinor)/100.0, curr,
 			reconnectBtn,
+			id, id, id, id,
 			id, strings.ReplaceAll(name, "'", "\\'"), curr, aType,
 			budgetID, id, c.Get("csrfToken"), toggleActionText(isClosed),
 			budgetID, id, c.Get("csrfToken"),
