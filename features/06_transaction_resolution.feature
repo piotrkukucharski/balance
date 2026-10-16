@@ -56,4 +56,21 @@ Feature: Two-Tier Transaction Resolution (Move, Merge, Split) and Deduplication
     Then the bank sync should query transactions starting strictly after the latest imported booking date
     And duplicate transactions should not be inserted
 
+  Scenario: Asynchronous bank sync over SSE notifies user upon completion
+    Given an active checking account "mBank Checking" in "Family Home"
+    When I trigger an asynchronous bank sync for account "mBank Checking"
+    Then the server should return 202 Accepted with a sync in-progress indicator
+    And an event stream notification "sync-complete" should be broadcast to the client
+
+  Scenario: Prevent concurrent bank synchronizations on the same budget
+    Given an ongoing bank synchronization on budget "Family Home"
+    When another synchronization request is submitted for budget "Family Home"
+    Then the request should be rejected with 409 Conflict status
+
+  Scenario: Enforce daily bank sync rate limit of 4 imports per day
+    Given an account "mBank Checking" that has already performed 4 bank synchronizations today
+    When I trigger "Sync with Bank" on budget "Family Home" for account "mBank Checking"
+    Then the sync should be rejected with a 429 Rate Limit error explaining the daily quota
+
+
 

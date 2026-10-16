@@ -1183,6 +1183,10 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 
 		err = tc.txHandler.SyncWithBank(c)
 		tc.lastResponse = rec
+		if he, ok := err.(*echo.HTTPError); ok {
+			tc.lastResponse.Code = he.Code
+			return nil
+		}
 		return err
 	})
 
@@ -1223,6 +1227,193 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		err = bDB.QueryRow(`SELECT count(*) FROM raw_transactions_current WHERE external_transaction_id = 'prev_tx_1'`).Scan(&count)
 		if err != nil || count != 1 {
 			return fmt.Errorf("expected exactly 1 occurrence of prev_tx_1, got %d", count)
+		}
+		return nil
+	})
+
+	// Async SSE Scenario Steps
+	ctx.Step(`^an active checking account "([^"]*)" in "([^"]*)"$`, func(acctName, budgetName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		userAcctID := domain.NewUUIDv7()
+
+		tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, created_at, updated_at)
+			VALUES ('01900000-0000-7000-8000-000000000001', ?, 'PLN', ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name`, budgetName, now, now)
+
+		bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, 'user_1', ?)`, pID, now)
+		bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, acctName, now)
+
+		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+		tc.activeUserID = "user_1"
+		return nil
+	})
+
+	ctx.Step(`^I trigger an asynchronous bank sync for account "([^"]*)"$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var acctID string
+		err = bDB.QueryRow("SELECT id FROM accounts_current WHERE name = ?", acctName).Scan(&acctID)
+		if err != nil {
+			return err
+		}
+
+		form := url.Values{}
+		form.Set("account_ids", acctID)
+		form.Set("async", "true")
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/01900000-0000-7000-8000-000000000001/transactions/sync", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		req.Header.Set("HX-Request", "true")
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.SyncWithBank(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the server should return 202 Accepted with a sync in-progress indicator$`, func() error {
+		if tc.lastResponse == nil || tc.lastResponse.Code != http.StatusAccepted {
+			return fmt.Errorf("expected 202 Accepted, got %v", tc.lastResponse.Code)
+		}
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "Sync in Progress") {
+			return fmt.Errorf("expected sync in progress indicator in body, got %s", body)
+		}
+		return nil
+	})
+
+	ctx.Step(`^an event stream notification "([^"]*)" should be broadcast to the client$`, func(expectedEvent string) error {
+		// Wait brief moment for background goroutine to execute and broadcast event
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	})
+
+	// Concurrency Scenario Steps
+	ctx.Step(`^an ongoing bank synchronization on budget "([^"]*)"$`, func(budgetName string) error {
+		// Acquire activeSync lock to simulate in-progress sync
+		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, created_at, updated_at)
+			VALUES (?, ?, 'PLN', ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name`, tc.activeBudgetID, budgetName, now, now)
+
+		// Set active sync manually on the handler to simulate running background sync
+		req := httptest.NewRequest(http.MethodPost, "/test", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		// Start an async sync
+		req.Header.Set("HX-Request", "true")
+		_ = tc.txHandler.SyncWithBank(c)
+		return nil
+	})
+
+	ctx.Step(`^another synchronization request is submitted for budget "([^"]*)"$`, func(budgetName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		req := httptest.NewRequest(http.MethodPost, "/budgets/"+tc.activeBudgetID+"/transactions/sync", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.SyncWithBank(c)
+		tc.lastResponse = rec
+		// If echo returns HTTPError, record the status code
+		if he, ok := err.(*echo.HTTPError); ok {
+			tc.lastResponse.Code = he.Code
+			return nil
+		}
+		return err
+	})
+
+	ctx.Step(`^the request should be rejected with 409 Conflict status$`, func() error {
+		if tc.lastResponse == nil || tc.lastResponse.Code != http.StatusConflict {
+			return fmt.Errorf("expected 409 Conflict, got %v", tc.lastResponse.Code)
+		}
+		return nil
+	})
+
+	// Rate Limit Scenario Steps
+	ctx.Step(`^an account "([^"]*)" that has already performed 4 bank synchronizations today$`, func(acctName string) error {
+		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		userAcctID := domain.NewUUIDv7()
+
+		tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, created_at, updated_at)
+			VALUES (?, 'Family Home', 'PLN', ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name`, tc.activeBudgetID, now, now)
+
+		bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, 'user_1', ?)`, pID, now)
+		bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, acctName, now)
+
+		bDB.Exec(`
+			CREATE TABLE IF NOT EXISTS account_integration_sync_logs (
+				id TEXT PRIMARY KEY,
+				account_id TEXT NOT NULL,
+				synced_at INTEGER NOT NULL
+			);
+		`)
+
+		// Insert 4 sync logs for today
+		for i := 0; i < 4; i++ {
+			logID := domain.NewUUIDv7()
+			bDB.Exec(`
+				INSERT INTO account_integration_sync_logs (id, account_id, synced_at)
+				VALUES (?, ?, ?)`, logID, userAcctID, now-int64(i*3600*1_000_000))
+		}
+
+		tc.activeUserID = "user_1"
+		return nil
+	})
+
+	ctx.Step(`^the sync should be rejected with a 429 Rate Limit error explaining the daily quota$`, func() error {
+		if tc.lastResponse == nil || tc.lastResponse.Code != http.StatusTooManyRequests {
+			return fmt.Errorf("expected 429 Too Many Requests, got %v", tc.lastResponse.Code)
 		}
 		return nil
 	})

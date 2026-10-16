@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/balance/balance/internal/db"
@@ -17,16 +18,21 @@ import (
 )
 
 type TransactionsHandler struct {
-	mainDB      *sql.DB
-	tenantMgr   *db.TenantDBManager
-	mockAdapter *mock.MockAdapter
+	mainDB        *sql.DB
+	tenantMgr     *db.TenantDBManager
+	mockAdapter   *mock.MockAdapter
+	syncMu        sync.Mutex
+	activeSyncs   map[string]bool
+	syncListeners map[string][]chan string
 }
 
 func NewTransactionsHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *TransactionsHandler {
 	return &TransactionsHandler{
-		mainDB:      mainDB,
-		tenantMgr:   tenantMgr,
-		mockAdapter: mock.NewMockAdapter(),
+		mainDB:        mainDB,
+		tenantMgr:     tenantMgr,
+		mockAdapter:   mock.NewMockAdapter(),
+		activeSyncs:   make(map[string]bool),
+		syncListeners: make(map[string][]chan string),
 	}
 }
 
@@ -57,7 +63,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		}
 	}
 
-	// Fetch user checking/cash accounts for dropdown
+	// Fetch user checking/cash accounts for dropdown and checkboxes
 	acctRows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT a.id, a.name, a.primary_currency FROM accounts_current a
 		JOIN parties_current p ON a.party_id = p.id
@@ -65,6 +71,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		ORDER BY a.name ASC`)
 	var acctOptions strings.Builder
 	var editAcctOptions strings.Builder
+	var acctCheckboxes strings.Builder
 	if err == nil {
 		defer acctRows.Close()
 		for acctRows.Next() {
@@ -73,6 +80,13 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 			opt := fmt.Sprintf(`<option value="%s">%s (%s)</option>`, aID, aName, aCurr)
 			acctOptions.WriteString(opt)
 			editAcctOptions.WriteString(opt)
+
+			checkbox := fmt.Sprintf(`
+				<label class="label cursor-pointer justify-start gap-3 py-1.5 px-2 hover:bg-base-200 rounded-lg transition-colors">
+					<input type="checkbox" name="account_ids" value="%s" checked class="checkbox checkbox-primary checkbox-sm" />
+					<span class="label-text font-medium text-sm">%s <span class="text-xs text-base-content/60">(%s)</span></span>
+				</label>`, aID, aName, aCurr)
+			acctCheckboxes.WriteString(checkbox)
 		}
 	}
 
@@ -158,6 +172,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
     <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4/dist/ext/sse.js"></script>
     <link rel="manifest" href="/manifest.webmanifest">
 </head>
 <body class="bg-base-200 text-base-content min-h-screen flex flex-col">
@@ -210,6 +225,9 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
                     </button>
                 </div>
             </div>
+
+            <!-- Sync Status & Notification Alerts -->
+            <div id="sync-alerts" class="mb-4"></div>
 
             <!-- Ledger Table Card -->
             <div class="card card-border bg-base-100 border-base-300 shadow-md">
@@ -273,23 +291,32 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
                 </h3>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
             </div>
-            <form method="POST" action="/budgets/%s/transactions/sync" class="flex flex-col gap-4">
+            <form method="POST" action="/budgets/%s/transactions/sync" 
+                  hx-post="/budgets/%s/transactions/sync"
+                  hx-target="#sync-alerts"
+                  hx-swap="innerHTML"
+                  onsubmit="bank_sync_modal.close()"
+                  class="flex flex-col gap-4">
                 <input type="hidden" name="csrf_token" value="%s" />
                 <fieldset class="fieldset">
-                    <legend class="fieldset-legend">Account to Synchronize</legend>
-                    <select name="account_id" class="select select-bordered w-full select-md focus:select-primary">
+                    <legend class="fieldset-legend font-semibold">Select Accounts to Synchronize</legend>
+                    <div class="flex flex-col gap-1 max-h-48 overflow-y-auto border border-base-300 rounded-lg p-2 bg-base-100">
                         %s
-                    </select>
+                    </div>
+                    <div class="flex justify-between items-center mt-1">
+                        <span class="text-xs text-base-content/60">Check all accounts you wish to pull transactions for.</span>
+                        <button type="button" class="btn btn-link btn-xs p-0 no-underline text-primary" onclick="toggleAllAccounts(this)">Select / Deselect All</button>
+                    </div>
                 </fieldset>
                 <fieldset class="fieldset">
-                    <legend class="fieldset-legend">Initial Sync History Window</legend>
+                    <legend class="fieldset-legend font-semibold">Initial Sync History Window</legend>
                     <select name="days_window" class="select select-bordered w-full select-md focus:select-primary">
                         <option value="30" selected>Last 30 Days (1 Month) - Recommended</option>
                         <option value="14">Last 14 Days (2 Weeks)</option>
                         <option value="7">Last 7 Days (1 Week)</option>
                         <option value="1">Last 24 Hours (1 Day)</option>
                     </select>
-                    <p class="text-xs text-base-content/60 mt-1">If this account was not synced before, transactions will be fetched back to this window and starting balance will be aligned automatically.</p>
+                    <p class="text-xs text-base-content/60 mt-1">For first-time syncs, transactions are fetched back to this date and starting balance is aligned automatically.</p>
                 </fieldset>
                 <div class="modal-action mt-6 gap-2">
                     <button type="button" class="btn btn-ghost" onclick="bank_sync_modal.close()">Cancel</button>
@@ -412,6 +439,46 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
             document.getElementById('edit_tx_form').action = '/budgets/' + ACTIVE_BUDGET_ID + '/transactions/' + id + '/update';
             edit_tx_modal.showModal();
         }
+
+        function toggleAllAccounts(btn) {
+            const boxes = document.querySelectorAll('input[name="account_ids"]');
+            const allChecked = Array.from(boxes).every(b => b.checked);
+            boxes.forEach(b => b.checked = !allChecked);
+        }
+
+        // Initialize SSE for bank sync notifications
+        if (window.EventSource) {
+            const sse = new EventSource('/budgets/' + ACTIVE_BUDGET_ID + '/transactions/sync/events');
+            sse.addEventListener('sync-complete', (e) => {
+                const data = JSON.parse(e.data || '{}');
+                const alerts = document.getElementById('sync-alerts');
+                if (alerts) {
+                    alerts.innerHTML = '<div role="alert" class="alert alert-success shadow-lg animate-fade-in flex justify-between items-center">' +
+                        '<div class="flex items-center gap-2">' +
+                            '<span>✅</span>' +
+                            '<div>' +
+                                '<h4 class="font-bold">Bank Sync Complete</h4>' +
+                                '<p class="text-xs">Successfully synced ' + (data.imported_count || 0) + ' transaction(s) across ' + (data.accounts_count || 1) + ' account(s).</p>' +
+                            '</div>' +
+                        '</div>' +
+                        '<button class="btn btn-ghost btn-xs" onclick="window.location.reload()">Refresh Page</button>' +
+                    '</div>';
+                }
+            });
+            sse.addEventListener('sync-error', (e) => {
+                const data = JSON.parse(e.data || '{}');
+                const alerts = document.getElementById('sync-alerts');
+                if (alerts) {
+                    alerts.innerHTML = '<div role="alert" class="alert alert-error shadow-lg animate-fade-in">' +
+                        '<span>❌</span>' +
+                        '<div>' +
+                            '<h4 class="font-bold">Bank Sync Failed</h4>' +
+                            '<p class="text-xs">' + (data.error || 'An error occurred during synchronization.') + '</p>' +
+                        '</div>' +
+                    '</div>';
+                }
+            });
+        }
     </script>
 </body>
 </html>`,
@@ -419,7 +486,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
 		txRows.String(),
 		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
-		budgetID, csrfToken, acctOptions.String(),
+		budgetID, budgetID, csrfToken, acctCheckboxes.String(),
 		budgetID, csrfToken, time.Now().UTC().Format("2006-01-02"), acctOptions.String(), bucketOptions.String(),
 		csrfToken, editAcctOptions.String(), editBucketOptions.String(),
 		budgetID)
@@ -428,47 +495,107 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 	return c.HTML(http.StatusOK, html)
 }
 
-// SyncWithBank triggers bank integration synchronization, imports raw transactions and runs auto-matching.
-func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
-	ctx := logger.WithComponent(c.Request().Context(), "biz:transaction:bank_sync")
-
+// SyncBankEvents streams real-time sync progress and completion events via SSE.
+func (h *TransactionsHandler) SyncBankEvents(c echo.Context) error {
 	budgetID := c.Param("budgetId")
-	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
-	userID := c.Get(ContextUserIDKey).(string)
-	corrID := c.Get("correlationID").(string)
 
-	logger.Info(ctx, "Starting bank transaction synchronization",
-		"budget_id", budgetID,
-		"user_id", userID,
-	)
+	w := c.Response()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
-	now := time.Now().UTC().UnixMicro()
-	userAcctID := c.FormValue("account_id")
+	msgChan := make(chan string, 10)
+	h.syncMu.Lock()
+	h.syncListeners[budgetID] = append(h.syncListeners[budgetID], msgChan)
+	h.syncMu.Unlock()
 
-	// If no account specified, fetch first user-owned checking account
-	if userAcctID == "" {
-		err := tenantDB.QueryRowContext(c.Request().Context(), `
-			SELECT a.id FROM accounts_current a
-			JOIN parties_current p ON a.party_id = p.id
-			WHERE p.is_user_owned = 1
-			ORDER BY a.name ASC
-			LIMIT 1`).Scan(&userAcctID)
-		if err != nil {
-			pID := domain.NewUUIDv7()
-			userAcctID = domain.NewUUIDv7()
-			tenantDB.ExecContext(c.Request().Context(), `
-				INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
-				VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, ?, ?)`, pID, userID, now)
-			tenantDB.ExecContext(c.Request().Context(), `
-				INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
-				VALUES (?, 1, ?, 'Checking Account', 'CHECKING', 'PLN', 0, ?, ?)`, userAcctID, pID, userID, now)
-			logger.Info(ctx, "Auto-created default checking account for synchronization", "account_id", userAcctID)
+	defer func() {
+		h.syncMu.Lock()
+		defer h.syncMu.Unlock()
+		listeners := h.syncListeners[budgetID]
+		for i, ch := range listeners {
+			if ch == msgChan {
+				h.syncListeners[budgetID] = append(listeners[:i], listeners[i+1:]...)
+				break
+			}
 		}
+		close(msgChan)
+	}()
+
+	// Send initial ping
+	fmt.Fprintf(w, "event: ping\ndata: connected\n\n")
+	w.Flush()
+
+	ctx := c.Request().Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case msg, ok := <-msgChan:
+			if !ok {
+				return nil
+			}
+			fmt.Fprint(w, msg)
+			w.Flush()
+		}
+	}
+}
+
+func (h *TransactionsHandler) broadcastSyncEvent(budgetID, event, data string) {
+	h.syncMu.Lock()
+	defer h.syncMu.Unlock()
+
+	listeners := h.syncListeners[budgetID]
+	payload := fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)
+	for _, ch := range listeners {
+		select {
+		case ch <- payload:
+		default:
+		}
+	}
+}
+
+type accountSyncResult struct {
+	AccountID     string
+	ImportedCount int
+	Error         error
+}
+
+func (h *TransactionsHandler) executeAccountSync(ctx echo.Context, tenantDB *sql.DB, userAcctID, userID, corrID string, daysWindow int) (int, error) {
+	logCtx := logger.WithComponent(ctx.Request().Context(), "biz:transaction:bank_sync:account")
+	now := time.Now().UTC().UnixMicro()
+
+	// Ensure account_integration_sync_logs table exists
+	_, err := tenantDB.ExecContext(ctx.Request().Context(), `
+		CREATE TABLE IF NOT EXISTS account_integration_sync_logs (
+			id TEXT PRIMARY KEY,
+			account_id TEXT NOT NULL,
+			synced_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_sync_logs_acct_time ON account_integration_sync_logs(account_id, synced_at DESC);
+	`)
+	if err != nil {
+		logger.Error(logCtx, "Failed to ensure sync logs table", "error", err.Error())
+	}
+
+	// Rate limit check: max 4 imports per account in the last 24 hours (86400 seconds)
+	oneDayAgo := now - 24*3600*1_000_000
+	var syncCount24h int
+	err = tenantDB.QueryRowContext(ctx.Request().Context(), `
+		SELECT COUNT(*) FROM account_integration_sync_logs
+		WHERE account_id = ? AND synced_at >= ?`, userAcctID, oneDayAgo).Scan(&syncCount24h)
+	if err == nil && syncCount24h >= 4 {
+		logger.Warn(logCtx, "Sync rejected: rate limit reached (max 4 per day)",
+			"account_id", userAcctID,
+			"sync_count", syncCount24h,
+		)
+		return 0, fmt.Errorf("RATE_LIMIT: Daily bank synchronization limit reached for account (maximum 4 imports per 24 hours)")
 	}
 
 	// Fetch primary currency for this account
 	var acctCurrency string
-	err := tenantDB.QueryRowContext(c.Request().Context(), `
+	err = tenantDB.QueryRowContext(ctx.Request().Context(), `
 		SELECT primary_currency FROM accounts_current WHERE id = ?`, userAcctID).Scan(&acctCurrency)
 	if err != nil {
 		acctCurrency = "PLN"
@@ -476,9 +603,9 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 
 	// Check if this account already has any transactions (either raw_transactions or budget_transactions)
 	var latestRawDate, latestBudgetTxDate sql.NullInt64
-	_ = tenantDB.QueryRowContext(c.Request().Context(), `
+	_ = tenantDB.QueryRowContext(ctx.Request().Context(), `
 		SELECT MAX(booking_date) FROM raw_transactions_current WHERE account_id = ?`, userAcctID).Scan(&latestRawDate)
-	_ = tenantDB.QueryRowContext(c.Request().Context(), `
+	_ = tenantDB.QueryRowContext(ctx.Request().Context(), `
 		SELECT MAX(transaction_date) FROM budget_transactions_current 
 		WHERE source_account_id = ? OR destination_account_id = ?`, userAcctID, userAcctID).Scan(&latestBudgetTxDate)
 
@@ -495,34 +622,28 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 	// Determine sinceMicro
 	var sinceMicro int64
 	if !isFirstSync {
-		// Incremental sync: only transactions newer than the latest imported
+		// Incremental sync: only transactions newer than latest imported booking date
 		sinceMicro = latestKnownDate
 	} else {
-		// First sync: calculate window from user input (default 30 days, clamp between 1 and 30 days)
-		days := 30
-		if dStr := c.FormValue("days_window"); dStr != "" {
-			if parsedDays, err := strconv.Atoi(dStr); err == nil {
-				if parsedDays < 1 {
-					days = 1
-				} else if parsedDays > 30 {
-					days = 30
-				} else {
-					days = parsedDays
-				}
-			}
+		// First sync: calculate window from user input (clamp between 1 and 30 days)
+		days := daysWindow
+		if days < 1 {
+			days = 1
+		} else if days > 30 {
+			days = 30
 		}
 		sinceMicro = now - int64(days)*24*3600*1_000_000
 	}
 
-	// Fetch transactions from mock bank
-	extTxs, err := h.mockAdapter.FetchTransactions(c.Request().Context(), userAcctID, sinceMicro)
+	// Fetch transactions from mock bank adapter
+	extTxs, err := h.mockAdapter.FetchTransactions(ctx.Request().Context(), userAcctID, sinceMicro)
 	if err != nil {
-		logger.Error(ctx, "Bank sync failed fetching transactions from adapter", "account_id", userAcctID, "error", err.Error())
-		return echo.NewHTTPError(http.StatusInternalServerError, "Bank sync error")
+		logger.Error(logCtx, "Bank sync failed fetching transactions from adapter", "account_id", userAcctID, "error", err.Error())
+		return 0, err
 	}
 
 	// Fetch external account balance from adapter for this account
-	extAccounts, _ := h.mockAdapter.FetchAccounts(c.Request().Context(), userID)
+	extAccounts, _ := h.mockAdapter.FetchAccounts(ctx.Request().Context(), userID)
 	var bankBalanceMinor int64
 	for _, ea := range extAccounts {
 		if ea.Currency == acctCurrency {
@@ -542,7 +663,7 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 		dedup := transaction.ComputeCanonicalDedupHash(userAcctID, ext.ExternalTxID, ext.BookingDateMicro, ext.AmountMinor, ext.Currency, ext.Payee, ext.Reference)
 		rawID := domain.NewUUIDv7()
 
-		res, err := tenantDB.ExecContext(c.Request().Context(), `
+		res, err := tenantDB.ExecContext(ctx.Request().Context(), `
 			INSERT INTO raw_transactions_current (
 				id, version, account_id, external_transaction_id, dedup_hash, booking_date,
 				amount_minor, currency, raw_payee, reference, status, updated_at
@@ -566,7 +687,7 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 	// then record an initial Set Balance transaction so starting balance + pending transactions = real bank balance.
 	if isFirstSync {
 		var setBalancePartyID, setBalanceAcctID string
-		err := tenantDB.QueryRowContext(c.Request().Context(), `
+		err := tenantDB.QueryRowContext(ctx.Request().Context(), `
 			SELECT p.id, a.id FROM parties_current p
 			JOIN accounts_current a ON a.party_id = p.id
 			WHERE p.name = 'Set Balance' AND p.is_user_owned = 0
@@ -574,10 +695,10 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 		if err != nil {
 			setBalancePartyID = domain.NewUUIDv7()
 			setBalanceAcctID = domain.NewUUIDv7()
-			tenantDB.ExecContext(c.Request().Context(), `
+			tenantDB.ExecContext(ctx.Request().Context(), `
 				INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
 				VALUES (?, 1, 'Set Balance', 'ORGANIZATION', 0, ?, ?)`, setBalancePartyID, userID, now)
-			tenantDB.ExecContext(c.Request().Context(), `
+			tenantDB.ExecContext(ctx.Request().Context(), `
 				INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
 				VALUES (?, 1, ?, 'Set Balance Offset', 'EXTERNAL', ?, 0, ?, ?)`, setBalanceAcctID, setBalancePartyID, acctCurrency, userID, now)
 		}
@@ -586,7 +707,7 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 		startingBalanceMinor := bankBalanceMinor - sumImportedDelta
 		if startingBalanceMinor > 0 {
 			notes := "Starting Balance (Set Balance Offset)"
-			_, err = transaction.ExecuteResolution(c.Request().Context(), tenantDB, transaction.ResolveResolutionInput{
+			_, err = transaction.ExecuteResolution(ctx.Request().Context(), tenantDB, transaction.ResolveResolutionInput{
 				OperationType: transaction.OpDirectMove,
 				BudgetTransactions: []transaction.BudgetTxInput{
 					{
@@ -605,9 +726,9 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 				CorrelationID: corrID,
 			})
 			if err != nil {
-				logger.Error(ctx, "Failed creating initial Set Balance transaction", "error", err.Error())
+				logger.Error(logCtx, "Failed creating initial Set Balance transaction", "error", err.Error())
 			} else {
-				logger.Info(ctx, "Created Set Balance starting transaction",
+				logger.Info(logCtx, "Created Set Balance starting transaction",
 					"account_id", userAcctID,
 					"bank_balance", bankBalanceMinor,
 					"sum_imported_delta", sumImportedDelta,
@@ -618,15 +739,160 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 		}
 	}
 
-	logger.Info(ctx, "Bank transaction synchronization completed",
-		"budget_id", budgetID,
+	// Log successful sync for rate limit accounting
+	logID := domain.NewUUIDv7()
+	_, _ = tenantDB.ExecContext(ctx.Request().Context(), `
+		INSERT INTO account_integration_sync_logs (id, account_id, synced_at)
+		VALUES (?, ?, ?)`, logID, userAcctID, now)
+
+	logger.Info(logCtx, "Account bank sync succeeded",
 		"account_id", userAcctID,
 		"is_first_sync", isFirstSync,
-		"fetched_count", len(extTxs),
 		"imported_count", importedCount,
 	)
 
-	_ = corrID
+	return importedCount, nil
+}
+
+// SyncWithBank triggers bank integration synchronization, imports raw transactions and runs auto-matching.
+func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:transaction:bank_sync")
+
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	logger.Info(ctx, "Starting bank transaction synchronization",
+		"budget_id", budgetID,
+		"user_id", userID,
+	)
+
+	// Concurrency check: Reject if a bank sync is already in progress for this budget
+	h.syncMu.Lock()
+	if h.activeSyncs[budgetID] {
+		h.syncMu.Unlock()
+		logger.Warn(ctx, "Concurrent bank sync rejected", "budget_id", budgetID)
+		if c.Request().Header.Get("HX-Request") == "true" {
+			return c.HTML(http.StatusConflict, `
+				<div role="alert" class="alert alert-warning shadow-lg animate-fade-in">
+					<span>⚠️</span>
+					<div>
+						<h4 class="font-bold">Sync already in progress</h4>
+						<p class="text-xs">Another synchronization is currently running for this budget. Please wait for it to complete.</p>
+					</div>
+				</div>
+			`)
+		}
+		return echo.NewHTTPError(http.StatusConflict, "Bank synchronization is already running for this budget. Please wait.")
+	}
+	h.activeSyncs[budgetID] = true
+	h.syncMu.Unlock()
+
+	// Parse days_window (default 30)
+	daysWindow := 30
+	if dStr := c.FormValue("days_window"); dStr != "" {
+		if parsedDays, err := strconv.Atoi(dStr); err == nil {
+			daysWindow = parsedDays
+		}
+	}
+
+	// Parse accounts to sync (support multi-select "account_ids" or single "account_id")
+	var accountIDs []string
+	formParams, err := c.FormParams()
+	if err == nil {
+		accountIDs = formParams["account_ids"]
+	}
+	if len(accountIDs) == 0 {
+		if singleID := c.FormValue("account_id"); singleID != "" {
+			accountIDs = append(accountIDs, singleID)
+		}
+	}
+
+	// If still empty, fetch first user-owned checking account
+	if len(accountIDs) == 0 {
+		var firstAcctID string
+		err := tenantDB.QueryRowContext(c.Request().Context(), `
+			SELECT a.id FROM accounts_current a
+			JOIN parties_current p ON a.party_id = p.id
+			WHERE p.is_user_owned = 1
+			ORDER BY a.name ASC
+			LIMIT 1`).Scan(&firstAcctID)
+		if err == nil {
+			accountIDs = append(accountIDs, firstAcctID)
+		} else {
+			now := time.Now().UTC().UnixMicro()
+			pID := domain.NewUUIDv7()
+			firstAcctID = domain.NewUUIDv7()
+			tenantDB.ExecContext(c.Request().Context(), `
+				INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+				VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, ?, ?)`, pID, userID, now)
+			tenantDB.ExecContext(c.Request().Context(), `
+				INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+				VALUES (?, 1, ?, 'Checking Account', 'CHECKING', 'PLN', 0, ?, ?)`, firstAcctID, pID, userID, now)
+			accountIDs = append(accountIDs, firstAcctID)
+		}
+	}
+
+	isAsync := c.Request().Header.Get("HX-Request") == "true" || c.FormValue("async") == "true"
+
+	syncFunc := func() ([]accountSyncResult, error) {
+		defer func() {
+			h.syncMu.Lock()
+			delete(h.activeSyncs, budgetID)
+			h.syncMu.Unlock()
+		}()
+
+		var results []accountSyncResult
+		totalImported := 0
+		var firstErr error
+
+		for i, acctID := range accountIDs {
+			h.broadcastSyncEvent(budgetID, "sync-progress", fmt.Sprintf(`{"account_id":"%s","index":%d,"total":%d}`, acctID, i+1, len(accountIDs)))
+			imported, sErr := h.executeAccountSync(c, tenantDB, acctID, userID, corrID, daysWindow)
+			results = append(results, accountSyncResult{
+				AccountID:     acctID,
+				ImportedCount: imported,
+				Error:         sErr,
+			})
+			if sErr != nil && firstErr == nil {
+				firstErr = sErr
+			}
+			totalImported += imported
+		}
+
+		if firstErr != nil {
+			h.broadcastSyncEvent(budgetID, "sync-error", fmt.Sprintf(`{"error":"%s"}`, firstErr.Error()))
+		} else {
+			h.broadcastSyncEvent(budgetID, "sync-complete", fmt.Sprintf(`{"imported_count":%d,"accounts_count":%d}`, totalImported, len(accountIDs)))
+		}
+
+		return results, firstErr
+	}
+
+	if isAsync {
+		go syncFunc()
+		return c.HTML(http.StatusAccepted, `
+			<div role="alert" class="alert alert-info shadow-lg animate-fade-in">
+				<span class="loading loading-spinner loading-sm text-info"></span>
+				<div>
+					<h4 class="font-bold">Sync in Progress</h4>
+					<p class="text-xs">Synchronizing selected bank accounts in the background. You'll receive a notification upon completion.</p>
+				</div>
+			</div>
+		`)
+	}
+
+	// Synchronous execution
+	results, syncErr := syncFunc()
+	if syncErr != nil {
+		if strings.HasPrefix(syncErr.Error(), "RATE_LIMIT:") {
+			return echo.NewHTTPError(http.StatusTooManyRequests, syncErr.Error())
+		}
+		return echo.NewHTTPError(http.StatusInternalServerError, syncErr.Error())
+	}
+
+	_ = results
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
 }
 

@@ -94,6 +94,7 @@ func main() {
 	tenantViewer.GET("/accounts/institutions", accountsHandler.GetInstitutions)
 	tenantViewer.GET("/accounts/extract-favicon", accountsHandler.ExtractFavicon)
 	tenantViewer.GET("/transactions", txHandler.TransactionsView)
+	tenantViewer.GET("/transactions/sync/events", txHandler.SyncBankEvents)
 	tenantViewer.GET("/reports", reportsHandler.ReportsView)
 	tenantViewer.GET("/parties", partiesHandler.PartiesView)
 	tenantViewer.GET("/members", membersHandler.MembersView)
