@@ -7,6 +7,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/balance/balance/internal/logger"
 )
 
 // MonteCarloConfig mirrors the configuration schema defined in spec 13.3.
@@ -71,6 +73,15 @@ func RunMonteCarloSimulation(ctx context.Context, cfg MonteCarloConfig) (*MonteC
 		years = 1
 	}
 
+	simCtx := logger.WithComponent(ctx, "biz:report:monte_carlo")
+	logger.Info(simCtx, "Starting Monte Carlo simulation",
+		"simulations_count", count,
+		"horizon_years", years,
+		"current_age", cfg.CurrentAge,
+		"target_age", cfg.TargetAge,
+		"pots_count", len(cfg.Pots),
+	)
+
 	trajectories := make([][]int64, count)
 	successCount := 0
 	var mu sync.Mutex
@@ -84,8 +95,15 @@ func RunMonteCarloSimulation(ctx context.Context, cfg MonteCarloConfig) (*MonteC
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
+			workerCtx := logger.WithComponent(simCtx, "biz:report:monte_carlo:worker")
+			logger.Debug(workerCtx, "Monte Carlo async worker started",
+				"worker_id", workerID,
+				"async", true,
+			)
+
 			rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), uint64(workerID+1)))
 
+			processed := 0
 			for job := range jobs {
 				traj, success := simulateSingleRun(cfg, years, rng)
 				mu.Lock()
@@ -94,7 +112,14 @@ func RunMonteCarloSimulation(ctx context.Context, cfg MonteCarloConfig) (*MonteC
 					successCount++
 				}
 				mu.Unlock()
+				processed++
 			}
+
+			logger.Debug(workerCtx, "Monte Carlo async worker finished",
+				"worker_id", workerID,
+				"jobs_processed", processed,
+				"async", true,
+			)
 		}(w)
 	}
 
@@ -103,6 +128,12 @@ func RunMonteCarloSimulation(ctx context.Context, cfg MonteCarloConfig) (*MonteC
 	}
 	close(jobs)
 	wg.Wait()
+
+	logger.Info(simCtx, "Monte Carlo simulation completed",
+		"simulations_count", count,
+		"success_count", successCount,
+		"success_rate_pct", math.Round((float64(successCount)/float64(count)*100)*100)/100,
+	)
 
 	// Compute percentiles for each year
 	p10 := make([]int64, years+1)

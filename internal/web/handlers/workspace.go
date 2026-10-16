@@ -9,6 +9,7 @@ import (
 
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/logger"
 	"github.com/labstack/echo/v4"
 )
 
@@ -186,12 +187,15 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 
 // CreateBudget creates a new budget in main.db and provisions the tenant SQLite database.
 func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:budget")
+
 	userID := c.Get(ContextUserIDKey).(string)
 	name := c.FormValue("name")
 	curr := c.FormValue("default_currency")
 	tz := c.FormValue("timezone")
 
 	if name == "" || curr == "" {
+		logger.Warn(ctx, "Budget creation failed validation: name and currency required", "user_id", userID)
 		return echo.NewHTTPError(http.StatusBadRequest, "Budget name and currency are required")
 	}
 	if tz == "" {
@@ -203,6 +207,7 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 
 	tx, err := h.mainDB.BeginTx(c.Request().Context(), nil)
 	if err != nil {
+		logger.Error(ctx, "Failed starting transaction for budget creation", "user_id", userID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Database error")
 	}
 	defer tx.Rollback()
@@ -213,6 +218,7 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 		budgetID, name, curr, tz, userID, now, now,
 	)
 	if err != nil {
+		logger.Error(ctx, "Failed to insert budget into main.db", "budget_id", budgetID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create budget")
 	}
 
@@ -222,19 +228,23 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 		budgetID, userID, now,
 	)
 	if err != nil {
+		logger.Error(ctx, "Failed to assign budget owner", "budget_id", budgetID, "user_id", userID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to assign budget owner")
 	}
 
 	if err := tx.Commit(); err != nil {
+		logger.Error(ctx, "Failed committing budget creation transaction", "budget_id", budgetID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Commit error")
 	}
 
 	// Provision tenant DB
 	_, err = h.tenantMgr.GetTenantDB(budgetID, true)
 	if err != nil {
+		logger.Error(ctx, "Failed initializing tenant database for budget", "budget_id", budgetID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to initialize tenant database")
 	}
 
+	logger.Info(ctx, "New budget provisioned successfully", "budget_id", budgetID, "name", name, "currency", curr, "timezone", tz, "owner_id", userID)
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
 }
 

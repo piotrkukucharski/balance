@@ -1,49 +1,57 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 
 	"github.com/balance/balance/internal/db"
+	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/web/handlers"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 )
 
 func main() {
+	ctx := context.Background()
+	ctx = logger.WithComponent(ctx, "infra:server")
+
 	dataDir := os.Getenv("DATA_DIR")
 	if dataDir == "" {
 		dataDir = "./data"
 	}
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		log.Fatalf("failed creating data dir: %v", err)
+		logger.Error(ctx, "Failed creating data dir", "data_dir", dataDir, "error", err.Error())
+		os.Exit(1)
 	}
 
 	mainDBPath := filepath.Join(dataDir, "main.db")
 	mainDB, err := db.OpenDB(mainDBPath)
 	if err != nil {
-		log.Fatalf("failed opening main DB: %v", err)
+		logger.Error(ctx, "Failed opening main DB", "path", mainDBPath, "error", err.Error())
+		os.Exit(1)
 	}
 	defer mainDB.Close()
 
 	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
-		log.Fatalf("main DB migrations failed: %v", err)
+		logger.Error(ctx, "Main DB migrations failed", "error", err.Error())
+		os.Exit(1)
 	}
 
 	budgetsDir := filepath.Join(dataDir, "budgets")
 	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 64)
 	if err != nil {
-		log.Fatalf("failed initializing tenant manager: %v", err)
+		logger.Error(ctx, "Failed initializing tenant manager", "error", err.Error())
+		os.Exit(1)
 	}
 	defer tenantMgr.CloseAll()
 
 	e := echo.New()
 	e.HideBanner = true
 	e.Use(middleware.Recover())
-	e.Use(middleware.Logger())
 	e.Use(handlers.CorrelationIDMiddleware())
+	e.Use(handlers.StructuredRequestLoggerMiddleware())
 
 	authHandler := handlers.NewAuthHandler(mainDB, tenantMgr)
 	workspaceHandler := handlers.NewWorkspaceHandler(mainDB, tenantMgr)
@@ -109,8 +117,9 @@ func main() {
 		port = "8080"
 	}
 
-	fmt.Printf("Balance server listening on http://localhost:%s\n", port)
+	logger.Info(ctx, "Balance server starting", "port", port, "url", fmt.Sprintf("http://localhost:%s", port))
 	if err := e.Start(":" + port); err != nil {
-		log.Fatalf("server error: %v", err)
+		logger.Error(ctx, "Server stopped unexpectedly", "error", err.Error())
+		os.Exit(1)
 	}
 }

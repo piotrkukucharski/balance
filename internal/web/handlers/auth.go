@@ -8,6 +8,7 @@ import (
 	"github.com/balance/balance/internal/auth"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/logger"
 	"github.com/labstack/echo/v4"
 )
 
@@ -85,16 +86,20 @@ func (h *AuthHandler) RegisterPage(c echo.Context) error {
 
 // HandleRegister processes user signup and initializes stateful session.
 func (h *AuthHandler) HandleRegister(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:auth")
+
 	email := c.FormValue("email")
 	password := c.FormValue("password")
 	displayName := c.FormValue("display_name")
 
 	if email == "" || len(password) < 8 || displayName == "" {
+		logger.Warn(ctx, "Registration failed validation: invalid input", "email", email)
 		return echo.NewHTTPError(http.StatusBadRequest, "Invalid registration input (password min 8 characters)")
 	}
 
 	hash, err := auth.HashPassword(password)
 	if err != nil {
+		logger.Error(ctx, "Registration failed: password hashing error", "email", email, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to hash password")
 	}
 
@@ -107,9 +112,11 @@ func (h *AuthHandler) HandleRegister(c echo.Context) error {
 		userID, email, hash, displayName, now, now,
 	)
 	if err != nil {
+		logger.Warn(ctx, "Registration conflict: email already registered", "email", email)
 		return echo.NewHTTPError(http.StatusConflict, "Email already in use")
 	}
 
+	logger.Info(ctx, "User account registered successfully", "user_id", userID, "email", email, "display_name", displayName)
 	return h.createSessionAndRedirect(c, userID)
 }
 
@@ -169,6 +176,8 @@ func (h *AuthHandler) LoginPage(c echo.Context) error {
 
 // HandleLogin authenticates password and creates a new stateful session.
 func (h *AuthHandler) HandleLogin(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:auth")
+
 	email := c.FormValue("email")
 	password := c.FormValue("password")
 
@@ -176,23 +185,29 @@ func (h *AuthHandler) HandleLogin(c echo.Context) error {
 	err := h.mainDB.QueryRowContext(c.Request().Context(), `
 		SELECT id, password_hash FROM users WHERE email = ?`, email).Scan(&userID, &hash)
 	if err != nil {
+		logger.Warn(ctx, "Login failed: user not found", "email", email)
 		return echo.NewHTTPError(http.StatusUnauthorized, "Invalid credentials")
 	}
 
 	valid, err := auth.VerifyPassword(password, hash)
 	if err != nil || !valid {
+		logger.Warn(ctx, "Login failed: invalid password", "email", email, "user_id", userID)
 		return echo.NewHTTPError(http.StatusUnauthorized, "Invalid credentials")
 	}
 
+	logger.Info(ctx, "User authenticated successfully", "user_id", userID, "email", email)
 	return h.createSessionAndRedirect(c, userID)
 }
 
 // HandleLogout revokes the session and clears the cookie.
 func (h *AuthHandler) HandleLogout(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:auth")
+
 	cookie, err := c.Cookie(SessionCookieName)
 	if err == nil && cookie.Value != "" {
 		tokenHash := auth.HashToken(cookie.Value)
 		h.mainDB.ExecContext(c.Request().Context(), `DELETE FROM sessions WHERE token_hash = ?`, tokenHash)
+		logger.Info(ctx, "User session revoked upon logout")
 	}
 
 	c.SetCookie(&http.Cookie{
@@ -208,12 +223,16 @@ func (h *AuthHandler) HandleLogout(c echo.Context) error {
 }
 
 func (h *AuthHandler) createSessionAndRedirect(c echo.Context, userID string) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:auth")
+
 	rawToken, err := auth.GenerateCSPRNGToken()
 	if err != nil {
+		logger.Error(ctx, "Failed generating session token", "user_id", userID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Session error")
 	}
 	csrfToken, err := auth.GenerateCSPRNGToken()
 	if err != nil {
+		logger.Error(ctx, "Failed generating CSRF token", "user_id", userID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Session error")
 	}
 
@@ -228,6 +247,7 @@ func (h *AuthHandler) createSessionAndRedirect(c echo.Context, userID string) er
 		sessionID, tokenHash, userID, csrfToken, now, now, expiresAt,
 	)
 	if err != nil {
+		logger.Error(ctx, "Failed saving session to database", "user_id", userID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create session")
 	}
 
@@ -240,5 +260,6 @@ func (h *AuthHandler) createSessionAndRedirect(c echo.Context, userID string) er
 		SameSite: http.SameSiteLaxMode,
 	})
 
+	logger.Info(ctx, "Session established successfully", "user_id", userID, "session_id", sessionID)
 	return c.Redirect(http.StatusSeeOther, "/budgets")
 }

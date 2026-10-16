@@ -13,6 +13,7 @@ import (
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/integration/gocardless"
 	"github.com/balance/balance/internal/integration/mock"
+	"github.com/balance/balance/internal/logger"
 	"github.com/labstack/echo/v4"
 )
 
@@ -750,6 +751,8 @@ func toggleActionText(isClosed int) string {
 
 // CreateAccount creates a new manual financial account.
 func (h *AccountsHandler) CreateAccount(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:account:manual")
+
 	budgetID := c.Param("budgetId")
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	userID := c.Get(ContextUserIDKey).(string)
@@ -759,8 +762,25 @@ func (h *AccountsHandler) CreateAccount(c echo.Context) error {
 	aType := c.FormValue("account_type")
 	curr := c.FormValue("primary_currency")
 	iban := c.FormValue("iban")
+	initBalStr := c.FormValue("initial_balance")
+
+	logger.Info(ctx, "Initiating manual financial account creation",
+		"budget_id", budgetID,
+		"user_id", userID,
+		"name", name,
+		"account_type", aType,
+		"currency", curr,
+		"iban", iban,
+		"initial_balance_raw", initBalStr,
+	)
 
 	if name == "" || aType == "" || curr == "" {
+		logger.Warn(ctx, "Manual account creation rejected: validation failed",
+			"budget_id", budgetID,
+			"name", name,
+			"account_type", aType,
+			"currency", curr,
+		)
 		return echo.NewHTTPError(http.StatusBadRequest, "Name, type, and currency are required")
 	}
 
@@ -770,6 +790,7 @@ func (h *AccountsHandler) CreateAccount(c echo.Context) error {
 
 	tx, err := tenantDB.BeginTx(c.Request().Context(), nil)
 	if err != nil {
+		logger.Error(ctx, "Manual account creation DB begin transaction failed", "budget_id", budgetID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "DB error")
 	}
 	defer tx.Rollback()
@@ -781,6 +802,7 @@ func (h *AccountsHandler) CreateAccount(c echo.Context) error {
 		acctID, userPartyID, name, aType, curr, iban, userID, corrID, now,
 	)
 	if err != nil {
+		logger.Error(ctx, "Failed writing to accounts ledger events table", "account_id", acctID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to insert account")
 	}
 
@@ -791,30 +813,48 @@ func (h *AccountsHandler) CreateAccount(c echo.Context) error {
 		acctID, userPartyID, name, aType, curr, iban, userID, now,
 	)
 	if err != nil {
+		logger.Error(ctx, "Failed projecting to accounts_current", "account_id", acctID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to update accounts_current")
 	}
 
 	// Handle initial balance if provided
-	if initBalStr := c.FormValue("initial_balance"); initBalStr != "" {
+	var initialBalanceMinor int64
+	if initBalStr != "" {
 		var initFloat float64
 		fmt.Sscanf(initBalStr, "%f", &initFloat)
-		minor := int64(initFloat * 100)
-		if minor != 0 {
-			tx.ExecContext(c.Request().Context(), `
+		initialBalanceMinor = int64(initFloat * 100)
+		if initialBalanceMinor != 0 {
+			_, err = tx.ExecContext(c.Request().Context(), `
 				INSERT INTO account_currency_balances (account_id, currency, balance_minor, updated_at)
-				VALUES (?, ?, ?, ?)`, acctID, curr, minor, now)
+				VALUES (?, ?, ?, ?)`, acctID, curr, initialBalanceMinor, now)
+			if err != nil {
+				logger.Error(ctx, "Failed inserting initial account balance", "account_id", acctID, "currency", curr, "balance_minor", initialBalanceMinor, "error", err.Error())
+			}
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
+		logger.Error(ctx, "Manual account creation transaction commit failed", "account_id", acctID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Commit error")
 	}
+
+	logger.Info(ctx, "Manual financial account created successfully",
+		"budget_id", budgetID,
+		"account_id", acctID,
+		"party_id", userPartyID,
+		"name", name,
+		"account_type", aType,
+		"currency", curr,
+		"initial_balance_minor", initialBalanceMinor,
+	)
 
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/accounts", budgetID))
 }
 
 // LinkBankAccount connects a bank feed (mock or GoCardless) to a new account.
 func (h *AccountsHandler) LinkBankAccount(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:account:bank_link")
+
 	budgetID := c.Param("budgetId")
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	userID := c.Get(ContextUserIDKey).(string)
@@ -822,7 +862,20 @@ func (h *AccountsHandler) LinkBankAccount(c echo.Context) error {
 
 	extAcctID := c.FormValue("external_account_id")
 	name := c.FormValue("name")
+
+	logger.Info(ctx, "Initiating bank account link flow",
+		"budget_id", budgetID,
+		"user_id", userID,
+		"external_account_id", extAcctID,
+		"account_name", name,
+	)
+
 	if extAcctID == "" || name == "" {
+		logger.Warn(ctx, "Bank link failed: external account selection and name required",
+			"budget_id", budgetID,
+			"external_account_id", extAcctID,
+			"name", name,
+		)
 		return echo.NewHTTPError(http.StatusBadRequest, "External account selection and name required")
 	}
 
@@ -836,6 +889,10 @@ func (h *AccountsHandler) LinkBankAccount(c echo.Context) error {
 		}
 	}
 	if matched == nil {
+		logger.Warn(ctx, "Discovered bank account not found in provider",
+			"budget_id", budgetID,
+			"external_account_id", extAcctID,
+		)
 		return echo.NewHTTPError(http.StatusNotFound, "Discovered bank account not found")
 	}
 
@@ -845,6 +902,7 @@ func (h *AccountsHandler) LinkBankAccount(c echo.Context) error {
 
 	tx, err := tenantDB.BeginTx(c.Request().Context(), nil)
 	if err != nil {
+		logger.Error(ctx, "Bank link DB begin transaction failed", "budget_id", budgetID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "DB error")
 	}
 	defer tx.Rollback()
@@ -856,17 +914,20 @@ func (h *AccountsHandler) LinkBankAccount(c echo.Context) error {
 		acctID, userPartyID, name, matched.Currency, matched.IBAN, userID, now,
 	)
 	if err != nil {
+		logger.Error(ctx, "Bank link failed creating account projection", "account_id", acctID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed creating account")
 	}
 
 	// 2. Link integration
 	linkID := domain.NewUUIDv7()
+	intID := "mock_integration_" + userID
 	_, err = tx.ExecContext(c.Request().Context(), `
 		INSERT INTO account_integration_links (id, account_id, integration_id, external_account_id, last_synced_at, created_at)
 		VALUES (?, ?, ?, ?, ?, ?)`,
-		linkID, acctID, "mock_integration_"+userID, matched.ID, now, now,
+		linkID, acctID, intID, matched.ID, now, now,
 	)
 	if err != nil {
+		logger.Error(ctx, "Bank link failed creating integration link", "account_id", acctID, "link_id", linkID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed creating integration link")
 	}
 
@@ -877,12 +938,24 @@ func (h *AccountsHandler) LinkBankAccount(c echo.Context) error {
 		acctID, matched.Currency, matched.BalanceMinor, now,
 	)
 	if err != nil {
+		logger.Error(ctx, "Bank link failed storing initial balance", "account_id", acctID, "balance_minor", matched.BalanceMinor, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed setting balance")
 	}
 
 	if err := tx.Commit(); err != nil {
+		logger.Error(ctx, "Bank link transaction commit failed", "account_id", acctID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Commit error")
 	}
+
+	logger.Info(ctx, "Bank account linked and initial balance synchronized successfully",
+		"budget_id", budgetID,
+		"account_id", acctID,
+		"external_account_id", matched.ID,
+		"institution_name", matched.Name,
+		"currency", matched.Currency,
+		"balance_minor", matched.BalanceMinor,
+		"integration_id", intID,
+	)
 
 	_ = corrID
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/accounts", budgetID))
@@ -1051,6 +1124,8 @@ type ConnectBankRequest struct {
 // ConnectBankQueue processes selected bank institutions.
 // If multiple institutions are selected, it connects each sequentially.
 func (h *AccountsHandler) ConnectBankQueue(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:account:connect_queue")
+
 	budgetID := c.Param("budgetId")
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	userID := c.Get(ContextUserIDKey).(string)
@@ -1067,7 +1142,17 @@ func (h *AccountsHandler) ConnectBankQueue(c echo.Context) error {
 		}
 	}
 
+	logger.Info(ctx, "Starting bank connection queue process",
+		"budget_id", budgetID,
+		"user_id", userID,
+		"provider", req.Provider,
+		"country", req.Country,
+		"selected_institutions_count", len(req.InstitutionIDs),
+		"institutions", req.InstitutionIDs,
+	)
+
 	if len(req.InstitutionIDs) == 0 {
+		logger.Warn(ctx, "Bank connection queue rejected: no institutions selected", "budget_id", budgetID)
 		return echo.NewHTTPError(http.StatusBadRequest, "No institutions selected")
 	}
 
@@ -1088,16 +1173,28 @@ func (h *AccountsHandler) ConnectBankQueue(c echo.Context) error {
 
 	var results []ConnectedBankResult
 
-	for _, instID := range req.InstitutionIDs {
+	for idx, instID := range req.InstitutionIDs {
 		instID = strings.TrimSpace(instID)
 		if instID == "" {
 			continue
 		}
 
+		logger.Info(ctx, "Processing bank institution in connection queue",
+			"queue_index", idx+1,
+			"total_in_queue", len(req.InstitutionIDs),
+			"institution_id", instID,
+			"provider", req.Provider,
+		)
+
 		if req.Provider == "GOCARDLESS" && h.gocardlessClient != nil {
 			userRef := fmt.Sprintf("bal_%s_%s_%d", budgetID, userID, time.Now().Unix())
 			requisition, err := h.gocardlessClient.CreateRequisition(c.Request().Context(), instID, userRef)
 			if err != nil {
+				logger.Error(ctx, "Failed to create GoCardless requisition for institution",
+					"institution_id", instID,
+					"user_ref", userRef,
+					"error", err.Error(),
+				)
 				results = append(results, ConnectedBankResult{
 					InstitutionID: instID,
 					Status:        "error: " + err.Error(),
@@ -1113,6 +1210,13 @@ func (h *AccountsHandler) ConnectBankQueue(c echo.Context) error {
 				intID, userID, instID, requisition.ID, now, now,
 			)
 
+			logger.Info(ctx, "GoCardless requisition created, awaiting user bank authorization",
+				"institution_id", instID,
+				"requisition_id", requisition.ID,
+				"user_ref", userRef,
+				"integration_id", intID,
+			)
+
 			results = append(results, ConnectedBankResult{
 				InstitutionID: instID,
 				Status:        "awaiting_authorization",
@@ -1122,17 +1226,21 @@ func (h *AccountsHandler) ConnectBankQueue(c echo.Context) error {
 		}
 
 		// Mock Provider: Deterministic sequential link
-		mockAccounts, _ := h.mockAdapter.FetchAccounts(c.Request().Context(), userID)
+		mockAccounts, err := h.mockAdapter.FetchAccounts(c.Request().Context(), userID)
+		if err != nil {
+			logger.Error(ctx, "Failed fetching mock provider accounts", "institution_id", instID, "error", err.Error())
+		}
 		accountsAdded := 0
 
 		tx, err := tenantDB.BeginTx(c.Request().Context(), nil)
 		if err != nil {
+			logger.Error(ctx, "Failed beginning transaction for mock institution import", "institution_id", instID, "error", err.Error())
 			continue
 		}
 
-		for idx, ma := range mockAccounts {
+		for mIdx, ma := range mockAccounts {
 			acctID := domain.NewUUIDv7()
-			accName := fmt.Sprintf("%s (%s #%d)", ma.Name, instID, idx+1)
+			accName := fmt.Sprintf("%s (%s #%d)", ma.Name, instID, mIdx+1)
 
 			_, err = tx.ExecContext(c.Request().Context(), `
 				INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, iban, is_closed, agent_id, updated_at)
@@ -1140,6 +1248,7 @@ func (h *AccountsHandler) ConnectBankQueue(c echo.Context) error {
 				acctID, userPartyID, accName, ma.Currency, ma.IBAN, userID, now,
 			)
 			if err != nil {
+				logger.Error(ctx, "Failed inserting accounts_current in mock queue", "institution_id", instID, "account_id", acctID, "error", err.Error())
 				continue
 			}
 
@@ -1158,7 +1267,14 @@ func (h *AccountsHandler) ConnectBankQueue(c echo.Context) error {
 			)
 			accountsAdded++
 		}
-		_ = tx.Commit()
+		if err := tx.Commit(); err != nil {
+			logger.Error(ctx, "Failed committing accounts for mock institution", "institution_id", instID, "error", err.Error())
+		} else {
+			logger.Info(ctx, "Mock bank accounts connected successfully",
+				"institution_id", instID,
+				"accounts_added_count", accountsAdded,
+			)
+		}
 
 		results = append(results, ConnectedBankResult{
 			InstitutionID: instID,
@@ -1166,6 +1282,11 @@ func (h *AccountsHandler) ConnectBankQueue(c echo.Context) error {
 			AccountsCount: accountsAdded,
 		})
 	}
+
+	logger.Info(ctx, "Bank connection queue processing completed",
+		"budget_id", budgetID,
+		"results_count", len(results),
+	)
 
 	// If requested via JSON API or fetch, return structured response
 	if strings.Contains(c.Request().Header.Get("Accept"), "application/json") || c.Request().Header.Get("X-Requested-With") == "XMLHttpRequest" {
@@ -1262,12 +1383,16 @@ func (h *AccountsHandler) ReconnectAccount(c echo.Context) error {
 
 // GoCardlessCallback handles OAuth redirect from GoCardless after user authenticates with their bank.
 func (h *AccountsHandler) GoCardlessCallback(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:account:gocardless_callback")
+
 	ref := c.QueryParam("ref")
 	if ref == "" {
+		logger.Warn(ctx, "GoCardless callback rejected: missing requisition reference")
 		return echo.NewHTTPError(http.StatusBadRequest, "Missing requisition reference")
 	}
 
 	userID, _ := c.Get(ContextUserIDKey).(string)
+	logger.Info(ctx, "GoCardless OAuth callback received", "ref", ref, "user_id", userID)
 
 	now := time.Now().UTC().UnixMicro()
 
@@ -1356,6 +1481,11 @@ func (h *AccountsHandler) GoCardlessCallback(c echo.Context) error {
 						tenantDB.ExecContext(c.Request().Context(), `
 							UPDATE account_integration_links SET integration_id = ?, last_synced_at = ? WHERE account_id = ?`,
 							intID, now, existingAcctID)
+						logger.Info(ctx, "Existing bank account integration link refreshed",
+							"account_id", existingAcctID,
+							"external_account_id", extAcctID,
+							"integration_id", intID,
+						)
 					} else {
 						newAcctID := domain.NewUUIDv7()
 						tenantDB.ExecContext(c.Request().Context(), `
@@ -1367,6 +1497,15 @@ func (h *AccountsHandler) GoCardlessCallback(c echo.Context) error {
 							INSERT INTO account_integration_links (id, account_id, integration_id, external_account_id, last_synced_at, created_at)
 							VALUES (?, ?, ?, ?, ?, ?)`,
 							domain.NewUUIDv7(), newAcctID, intID, extAcctID, now, now)
+
+						logger.Info(ctx, "New bank account imported from GoCardless OAuth callback",
+							"account_id", newAcctID,
+							"name", acctName,
+							"currency", curr,
+							"iban", iban,
+							"external_account_id", extAcctID,
+							"integration_id", intID,
+						)
 					}
 				}
 			}
@@ -1378,6 +1517,7 @@ func (h *AccountsHandler) GoCardlessCallback(c echo.Context) error {
 		h.mainDB.ExecContext(c.Request().Context(), `
 			UPDATE user_integrations SET status = 'ACTIVE', expires_at = ?, updated_at = ? WHERE id = ?`,
 			now+90*24*3600*1_000_000, now, intID)
+		logger.Info(ctx, "GoCardless integration activated", "integration_id", intID, "expires_in_days", 90)
 	}
 
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/accounts", targetBudgetID))

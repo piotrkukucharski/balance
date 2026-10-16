@@ -9,6 +9,7 @@ import (
 	"github.com/balance/balance/internal/auth"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/logger"
 	"github.com/labstack/echo/v4"
 )
 
@@ -20,14 +21,68 @@ const (
 	ContextBudgetDBKey = "budgetDB"
 )
 
-// CorrelationIDMiddleware assigns a server-generated UUIDv7 to every incoming request.
+// CorrelationIDMiddleware assigns or propagates correlation ID and attaches it to request context.
 func CorrelationIDMiddleware() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			corrID := domain.NewUUIDv7()
+			corrID := c.Request().Header.Get("X-Correlation-ID")
+			if corrID == "" || !domain.IsValidUUIDv7(corrID) {
+				corrID = domain.NewUUIDv7()
+			}
 			c.Set("correlationID", corrID)
 			c.Response().Header().Set("X-Correlation-ID", corrID)
+
+			reqCtx, _ := logger.WithCorrelationID(c.Request().Context(), corrID)
+			c.SetRequest(c.Request().WithContext(reqCtx))
 			return next(c)
+		}
+	}
+}
+
+// StructuredRequestLoggerMiddleware logs every HTTP request with unified JSON structure and correlation ID.
+func StructuredRequestLoggerMiddleware() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			start := time.Now()
+			err := next(c)
+			latency := time.Since(start)
+
+			req := c.Request()
+			res := c.Response()
+			ctx := req.Context()
+			ctx = logger.WithComponent(ctx, "http")
+
+			status := res.Status
+			if err != nil {
+				if he, ok := err.(*echo.HTTPError); ok {
+					status = he.Code
+				}
+			}
+
+			args := []any{
+				"method", req.Method,
+				"path", req.URL.Path,
+				"status", status,
+				"latency_ms", float64(latency.Microseconds()) / 1000.0,
+				"bytes_out", res.Size,
+				"remote_ip", c.RealIP(),
+			}
+
+			if userID, ok := c.Get(ContextUserIDKey).(string); ok && userID != "" {
+				args = append(args, "user_id", userID)
+			}
+			if budgetID, ok := c.Get("budgetID").(string); ok && budgetID != "" {
+				args = append(args, "budget_id", budgetID)
+			}
+
+			if err != nil {
+				args = append(args, "error", err.Error())
+				logger.Error(ctx, "HTTP request failed", args...)
+			} else {
+				logger.Info(ctx, "HTTP request handled", args...)
+			}
+
+			return err
 		}
 	}
 }

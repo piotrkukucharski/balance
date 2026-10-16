@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/logger"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -45,24 +46,34 @@ func ApplyPragmas(db *sql.DB) error {
 
 // OpenDB opens a SQLite database, configures pool limits and applies PRAGMAs.
 func OpenDB(dsn string) (*sql.DB, error) {
+	ctx := context.Background()
+	ctx = logger.WithComponent(ctx, "infra:db")
+
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
+		logger.Error(ctx, "Failed opening SQLite database", "dsn", dsn, "error", err.Error())
 		return nil, err
 	}
 	db.SetMaxOpenConns(DefaultMaxOpenConns)
 	db.SetMaxIdleConns(DefaultMaxIdleConns)
 
 	if err := ApplyPragmas(db); err != nil {
+		logger.Error(ctx, "Failed applying SQLite PRAGMAs", "dsn", dsn, "error", err.Error())
 		db.Close()
 		return nil, err
 	}
+	logger.Info(ctx, "SQLite database connection initialized", "dsn", dsn, "max_open", DefaultMaxOpenConns, "max_idle", DefaultMaxIdleConns)
 	return db, nil
 }
 
 // ApplyMigrations executes all SQL statements in a given directory from MigrationsFS.
 func ApplyMigrations(db *sql.DB, dir string) error {
+	ctx := context.Background()
+	ctx = logger.WithComponent(ctx, "infra:migrations")
+
 	entries, err := MigrationsFS.ReadDir(dir)
 	if err != nil {
+		logger.Error(ctx, "Failed reading migrations directory", "dir", dir, "error", err.Error())
 		return fmt.Errorf("read migrations dir %s: %w", dir, err)
 	}
 	for _, entry := range entries {
@@ -72,11 +83,14 @@ func ApplyMigrations(db *sql.DB, dir string) error {
 		path := filepath.Join(dir, entry.Name())
 		content, err := MigrationsFS.ReadFile(path)
 		if err != nil {
+			logger.Error(ctx, "Failed reading migration file", "file", path, "error", err.Error())
 			return fmt.Errorf("read file %s: %w", path, err)
 		}
 		if _, err := db.Exec(string(content)); err != nil {
+			logger.Error(ctx, "Failed applying migration script", "file", path, "error", err.Error())
 			return fmt.Errorf("execute migration %s: %w", path, err)
 		}
+		logger.Info(ctx, "Database migration executed successfully", "file", path)
 	}
 	return nil
 }
@@ -136,7 +150,11 @@ func (m *TenantDBManager) VerifyUserMembership(ctx context.Context, budgetID, us
 
 // GetTenantDB opens or retrieves from cache the tenant DB for budgetID after path validation.
 func (m *TenantDBManager) GetTenantDB(budgetID string, allowCreate bool) (*sql.DB, error) {
+	ctx := context.Background()
+	ctx = logger.WithComponent(ctx, "infra:tenant_manager")
+
 	if !domain.IsValidUUIDv7(budgetID) {
+		logger.Warn(ctx, "Invalid budget ID format provided to tenant manager", "budget_id", budgetID)
 		return nil, errors.New("invalid budget ID format")
 	}
 
@@ -145,16 +163,19 @@ func (m *TenantDBManager) GetTenantDB(budgetID string, allowCreate bool) (*sql.D
 
 	if entry, exists := m.tenants[budgetID]; exists {
 		m.moveToHead(entry)
+		logger.Debug(ctx, "Tenant DB retrieved from LRU cache", "budget_id", budgetID, "cached_count", len(m.tenants))
 		return entry.db, nil
 	}
 
 	dbPath := filepath.Join(m.budgetsDir, budgetID+".db")
 	if filepath.Dir(dbPath) != m.budgetsDir {
+		logger.Error(ctx, "Path traversal attempt detected in tenant manager", "budget_id", budgetID, "path", dbPath)
 		return nil, errors.New("path traversal detected")
 	}
 
 	if !allowCreate {
 		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+			logger.Warn(ctx, "Tenant database does not exist", "budget_id", budgetID, "path", dbPath)
 			return nil, fmt.Errorf("tenant database for budget %s does not exist", budgetID)
 		}
 	}
@@ -162,12 +183,14 @@ func (m *TenantDBManager) GetTenantDB(budgetID string, allowCreate bool) (*sql.D
 	dsn := fmt.Sprintf("file:%s?_journal=WAL", dbPath)
 	db, err := OpenDB(dsn)
 	if err != nil {
+		logger.Error(ctx, "Failed to open tenant database", "budget_id", budgetID, "error", err.Error())
 		return nil, err
 	}
 
 	// Always ensure schema is applied
 	if err := ApplyMigrations(db, "migrations/tenant"); err != nil {
 		db.Close()
+		logger.Error(ctx, "Tenant migrations failed", "budget_id", budgetID, "error", err.Error())
 		return nil, fmt.Errorf("tenant migrations failed: %w", err)
 	}
 
@@ -177,6 +200,7 @@ func (m *TenantDBManager) GetTenantDB(budgetID string, allowCreate bool) (*sql.D
 	}
 	m.tenants[budgetID] = entry
 	m.addToHead(entry)
+	logger.Info(ctx, "Tenant database loaded into LRU cache", "budget_id", budgetID, "cached_count", len(m.tenants), "max_cached", m.maxCached)
 
 	if len(m.tenants) > m.maxCached {
 		m.evictTail()
@@ -223,15 +247,20 @@ func (m *TenantDBManager) evictTail() {
 	m.removeNode(tail)
 	delete(m.tenants, tail.budgetID)
 	tail.db.Close()
+	ctx := logger.WithComponent(context.Background(), "infra:tenant_manager")
+	logger.Info(ctx, "Tenant database evicted from LRU cache", "budget_id", tail.budgetID, "remaining_cached", len(m.tenants))
 }
 
 func (m *TenantDBManager) CloseAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ctx := logger.WithComponent(context.Background(), "infra:tenant_manager")
+	count := len(m.tenants)
 	for _, entry := range m.tenants {
 		entry.db.Close()
 	}
 	m.tenants = make(map[string]*tenantEntry)
 	m.lruHead = nil
 	m.lruTail = nil
+	logger.Info(ctx, "All tenant database connections closed", "closed_count", count)
 }

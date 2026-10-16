@@ -10,6 +10,7 @@ import (
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/integration/mock"
+	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/transaction"
 	"github.com/labstack/echo/v4"
 )
@@ -233,10 +234,17 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 
 // SyncWithBank triggers bank integration synchronization, imports raw transactions and runs auto-matching.
 func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:transaction:bank_sync")
+
 	budgetID := c.Param("budgetId")
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	userID := c.Get(ContextUserIDKey).(string)
 	corrID := c.Get("correlationID").(string)
+
+	logger.Info(ctx, "Starting bank transaction synchronization",
+		"budget_id", budgetID,
+		"user_id", userID,
+	)
 
 	now := time.Now().UTC().UnixMicro()
 
@@ -256,19 +264,22 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 		tenantDB.ExecContext(c.Request().Context(), `
 			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
 			VALUES (?, 1, ?, 'Checking Account', 'CHECKING', 'PLN', 0, ?, ?)`, userAcctID, pID, userID, now)
+		logger.Info(ctx, "Auto-created default checking account for synchronization", "account_id", userAcctID)
 	}
 
 	// Fetch transactions from mock bank
 	extTxs, err := h.mockAdapter.FetchTransactions(c.Request().Context(), userAcctID, 0)
 	if err != nil {
+		logger.Error(ctx, "Bank sync failed fetching transactions from adapter", "account_id", userAcctID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Bank sync error")
 	}
 
+	importedCount := 0
 	for _, ext := range extTxs {
 		dedup := transaction.ComputeCanonicalDedupHash(userAcctID, ext.ExternalTxID, ext.BookingDateMicro, ext.AmountMinor, ext.Currency, ext.Payee, ext.Reference)
 		rawID := domain.NewUUIDv7()
 
-		tenantDB.ExecContext(c.Request().Context(), `
+		res, err := tenantDB.ExecContext(c.Request().Context(), `
 			INSERT INTO raw_transactions_current (
 				id, version, account_id, external_transaction_id, dedup_hash, booking_date,
 				amount_minor, currency, raw_payee, reference, status, updated_at
@@ -277,7 +288,19 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 			rawID, userAcctID, ext.ExternalTxID, dedup, ext.BookingDateMicro,
 			ext.AmountMinor, ext.Currency, ext.Payee, ext.Reference, now,
 		)
+		if err == nil {
+			if rows, _ := res.RowsAffected(); rows > 0 {
+				importedCount++
+			}
+		}
 	}
+
+	logger.Info(ctx, "Bank transaction synchronization completed",
+		"budget_id", budgetID,
+		"account_id", userAcctID,
+		"fetched_count", len(extTxs),
+		"imported_count", importedCount,
+	)
 
 	_ = corrID
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
@@ -285,6 +308,8 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 
 // AddManualTransaction handles direct cash transaction entry.
 func (h *TransactionsHandler) AddManualTransaction(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:transaction:manual")
+
 	budgetID := c.Param("budgetId")
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	userID := c.Get(ContextUserIDKey).(string)
@@ -293,7 +318,16 @@ func (h *TransactionsHandler) AddManualTransaction(c echo.Context) error {
 	var amountFloat float64
 	fmt.Sscanf(c.FormValue("amount"), "%f", &amountFloat)
 	amountMinor := int64(amountFloat * 100)
+
+	logger.Info(ctx, "Recording manual cash transaction",
+		"budget_id", budgetID,
+		"user_id", userID,
+		"amount_minor", amountMinor,
+		"notes", c.FormValue("notes"),
+	)
+
 	if amountMinor <= 0 {
+		logger.Warn(ctx, "Manual transaction rejected: invalid amount", "amount_minor", amountMinor)
 		return echo.NewHTTPError(http.StatusBadRequest, "Invalid transaction amount")
 	}
 
@@ -327,7 +361,7 @@ func (h *TransactionsHandler) AddManualTransaction(c echo.Context) error {
 	}
 
 	notes := c.FormValue("notes")
-	_, err = transaction.ExecuteResolution(c.Request().Context(), tenantDB, transaction.ResolveResolutionInput{
+	opID, err := transaction.ExecuteResolution(c.Request().Context(), tenantDB, transaction.ResolveResolutionInput{
 		OperationType: transaction.OpDirectMove,
 		BudgetTransactions: []transaction.BudgetTxInput{
 			{
@@ -345,8 +379,17 @@ func (h *TransactionsHandler) AddManualTransaction(c echo.Context) error {
 		CorrelationID: corrID,
 	})
 	if err != nil {
+		logger.Error(ctx, "Failed executing resolution for manual transaction", "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to save transaction: %v", err))
 	}
+
+	logger.Info(ctx, "Manual transaction recorded successfully",
+		"budget_id", budgetID,
+		"operation_id", opID,
+		"source_account_id", userAcctID,
+		"dest_account_id", extAcctID,
+		"amount_minor", amountMinor,
+	)
 
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
 }
