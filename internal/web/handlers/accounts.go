@@ -361,22 +361,30 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
                             <span class="text-xs text-base-content/60">or quick pick:</span>
                         </div>
                         <div class="grid grid-cols-8 gap-1.5 p-2 bg-base-100 rounded-lg border border-base-300">
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('💵')">💵</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('💳')">💳</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('🏦')">🏦</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('💰')">💰</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('🪙')">🪙</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('👛')">👛</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('🐷')">🐷</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('📈')">📈</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('💎')">💎</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('🏠')">🏠</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('🚗')">🚗</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('🛒')">🛒</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('✈️')">✈️</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('💼')">💼</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('🛡️')">🛡️</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setNewEmoji('⭐')">⭐</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Cash" onclick="setNewEmoji('💵')">💵</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Credit Card" onclick="setNewEmoji('💳')">💳</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Bank" onclick="setNewEmoji('🏦')">🏦</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Purse" onclick="setNewEmoji('👛')">👛</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Envelope / Envelopes" onclick="setNewEmoji('✉️')">✉️</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Love Envelope" onclick="setNewEmoji('💌')">💌</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Money Bag" onclick="setNewEmoji('💰')">💰</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Coin" onclick="setNewEmoji('🪙')">🪙</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Piggy Bank" onclick="setNewEmoji('🐷')">🐷</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Growth" onclick="setNewEmoji('📈')">📈</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Gem / Savings" onclick="setNewEmoji('💎')">💎</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="House" onclick="setNewEmoji('🏠')">🏠</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Car" onclick="setNewEmoji('🚗')">🚗</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Shopping Cart" onclick="setNewEmoji('🛒')">🛒</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Travel" onclick="setNewEmoji('✈️')">✈️</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Briefcase" onclick="setNewEmoji('💼')">💼</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Incoming Envelope" onclick="setNewEmoji('📨')">📨</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Outgoing Envelope" onclick="setNewEmoji('📩')">📩</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Security" onclick="setNewEmoji('🛡️')">🛡️</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Star" onclick="setNewEmoji('⭐')">⭐</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Target" onclick="setNewEmoji('🎯')">🎯</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Fuel / Utilities" onclick="setNewEmoji('⚡')">⚡</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Health" onclick="setNewEmoji('💊')">💊</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Coffee / Leisure" onclick="setNewEmoji('☕')">☕</button>
                         </div>
                     </div>
 
@@ -608,22 +616,30 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
                             <span class="text-xs text-base-content/60">or quick pick:</span>
                         </div>
                         <div class="grid grid-cols-8 gap-1.5 p-2 bg-base-100 rounded-lg border border-base-300">
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('💵')">💵</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('💳')">💳</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('🏦')">🏦</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('💰')">💰</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('🪙')">🪙</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('👛')">👛</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('🐷')">🐷</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('📈')">📈</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('💎')">💎</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('🏠')">🏠</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('🚗')">🚗</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('🛒')">🛒</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('✈️')">✈️</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('💼')">💼</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('🛡️')">🛡️</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" onclick="setEditEmoji('⭐')">⭐</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Cash" onclick="setEditEmoji('💵')">💵</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Credit Card" onclick="setEditEmoji('💳')">💳</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Bank" onclick="setEditEmoji('🏦')">🏦</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Purse" onclick="setEditEmoji('👛')">👛</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Envelope / Envelopes" onclick="setEditEmoji('✉️')">✉️</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Love Envelope" onclick="setEditEmoji('💌')">💌</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Money Bag" onclick="setEditEmoji('💰')">💰</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Coin" onclick="setEditEmoji('🪙')">🪙</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Piggy Bank" onclick="setEditEmoji('🐷')">🐷</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Growth" onclick="setEditEmoji('📈')">📈</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Gem / Savings" onclick="setEditEmoji('💎')">💎</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="House" onclick="setEditEmoji('🏠')">🏠</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Car" onclick="setEditEmoji('🚗')">🚗</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Shopping Cart" onclick="setEditEmoji('🛒')">🛒</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Travel" onclick="setEditEmoji('✈️')">✈️</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Briefcase" onclick="setEditEmoji('💼')">💼</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Incoming Envelope" onclick="setEditEmoji('📨')">📨</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Outgoing Envelope" onclick="setEditEmoji('📩')">📩</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Security" onclick="setEditEmoji('🛡️')">🛡️</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Star" onclick="setEditEmoji('⭐')">⭐</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Target" onclick="setEditEmoji('🎯')">🎯</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Fuel / Utilities" onclick="setEditEmoji('⚡')">⚡</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Health" onclick="setEditEmoji('💊')">💊</button>
+                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Coffee / Leisure" onclick="setEditEmoji('☕')">☕</button>
                         </div>
                     </div>
 
