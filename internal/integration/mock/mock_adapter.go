@@ -7,11 +7,11 @@ import (
 )
 
 type ExtAccount struct {
-	ID              string
-	Name            string
-	Currency        string
-	IBAN            string
-	BalanceMinor    int64
+	ID           string
+	Name         string
+	Currency     string
+	IBAN         string
+	BalanceMinor int64
 }
 
 type ExtTransaction struct {
@@ -132,7 +132,7 @@ func (m *MockAdapter) FetchTransactions(ctx context.Context, extAccountID string
 	day := int64(24 * 3600 * 1_000_000)
 
 	// Return deterministic batch of raw transactions including Zabka, Salary, and Dinner split
-	return []ExtTransaction{
+	txs := []ExtTransaction{
 		{
 			ExternalTxID:     fmt.Sprintf("tx_mock_salary_%d", now),
 			BookingDateMicro: now - 5*day,
@@ -182,5 +182,17 @@ func (m *MockAdapter) FetchTransactions(ctx context.Context, extAccountID string
 			Payee:            "ANNA NOWAK",
 			Reference:        "Za wino",
 		},
-	}, nil
+	}
+
+	if sinceMicro <= 0 {
+		return txs, nil
+	}
+
+	var filtered []ExtTransaction
+	for _, tx := range txs {
+		if tx.BookingDateMicro > sinceMicro {
+			filtered = append(filtered, tx)
+		}
+	}
+	return filtered, nil
 }

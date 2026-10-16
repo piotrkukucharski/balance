@@ -964,6 +964,268 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	// Bank sync initial balance & incremental sync steps
+	var externalBankBalMinor int64
+
+	ctx.Step(`^an active checking account "([^"]*)" with (.*) initial balance$`, func(acctName, balStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		userAcctID := domain.NewUUIDv7()
+
+		tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, created_at, updated_at)
+			VALUES ('01900000-0000-7000-8000-000000000001', 'Family Home', 'PLN', ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name`, now, now)
+
+		bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, 'user_1', ?)`, pID, now)
+		bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, acctName, now)
+
+		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+		tc.activeUserID = "user_1"
+		return nil
+	})
+
+	ctx.Step(`^the external bank account currently has a balance of "([^"]*)"$`, func(balStr string) error {
+		// e.g. "5,420.50 PLN" -> 542050
+		cleaned := strings.ReplaceAll(balStr, ",", "")
+		cleaned = strings.ReplaceAll(cleaned, " PLN", "")
+		var f float64
+		fmt.Sscanf(cleaned, "%f", &f)
+		externalBankBalMinor = int64(f * 100)
+		return nil
+	})
+
+	ctx.Step(`^I trigger "Sync with Bank" on budget "([^"]*)" for account "([^"]*)" with a (\d+)-day window$`, func(budgetName, acctName string, days int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var acctID string
+		err = bDB.QueryRow("SELECT id FROM accounts_current WHERE name = ?", acctName).Scan(&acctID)
+		if err != nil {
+			return err
+		}
+
+		form := url.Values{}
+		form.Set("account_id", acctID)
+		form.Set("days_window", fmt.Sprintf("%d", days))
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/01900000-0000-7000-8000-000000000001/transactions/sync", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.SyncWithBank(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^a budget transaction for "Set Balance Offset" should be recorded with the date of the oldest transaction$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var count int
+		var minDate int64
+		err = bDB.QueryRow(`
+			SELECT count(*), MIN(transaction_date) FROM budget_transactions_current 
+			WHERE notes LIKE '%Set Balance Offset%'`).Scan(&count, &minDate)
+		if err != nil || count == 0 {
+			return fmt.Errorf("expected Set Balance Offset budget transaction, count=%d, err=%v", count, err)
+		}
+
+		var oldestRawDate int64
+		err = bDB.QueryRow(`SELECT MIN(booking_date) FROM raw_transactions_current`).Scan(&oldestRawDate)
+		if err != nil || oldestRawDate == 0 {
+			return fmt.Errorf("failed fetching oldest raw transaction date: %v", err)
+		}
+
+		if minDate != oldestRawDate {
+			return fmt.Errorf("expected Set Balance date %d to equal oldest raw date %d", minDate, oldestRawDate)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the amount of "Set Balance Offset" should equal the bank balance minus the net sum of imported raw transactions$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var setBalMinor int64
+		err = bDB.QueryRow(`
+			SELECT source_amount_minor FROM budget_transactions_current 
+			WHERE notes LIKE '%Set Balance Offset%'`).Scan(&setBalMinor)
+		if err != nil {
+			return fmt.Errorf("failed querying Set Balance Offset amount: %v", err)
+		}
+
+		var netSumRaw int64
+		err = bDB.QueryRow(`SELECT SUM(amount_minor) FROM raw_transactions_current`).Scan(&netSumRaw)
+		if err != nil {
+			return fmt.Errorf("failed querying sum of raw transactions: %v", err)
+		}
+
+		expected := externalBankBalMinor - netSumRaw
+		if setBalMinor != expected {
+			return fmt.Errorf("expected Set Balance %d, got %d (bank=%d, rawSum=%d)", expected, setBalMinor, externalBankBalMinor, netSumRaw)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the balance of "([^"]*)" should equal the starting balance ready to assign$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var currentBal int64
+		err = bDB.QueryRow(`
+			SELECT acb.balance_minor FROM account_currency_balances acb
+			JOIN accounts_current a ON a.id = acb.account_id
+			WHERE a.name = ? AND acb.currency = 'PLN'`, acctName).Scan(&currentBal)
+		if err != nil {
+			return fmt.Errorf("failed getting account balance for %s: %v", acctName, err)
+		}
+
+		var setBalMinor int64
+		err = bDB.QueryRow(`
+			SELECT source_amount_minor FROM budget_transactions_current 
+			WHERE notes LIKE '%Set Balance Offset%'`).Scan(&setBalMinor)
+		if err != nil {
+			return fmt.Errorf("failed querying Set Balance Offset amount: %v", err)
+		}
+
+		if currentBal != setBalMinor {
+			return fmt.Errorf("expected account balance %d to equal starting balance %d", currentBal, setBalMinor)
+		}
+		return nil
+	})
+
+	ctx.Step(`^an active checking account "([^"]*)" with previously imported transactions$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		day := int64(24 * 3600 * 1_000_000)
+		pID := domain.NewUUIDv7()
+		userAcctID := domain.NewUUIDv7()
+
+		tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, created_at, updated_at)
+			VALUES ('01900000-0000-7000-8000-000000000001', 'Family Home', 'PLN', ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name`, now, now)
+
+		bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, 'user_1', ?)`, pID, now)
+		bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, acctName, now)
+
+		// Insert existing transaction from 3 days ago (plus 1 second)
+		rawID := domain.NewUUIDv7()
+		txDate := now - 3*day + 1_000_000
+		dedup := "existing_dedup_hash"
+		bDB.Exec(`
+			INSERT INTO raw_transactions_current (
+				id, version, account_id, external_transaction_id, dedup_hash, booking_date,
+				amount_minor, currency, raw_payee, reference, status, updated_at
+			) VALUES (?, 1, ?, 'prev_tx_1', ?, ?, 5000, 'PLN', 'Old Store', 'test', 'PENDING', ?)`,
+			rawID, userAcctID, dedup, txDate, now,
+		)
+
+		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+		tc.activeUserID = "user_1"
+		return nil
+	})
+
+	ctx.Step(`^I trigger "Sync with Bank" on budget "([^"]*)" for account "([^"]*)"$`, func(budgetName, acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var acctID string
+		err = bDB.QueryRow("SELECT id FROM accounts_current WHERE name = ?", acctName).Scan(&acctID)
+		if err != nil {
+			return err
+		}
+
+		form := url.Values{}
+		form.Set("account_id", acctID)
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/01900000-0000-7000-8000-000000000001/transactions/sync", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.SyncWithBank(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the bank sync should query transactions starting strictly after the latest imported booking date$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var prevTxDate int64
+		err = bDB.QueryRow(`SELECT booking_date FROM raw_transactions_current WHERE external_transaction_id = 'prev_tx_1'`).Scan(&prevTxDate)
+		if err != nil {
+			return err
+		}
+
+		// Any new imported transaction must have booking_date > prevTxDate
+		var olderCount int
+		err = bDB.QueryRow(`
+			SELECT count(*) FROM raw_transactions_current 
+			WHERE external_transaction_id != 'prev_tx_1' AND booking_date <= ?`, prevTxDate).Scan(&olderCount)
+		if err != nil {
+			return err
+		}
+
+		if olderCount > 0 {
+			return fmt.Errorf("found %d transactions older than or equal to previous latest date %d", olderCount, prevTxDate)
+		}
+		return nil
+	})
+
+	ctx.Step(`^duplicate transactions should not be inserted$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var count int
+		err = bDB.QueryRow(`SELECT count(*) FROM raw_transactions_current WHERE external_transaction_id = 'prev_tx_1'`).Scan(&count)
+		if err != nil || count != 1 {
+			return fmt.Errorf("expected exactly 1 occurrence of prev_tx_1, got %d", count)
+		}
+		return nil
+	})
 }
 
 func TestFeatures(t *testing.T) {

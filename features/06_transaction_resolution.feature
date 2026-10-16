@@ -41,3 +41,19 @@ Feature: Two-Tier Transaction Resolution (Move, Merge, Split) and Deduplication
     When I delete the transaction
     Then the transaction should no longer appear in the budget transactions ledger
 
+  Scenario: First bank sync calculates Set Balance offset based on imported window
+    Given an active checking account "mBank Checking" with 0.00 PLN initial balance
+    And the external bank account currently has a balance of "5,420.50 PLN"
+    When I trigger "Sync with Bank" on budget "Family Home" for account "mBank Checking" with a 30-day window
+    Then newly discovered raw transactions should be imported into "raw_transactions_current" with status "PENDING"
+    And a budget transaction for "Set Balance Offset" should be recorded with the date of the oldest transaction
+    And the amount of "Set Balance Offset" should equal the bank balance minus the net sum of imported raw transactions
+    And the balance of "mBank Checking" should equal the starting balance ready to assign
+
+  Scenario: Subsequent bank sync only fetches transactions newer than the latest imported transaction
+    Given an active checking account "mBank Checking" with previously imported transactions
+    When I trigger "Sync with Bank" on budget "Family Home" for account "mBank Checking"
+    Then the bank sync should query transactions starting strictly after the latest imported booking date
+    And duplicate transactions should not be inserted
+
+
