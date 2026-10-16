@@ -23,40 +23,58 @@ func NewAuthHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *AuthHandler 
 	}
 }
 
-// RegisterPage renders the registration HTML page.
+// RegisterPage renders the registration HTML page with DaisyUI 5 styling.
 func (h *AuthHandler) RegisterPage(c echo.Context) error {
 	html := `<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Balance - Register</title>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@latest/full.min.css" rel="stylesheet" type="text/css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Balance — Create Account</title>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
 </head>
-<body class="bg-base-200 min-h-screen flex items-center justify-center p-4">
-    <div class="card w-full max-w-md bg-base-100 shadow-xl border border-base-300">
-        <div class="card-body">
-            <h2 class="card-title text-2xl font-bold justify-center mb-4">Create Account</h2>
+<body class="bg-base-200 text-base-content min-h-screen flex items-center justify-center p-4">
+    <div class="card card-border bg-base-100 shadow-2xl w-full max-w-md border-base-300">
+        <div class="card-body gap-4 p-8">
+            <div class="flex flex-col items-center text-center gap-1">
+                <div class="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-3xl font-bold shadow-inner mb-2">⚖️</div>
+                <h1 class="text-2xl font-black tracking-tight">Create your account</h1>
+                <p class="text-xs text-base-content/60">Envelope budgeting with multi-currency clarity.</p>
+            </div>
+
+            <div class="divider my-0 text-xs opacity-40">ENTER DETAILS</div>
+
             <form method="POST" action="/register" class="flex flex-col gap-4">
-                <div>
-                    <label class="label"><span class="label-text">Display Name</span></label>
-                    <input type="text" name="display_name" required placeholder="Jan Kowalski" class="input input-bordered w-full" />
+                <div class="form-control">
+                    <label class="label pb-1">
+                        <span class="label-text font-medium text-xs">Full Name / Display Name</span>
+                    </label>
+                    <input type="text" name="display_name" required placeholder="Jan Kowalski" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
-                <div>
-                    <label class="label"><span class="label-text">Email</span></label>
-                    <input type="email" name="email" required placeholder="jan@example.com" class="input input-bordered w-full" />
+                <div class="form-control">
+                    <label class="label pb-1">
+                        <span class="label-text font-medium text-xs">Email Address</span>
+                    </label>
+                    <input type="email" name="email" required placeholder="jan@example.com" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
-                <div>
-                    <label class="label"><span class="label-text">Password</span></label>
-                    <input type="password" name="password" required placeholder="••••••••" class="input input-bordered w-full" />
+                <div class="form-control">
+                    <label class="label pb-1">
+                        <span class="label-text font-medium text-xs">Password</span>
+                    </label>
+                    <input type="password" name="password" minlength="8" required placeholder="Minimum 8 characters" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
-                <button type="submit" class="btn btn-primary mt-2">Sign Up</button>
+
+                <button type="submit" class="btn btn-primary w-full shadow-lg mt-2 font-semibold">
+                    Get Started Free
+                </button>
             </form>
-            <div class="text-center mt-4">
-                <span class="text-sm opacity-70">Already have an account?</span>
-                <a href="/login" class="link link-hover link-primary text-sm font-semibold">Log In</a>
+
+            <div class="text-center pt-2">
+                <span class="text-xs text-base-content/60">Already have an account?</span>
+                <a href="/login" class="link link-primary link-hover text-xs font-bold ml-1">Log in here</a>
             </div>
         </div>
     </div>
@@ -95,36 +113,52 @@ func (h *AuthHandler) HandleRegister(c echo.Context) error {
 	return h.createSessionAndRedirect(c, userID)
 }
 
-// LoginPage renders the login HTML page.
+// LoginPage renders the login HTML page with DaisyUI 5 styling.
 func (h *AuthHandler) LoginPage(c echo.Context) error {
 	html := `<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Balance - Login</title>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@latest/full.min.css" rel="stylesheet" type="text/css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Balance — Welcome Back</title>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
 </head>
-<body class="bg-base-200 min-h-screen flex items-center justify-center p-4">
-    <div class="card w-full max-w-md bg-base-100 shadow-xl border border-base-300">
-        <div class="card-body">
-            <h2 class="card-title text-2xl font-bold justify-center mb-4">Welcome to Balance</h2>
+<body class="bg-base-200 text-base-content min-h-screen flex items-center justify-center p-4">
+    <div class="card card-border bg-base-100 shadow-2xl w-full max-w-md border-base-300">
+        <div class="card-body gap-4 p-8">
+            <div class="flex flex-col items-center text-center gap-1">
+                <div class="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-3xl font-bold shadow-inner mb-2">⚖️</div>
+                <h1 class="text-2xl font-black tracking-tight">Welcome to Balance</h1>
+                <p class="text-xs text-base-content/60">Log in to manage your budget and envelopes.</p>
+            </div>
+
+            <div class="divider my-0 text-xs opacity-40">CREDENTIALS</div>
+
             <form method="POST" action="/login" class="flex flex-col gap-4">
-                <div>
-                    <label class="label"><span class="label-text">Email</span></label>
-                    <input type="email" name="email" required placeholder="jan@example.com" class="input input-bordered w-full" />
+                <div class="form-control">
+                    <label class="label pb-1">
+                        <span class="label-text font-medium text-xs">Email Address</span>
+                    </label>
+                    <input type="email" name="email" required placeholder="jan@example.com" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
-                <div>
-                    <label class="label"><span class="label-text">Password</span></label>
-                    <input type="password" name="password" required placeholder="••••••••" class="input input-bordered w-full" />
+                <div class="form-control">
+                    <label class="label pb-1">
+                        <span class="label-text font-medium text-xs">Password</span>
+                    </label>
+                    <input type="password" name="password" required placeholder="••••••••" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
-                <button type="submit" class="btn btn-primary mt-2">Log In</button>
+
+                <button type="submit" class="btn btn-primary w-full shadow-lg mt-2 font-semibold">
+                    Sign In
+                </button>
             </form>
-            <div class="text-center mt-4">
-                <span class="text-sm opacity-70">Don't have an account?</span>
-                <a href="/register" class="link link-hover link-primary text-sm font-semibold">Sign Up</a>
+
+            <div class="text-center pt-2">
+                <span class="text-xs text-base-content/60">Don't have an account?</span>
+                <a href="/register" class="link link-primary link-hover text-xs font-bold ml-1">Create one here</a>
             </div>
         </div>
     </div>

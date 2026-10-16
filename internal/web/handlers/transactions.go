@@ -52,7 +52,9 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 	defer rows.Close()
 
 	var txRows strings.Builder
+	hasTxs := false
 	for rows.Next() {
+		hasTxs = true
 		var id, curr, notes, bucketName string
 		var amountMinor, txDate int64
 		rows.Scan(&id, &amountMinor, &curr, &txDate, &notes, &bucketName)
@@ -60,11 +62,23 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		dateStr := time.UnixMicro(txDate).Format("2006-01-02")
 		txRows.WriteString(fmt.Sprintf(`
 			<tr class="hover">
-				<td>%s</td>
-				<td><span class="badge badge-ghost badge-sm">%s</span></td>
-				<td>%s</td>
-				<td class="font-mono text-right">%.2f %s</td>
+				<td class="font-mono text-xs">%s</td>
+				<td><span class="badge badge-soft badge-primary font-semibold text-xs">%s</span></td>
+				<td class="text-sm font-medium">%s</td>
+				<td class="font-mono text-right font-bold text-sm">
+					-%.2f <span class="text-xs font-normal text-base-content/60">%s</span>
+				</td>
 			</tr>`, dateStr, bucketName, notes, float64(amountMinor)/100.0, curr))
+	}
+
+	if !hasTxs {
+		txRows.WriteString(`
+			<tr>
+				<td colspan="4" class="text-center py-8 text-base-content/50">
+					No transactions recorded yet. Use 🔄 Sync with Bank or ➕ Add Manual Transaction.
+				</td>
+			</tr>
+		`)
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
@@ -73,98 +87,138 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 <html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Balance - Transactions</title>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@latest/full.min.css" rel="stylesheet" type="text/css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Balance — Transactions</title>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <link rel="manifest" href="/manifest.webmanifest">
 </head>
-<body class="bg-base-200 min-h-screen flex flex-col">
-    <header class="navbar bg-base-100 border-b border-base-300 px-6">
-        <div class="flex-1 gap-4 items-center">
-            <a href="/budgets" class="text-xl font-bold tracking-tight text-primary">Balance</a>
-            <div class="badge badge-outline">%s</div>
+<body class="bg-base-200 text-base-content min-h-screen flex flex-col">
+    <header class="navbar bg-base-100 border-b border-base-300 px-6 sticky top-0 z-30 shadow-xs">
+        <div class="navbar-start gap-4 items-center">
+            <a href="/budgets" class="text-2xl font-black tracking-tight text-primary flex items-center gap-2">
+                <span>⚖️</span>
+                <span>Balance</span>
+            </a>
+            <div class="badge badge-neutral font-semibold gap-1.5 py-3">
+                <span class="w-2 h-2 rounded-full bg-success"></span>
+                <span>%s</span>
+            </div>
         </div>
-        <div class="flex-none gap-4">
+        <div class="navbar-end gap-3">
             <form method="POST" action="/logout">
                 <input type="hidden" name="csrf_token" value="%s" />
-                <button type="submit" class="btn btn-ghost btn-sm">Log Out</button>
+                <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
             </form>
         </div>
     </header>
 
     <div class="flex-1 flex overflow-hidden">
-        <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-2">
-            <ul class="menu menu-md w-full p-0">
-                <li><a href="/budgets/%s/budget">1. Budget (Buckets)</a></li>
-                <li><a href="/budgets/%s/transactions" class="active font-bold">2. Transactions</a></li>
-                <li><a href="/budgets/%s/reports">3. Reports</a></li>
-                <li><a href="/budgets/%s/parties">4. External Parties</a></li>
-                <li><a href="/budgets/%s/members">5. Members</a></li>
+        <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
+            <ul class="menu menu-md w-full p-0 gap-1">
+                <li><a href="/budgets/%s/budget">📂 1. Budget (Buckets)</a></li>
+                <li><a href="/budgets/%s/transactions" class="active font-bold">💳 2. Transactions</a></li>
+                <li><a href="/budgets/%s/reports">📊 3. Reports</a></li>
+                <li><a href="/budgets/%s/parties">🏢 4. External Parties</a></li>
+                <li><a href="/budgets/%s/members">👥 5. Members</a></li>
             </ul>
         </aside>
 
-        <main class="flex-1 p-6 overflow-y-auto">
-            <!-- Primary Toolbar: Sync with Bank & Add Manual Transaction -->
-            <div class="flex justify-between items-center mb-6">
-                <h1 class="text-2xl font-bold">Transactions Ledger</h1>
-                <div class="flex gap-3">
+        <main class="flex-1 p-6 md:p-8 overflow-y-auto">
+            <!-- Primary Toolbar -->
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+                <div>
+                    <h1 class="text-2xl font-black tracking-tight">Transactions Ledger</h1>
+                    <p class="text-xs text-base-content/60 mt-1">Review activity, sync bank feeds, or record cash transactions.</p>
+                </div>
+                <div class="flex items-center gap-3">
                     <form method="POST" action="/budgets/%s/transactions/sync">
                         <input type="hidden" name="csrf_token" value="%s" />
-                        <button type="submit" class="btn btn-secondary btn-sm">🔄 Sync with Bank</button>
+                        <button type="submit" class="btn btn-secondary btn-sm shadow font-semibold gap-1.5">
+                            <span>🔄</span>
+                            <span>Sync with Bank</span>
+                        </button>
                     </form>
-                    <button class="btn btn-primary btn-sm" onclick="add_tx_modal.showModal()">➕ Add Manual Transaction</button>
+                    <button class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="add_tx_modal.showModal()">
+                        <span>➕</span>
+                        <span>Add Transaction</span>
+                    </button>
                 </div>
             </div>
 
-            <!-- Ledger Table -->
-            <div class="overflow-x-auto bg-base-100 rounded-box border border-base-300 shadow">
-                <table class="table table-zebra">
-                    <thead>
-                        <tr>
-                            <th>Date</th>
-                            <th>Bucket</th>
-                            <th>Notes</th>
-                            <th class="text-right">Amount</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        %s
-                    </tbody>
-                </table>
+            <!-- Ledger Table Card -->
+            <div class="card card-border bg-base-100 border-base-300 shadow-md">
+                <div class="card-body p-0">
+                    <div class="overflow-x-auto">
+                        <table class="table table-zebra w-full">
+                            <thead>
+                                <tr class="bg-base-200/50">
+                                    <th class="font-bold">Booking Date</th>
+                                    <th class="font-bold">Envelope (Bucket)</th>
+                                    <th class="font-bold">Notes / Payee</th>
+                                    <th class="font-bold text-right">Amount</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                %s
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </main>
     </div>
 
     <!-- Mobile Bottom Navigation Dock -->
-    <div class="dock md:hidden">
-        <a href="/budgets/%s/budget">Budget</a>
-        <a href="/budgets/%s/transactions" class="active">Txns</a>
-        <a href="/budgets/%s/reports">Reports</a>
-        <a href="/budgets/%s/parties">Parties</a>
-        <a href="/budgets/%s/members">Members</a>
+    <div class="dock md:hidden bg-base-100 border-t border-base-300">
+        <a href="/budgets/%s/budget">
+            <span class="text-xl">📂</span>
+            <span class="dock-label">Budget</span>
+        </a>
+        <a href="/budgets/%s/transactions" class="dock-active">
+            <span class="text-xl">💳</span>
+            <span class="dock-label">Txns</span>
+        </a>
+        <a href="/budgets/%s/reports">
+            <span class="text-xl">📊</span>
+            <span class="dock-label">Reports</span>
+        </a>
+        <a href="/budgets/%s/parties">
+            <span class="text-xl">🏢</span>
+            <span class="dock-label">Parties</span>
+        </a>
+        <a href="/budgets/%s/members">
+            <span class="text-xl">👥</span>
+            <span class="dock-label">Members</span>
+        </a>
     </div>
 
     <!-- Add Manual Transaction Modal -->
-    <dialog id="add_tx_modal" class="modal">
-        <div class="modal-box">
-            <h3 class="font-bold text-lg mb-4">Add Manual Transaction</h3>
+    <dialog id="add_tx_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Add Manual Transaction</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
             <form method="POST" action="/budgets/%s/transactions" class="flex flex-col gap-4">
                 <input type="hidden" name="csrf_token" value="%s" />
-                <div>
-                    <label class="label"><span class="label-text">Amount (e.g. 50.00)</span></label>
-                    <input type="number" step="0.01" name="amount" required placeholder="50.00" class="input input-bordered w-full" />
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Amount (in major units e.g. 45.50)</span></label>
+                    <input type="number" step="0.01" name="amount" required placeholder="50.00" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
-                <div>
-                    <label class="label"><span class="label-text">Notes</span></label>
-                    <input type="text" name="notes" placeholder="Cash expense" class="input input-bordered w-full" />
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Description / Payee</span></label>
+                    <input type="text" name="notes" placeholder="e.g. Lunch with team or Groceries" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
-                <div class="modal-action">
-                    <button type="button" class="btn" onclick="add_tx_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Save Transaction</button>
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="add_tx_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Record Outflow</button>
                 </div>
             </form>
         </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
     </dialog>
 </body>
 </html>`, budgetName, csrfToken,
@@ -194,7 +248,6 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 		WHERE p.is_user_owned = 1
 		LIMIT 1`).Scan(&userAcctID)
 	if err != nil {
-		// Create default user account if none exists
 		pID := domain.NewUUIDv7()
 		userAcctID = domain.NewUUIDv7()
 		tenantDB.ExecContext(c.Request().Context(), `
@@ -211,12 +264,11 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Bank sync error")
 	}
 
-	importedCount := 0
 	for _, ext := range extTxs {
 		dedup := transaction.ComputeCanonicalDedupHash(userAcctID, ext.ExternalTxID, ext.BookingDateMicro, ext.AmountMinor, ext.Currency, ext.Payee, ext.Reference)
 		rawID := domain.NewUUIDv7()
 
-		_, err := tenantDB.ExecContext(c.Request().Context(), `
+		tenantDB.ExecContext(c.Request().Context(), `
 			INSERT INTO raw_transactions_current (
 				id, version, account_id, external_transaction_id, dedup_hash, booking_date,
 				amount_minor, currency, raw_payee, reference, status, updated_at
@@ -225,9 +277,6 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 			rawID, userAcctID, ext.ExternalTxID, dedup, ext.BookingDateMicro,
 			ext.AmountMinor, ext.Currency, ext.Payee, ext.Reference, now,
 		)
-		if err == nil {
-			importedCount++
-		}
 	}
 
 	_ = corrID
@@ -250,7 +299,6 @@ func (h *TransactionsHandler) AddManualTransaction(c echo.Context) error {
 
 	now := time.Now().UTC().UnixMicro()
 
-	// Ensure at least one user account and one external account exist
 	var userAcctID, extAcctID string
 	err := tenantDB.QueryRowContext(c.Request().Context(), `
 		SELECT a.id FROM accounts_current a JOIN parties_current p ON a.party_id = p.id WHERE p.is_user_owned = 1 LIMIT 1`).Scan(&userAcctID)
