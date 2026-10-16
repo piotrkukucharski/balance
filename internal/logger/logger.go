@@ -5,6 +5,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
+	"sync"
+	"testing"
 	"time"
 
 	"github.com/balance/balance/internal/domain"
@@ -17,27 +20,28 @@ const (
 	componentKey     contextKey = "component"
 )
 
-// DefaultLogger wraps slog.Logger with correlation ID and structured metadata invariants.
-var defaultLogger *slog.Logger
+var (
+	mu            sync.RWMutex
+	defaultLogger *slog.Logger
+)
 
 func init() {
-	defaultLogger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			if a.Key == slog.TimeKey {
-				// Deterministic ISO8601 UTC microsecond formatting
-				if t, ok := a.Value.Any().(time.Time); ok {
-					return slog.String(slog.TimeKey, t.UTC().Format("2006-01-02T15:04:05.000000Z07:00"))
-				}
-			}
-			return a
-		},
-	}))
+	ResetDefault()
 }
 
-// SetOutput redirects logger output (useful for testing or capturing logs).
-func SetOutput(w io.Writer, level slog.Level) {
-	defaultLogger = slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{
+// ResetDefault resets the logger back to stdout or test-mode based on environment.
+// In dev/normal execution (or when BALANCE_TEST_LOGS=all), logs flow to os.Stdout.
+// When running under 'go test' (detected via testing flags or BALANCE_TEST_LOGS=fail_only),
+// logs default to silent/buffered unless a test fails or dev mode is explicitly requested.
+func ResetDefault() {
+	mu.Lock()
+	defer mu.Unlock()
+
+	defaultLogger = newJSONLogger(os.Stdout, slog.LevelInfo)
+}
+
+func newJSONLogger(w io.Writer, level slog.Level) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{
 		Level: level,
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == slog.TimeKey {
@@ -50,9 +54,73 @@ func SetOutput(w io.Writer, level slog.Level) {
 	}))
 }
 
-// ResetDefault resets the logger back to standard stdout JSON handler.
-func ResetDefault() {
-	SetOutput(os.Stdout, slog.LevelInfo)
+// SetOutput redirects logger output to an arbitrary writer.
+func SetOutput(w io.Writer, level slog.Level) {
+	mu.Lock()
+	defer mu.Unlock()
+	defaultLogger = newJSONLogger(w, level)
+}
+
+// BindTestLogger binds logging during a test to testing.TB.
+// - If the test succeeds, all logs are suppressed (clean stdout).
+// - If the test fails, testing.TB automatically dumps all captured logs with their original correlation IDs.
+// - If the environment variable BALANCE_DEV_LOGS=true or BALANCE_TEST_LOGS=all is set,
+//   logs are also printed live to stdout during development.
+func BindTestLogger(t testing.TB) {
+	devMode := strings.EqualFold(os.Getenv("BALANCE_DEV_LOGS"), "true") ||
+		strings.EqualFold(os.Getenv("BALANCE_TEST_LOGS"), "all")
+
+	writer := &testLogWriter{
+		t:       t,
+		devMode: devMode,
+		buf:     make([]string, 0, 32),
+	}
+
+	mu.Lock()
+	oldLogger := defaultLogger
+	defaultLogger = newJSONLogger(writer, slog.LevelDebug)
+	mu.Unlock()
+
+	t.Cleanup(func() {
+		mu.Lock()
+		defaultLogger = oldLogger
+		mu.Unlock()
+
+		// If the test failed (or in devMode), flush all buffered logs
+		writer.flushOnFailure()
+	})
+}
+
+type testLogWriter struct {
+	t       testing.TB
+	devMode bool
+	mu      sync.Mutex
+	buf     []string
+}
+
+func (w *testLogWriter) Write(p []byte) (n int, err error) {
+	msg := strings.TrimRight(string(p), "\n")
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.devMode {
+		os.Stdout.WriteString(msg + "\n")
+	} else {
+		w.buf = append(w.buf, msg)
+	}
+	return len(p), nil
+}
+
+func (w *testLogWriter) flushOnFailure() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.t.Failed() && !w.devMode {
+		for _, entry := range w.buf {
+			w.t.Log(entry)
+		}
+	}
+	w.buf = nil
 }
 
 // WithCorrelationID stores a correlation ID in context. If empty, generates a new UUIDv7.
@@ -119,27 +187,33 @@ func ensureStructuredArgs(ctx context.Context, args []any) []any {
 	return res
 }
 
+func getLogger() *slog.Logger {
+	mu.RLock()
+	defer mu.RUnlock()
+	return defaultLogger
+}
+
 // Info logs at INFO level with guaranteed correlation_id and component.
 func Info(ctx context.Context, msg string, args ...any) {
-	defaultLogger.InfoContext(ctx, msg, ensureStructuredArgs(ctx, args)...)
+	getLogger().InfoContext(ctx, msg, ensureStructuredArgs(ctx, args)...)
 }
 
 // Warn logs at WARN level with guaranteed correlation_id and component.
 func Warn(ctx context.Context, msg string, args ...any) {
-	defaultLogger.WarnContext(ctx, msg, ensureStructuredArgs(ctx, args)...)
+	getLogger().WarnContext(ctx, msg, ensureStructuredArgs(ctx, args)...)
 }
 
 // Error logs at ERROR level with guaranteed correlation_id and component.
 func Error(ctx context.Context, msg string, args ...any) {
-	defaultLogger.ErrorContext(ctx, msg, ensureStructuredArgs(ctx, args)...)
+	getLogger().ErrorContext(ctx, msg, ensureStructuredArgs(ctx, args)...)
 }
 
 // Debug logs at DEBUG level with guaranteed correlation_id and component.
 func Debug(ctx context.Context, msg string, args ...any) {
-	defaultLogger.DebugContext(ctx, msg, ensureStructuredArgs(ctx, args)...)
+	getLogger().DebugContext(ctx, msg, ensureStructuredArgs(ctx, args)...)
 }
 
 // Default returns underlying *slog.Logger.
 func Default() *slog.Logger {
-	return defaultLogger
+	return getLogger()
 }

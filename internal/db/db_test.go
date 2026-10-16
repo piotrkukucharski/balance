@@ -7,9 +7,12 @@ import (
 	"testing"
 
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/logger"
 )
 
 func TestMainDBAndTenantDBManager(t *testing.T) {
+	logger.BindTestLogger(t)
+
 	tmpDir, err := os.MkdirTemp("", "balance_test_*")
 	if err != nil {
 		t.Fatal(err)

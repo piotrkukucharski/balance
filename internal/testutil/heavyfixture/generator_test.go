@@ -7,9 +7,12 @@ import (
 	"testing"
 
 	"github.com/balance/balance/internal/db"
+	"github.com/balance/balance/internal/logger"
 )
 
 func TestGenerate10YearHeavyDataset(t *testing.T) {
+	logger.BindTestLogger(t)
+
 	tmpDir, err := os.MkdirTemp("", "balance_heavy_*")
 	if err != nil {
 		t.Fatal(err)

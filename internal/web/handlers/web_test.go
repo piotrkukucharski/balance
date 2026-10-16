@@ -12,10 +12,13 @@ import (
 
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/logger"
 	"github.com/labstack/echo/v4"
 )
 
 func TestAuthAndWorkspaceFlow(t *testing.T) {
+	logger.BindTestLogger(t)
+
 	tmpDir, err := os.MkdirTemp("", "balance_web_test_*")
 	if err != nil {
 		t.Fatal(err)

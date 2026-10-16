@@ -118,3 +118,65 @@ func (w *threadSafeWriter) Write(p []byte) (n int, err error) {
 	defer w.mu.Unlock()
 	return w.buf.Write(p)
 }
+
+// fakeTB simulates testing.TB to verify log buffering behavior on success and failure.
+type fakeTB struct {
+	testing.TB
+	failed   bool
+	logs     []string
+	cleanups []func()
+}
+
+func (f *fakeTB) Helper() {}
+func (f *fakeTB) Failed() bool { return f.failed }
+func (f *fakeTB) Log(args ...any) {
+	var sb strings.Builder
+	for i, arg := range args {
+		if i > 0 {
+			sb.WriteString(" ")
+		}
+		sb.WriteString(arg.(string))
+	}
+	f.logs = append(f.logs, sb.String())
+}
+func (f *fakeTB) Cleanup(fn func()) {
+	f.cleanups = append(f.cleanups, fn)
+}
+func (f *fakeTB) runCleanups() {
+	for i := len(f.cleanups) - 1; i >= 0; i-- {
+		f.cleanups[i]()
+	}
+}
+
+func TestBindTestLoggerSuccessMuted(t *testing.T) {
+	fake := &fakeTB{failed: false}
+	logger.BindTestLogger(fake)
+
+	ctx := context.Background()
+	logger.Info(ctx, "This log should be silenced because test passed")
+
+	fake.runCleanups()
+
+	if len(fake.logs) != 0 {
+		t.Fatalf("expected 0 logs emitted for passing test, got %d: %v", len(fake.logs), fake.logs)
+	}
+}
+
+func TestBindTestLoggerFailureFlushed(t *testing.T) {
+	fake := &fakeTB{failed: true} // Simulates test failure
+	logger.BindTestLogger(fake)
+
+	ctx := context.Background()
+	testMsg := "Critical error during failed test run"
+	logger.Error(ctx, testMsg)
+
+	fake.runCleanups()
+
+	if len(fake.logs) != 1 {
+		t.Fatalf("expected 1 log line flushed on test failure, got %d", len(fake.logs))
+	}
+	if !strings.Contains(fake.logs[0], testMsg) {
+		t.Errorf("flushed log missing expected message: %s", fake.logs[0])
+	}
+}
+

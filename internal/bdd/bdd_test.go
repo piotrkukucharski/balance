@@ -16,6 +16,7 @@ import (
 	"github.com/balance/balance/internal/auth"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/lua"
 	"github.com/balance/balance/internal/report"
 	"github.com/balance/balance/internal/web/handlers"
@@ -546,6 +547,8 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 }
 
 func TestFeatures(t *testing.T) {
+	logger.BindTestLogger(t)
+
 	suite := godog.TestSuite{
 		ScenarioInitializer: InitializeScenario,
 		Options: &godog.Options{

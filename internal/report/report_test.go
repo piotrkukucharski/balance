@@ -3,6 +3,8 @@ package report
 import (
 	"context"
 	"testing"
+
+	"github.com/balance/balance/internal/logger"
 )
 
 func TestCalculateAgeOfMoney(t *testing.T) {
@@ -41,6 +43,8 @@ func TestCalculateAgeOfMoney(t *testing.T) {
 }
 
 func TestRunMonteCarloSimulation(t *testing.T) {
+	logger.BindTestLogger(t)
+
 	ctx := context.Background()
 	cfg := MonteCarloConfig{
 		CurrentAge:       60,
