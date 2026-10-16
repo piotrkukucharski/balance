@@ -42,6 +42,13 @@ func NewAccountsHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *Accounts
 	}
 }
 
+// isDevMode checks whether the application is running in development mode.
+// Any environment other than "production" or "prod" is treated as development.
+func isDevMode() bool {
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	return env != "production" && env != "prod"
+}
+
 // AccountsView lists all user-owned financial accounts with multi-currency balances and CRUD controls.
 func (h *AccountsHandler) AccountsView(c echo.Context) error {
 	budgetID := c.Param("budgetId")
@@ -211,6 +218,24 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
+
+	devGridCols := ""
+	devSandboxCardHTML := ""
+	if isDevMode() {
+		devGridCols = "lg:grid-cols-3"
+		devSandboxCardHTML = `
+                    <div onclick="selectProvider('GOCARDLESS_SANDBOX')" class="card card-border border-base-300 bg-base-100 hover:border-warning cursor-pointer p-4 transition-all hover:shadow-md flex flex-col justify-between gap-3">
+                        <div class="flex items-start gap-3">
+                            <span class="text-3xl">🧪</span>
+                            <div>
+                                <h4 class="font-bold text-sm">GoCardLess Sandbox</h4>
+                                <span class="badge badge-warning badge-xs font-semibold mt-1">Dev & Testing</span>
+                                <p class="text-xs text-base-content/60 mt-1">Simulated PSD2 Open Banking with Sandbox Finance (SANDBOXFINANCE_SFIN0000).</p>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-outline btn-warning btn-xs w-full">Select GoCardLess Sandbox</button>
+                    </div>`
+	}
 
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en" data-theme="dark">
@@ -466,10 +491,10 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
                 <div id="step_dot_4" class="h-1.5 flex-1 rounded-full bg-base-300 transition-all"></div>
             </div>
 
-            <!-- STEP 1: Choose Provider (Mock vs GoCardless) -->
+            <!-- STEP 1: Choose Provider (Mock vs GoCardless vs GoCardLess Sandbox in Dev) -->
             <div id="bank_step_1" class="space-y-4">
                 <p class="text-xs text-base-content/70">Select your bank sync provider to connect accounts and import transactions:</p>
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div class="grid grid-cols-1 sm:grid-cols-2 %s gap-4">
                     <div onclick="selectProvider('MOCK')" class="card card-border border-base-300 bg-base-100 hover:border-primary cursor-pointer p-4 transition-all hover:shadow-md flex flex-col justify-between gap-3">
                         <div class="flex items-start gap-3">
                             <span class="text-3xl">🧪</span>
@@ -493,6 +518,7 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
                         </div>
                         <button type="button" class="btn btn-primary btn-xs w-full">Select GoCardless</button>
                     </div>
+%s
                 </div>
             </div>
 
@@ -714,6 +740,14 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 
         function selectProvider(p) {
             wizardState.provider = p;
+            if (p === 'GOCARDLESS_SANDBOX') {
+                wizardState.country = 'PL';
+                wizardState.selectedInstitutionIDs.clear();
+                wizardState.selectedInstitutionIDs.add('SANDBOXFINANCE_SFIN0000');
+                updateSelectedCount();
+                startConnectionQueue();
+                return;
+            }
             goToStep(2);
         }
 
@@ -1044,6 +1078,7 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 		accountRows.String(),
 		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
 		budgetID, csrfToken,
+		devGridCols, devSandboxCardHTML,
 		csrfToken,
 		budgetID, csrfToken)
 
@@ -1516,7 +1551,7 @@ func (h *AccountsHandler) ConnectBankQueue(c echo.Context) error {
 			"provider", req.Provider,
 		)
 
-		if req.Provider == "GOCARDLESS" && h.gocardlessClient != nil {
+		if (req.Provider == "GOCARDLESS" || req.Provider == "GOCARDLESS_SANDBOX") && h.gocardlessClient != nil {
 			userRef := fmt.Sprintf("bal_%s_%s_%s", budgetID, userID, domain.NewUUIDv7())
 			requisition, err := h.gocardlessClient.CreateRequisition(c.Request().Context(), instID, userRef)
 			if err != nil {
@@ -1551,6 +1586,23 @@ func (h *AccountsHandler) ConnectBankQueue(c echo.Context) error {
 				InstitutionID: instID,
 				Status:        "awaiting_authorization",
 				AuthURL:       requisition.Link,
+			})
+			continue
+		}
+
+		if req.Provider == "GOCARDLESS_SANDBOX" && h.gocardlessClient == nil {
+			// Mock sandbox requisition when gocardless client is not configured
+			intID := domain.NewUUIDv7()
+			reqRef := fmt.Sprintf("sandbox_ref_%s", domain.NewUUIDv7())
+			h.mainDB.ExecContext(c.Request().Context(), `
+				INSERT INTO user_integrations (id, user_id, provider, institution_id, external_reference_id, status, created_at, updated_at)
+				VALUES (?, ?, 'GOCARDLESS', ?, ?, 'PENDING', ?, ?)`,
+				intID, userID, instID, reqRef, now, now,
+			)
+			results = append(results, ConnectedBankResult{
+				InstitutionID: instID,
+				Status:        "awaiting_authorization",
+				AuthURL:       fmt.Sprintf("https://ob.gocardless.com/psd2/start/%s", reqRef),
 			})
 			continue
 		}

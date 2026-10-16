@@ -247,10 +247,68 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		tc.lastResponse = rec
 		return err
 	})
+	ctx.Step(`^the application is running in development mode$`, func() error {
+		return os.Setenv("APP_ENV", "development")
+	})
+	ctx.Step(`^the application is running in production mode$`, func() error {
+		return os.Setenv("APP_ENV", "production")
+	})
 	ctx.Step(`^I should see available bank providers "([^"]*)" and "([^"]*)"$`, func(p1, p2 string) error {
 		body := tc.lastResponse.Body.String()
 		if !strings.Contains(body, p1) || !strings.Contains(body, p2) {
-			return godog.ErrPending
+			return fmt.Errorf("expected providers %s and %s in body", p1, p2)
+		}
+		return nil
+	})
+	ctx.Step(`^I should see available bank providers "([^"]*)", "([^"]*)", and "([^"]*)"$`, func(p1, p2, p3 string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, p1) || !strings.Contains(body, p2) || !strings.Contains(body, p3) {
+			return fmt.Errorf("expected providers %s, %s, and %s in body", p1, p2, p3)
+		}
+		return nil
+	})
+	ctx.Step(`^I should not see bank provider "([^"]*)"$`, func(p string) error {
+		body := tc.lastResponse.Body.String()
+		if strings.Contains(body, p) {
+			return fmt.Errorf("expected provider %s NOT to be in body", p)
+		}
+		return nil
+	})
+	ctx.Step(`^I select provider "([^"]*)" to connect$`, func(provider string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		payload := fmt.Sprintf(`{"provider":"%s","country":"PL","institution_ids":["SANDBOXFINANCE_SFIN0000"]}`, provider)
+		req := httptest.NewRequest(http.MethodPost, "/budgets/01900000-0000-7000-8000-000000000001/accounts/connect-queue", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.accountsHandler.ConnectBankQueue(c)
+		tc.lastResponse = rec
+		return err
+	})
+	ctx.Step(`^a bank requisition for institution "([^"]*)" should be initialized$`, func(expectedInst string) error {
+		var count int
+		err := tc.mainDB.QueryRow(`
+			SELECT count(*) FROM user_integrations 
+			WHERE institution_id = ? AND provider = 'GOCARDLESS'`, expectedInst).Scan(&count)
+		if err != nil || count == 0 {
+			return fmt.Errorf("expected requisition for institution %s in user_integrations, count=%d, err=%v", expectedInst, count, err)
+		}
+		return nil
+	})
+	ctx.Step(`^the connection queue should advance to the authorization step$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "awaiting_authorization") {
+			return fmt.Errorf("expected awaiting_authorization in response body: %s", body)
 		}
 		return nil
 	})

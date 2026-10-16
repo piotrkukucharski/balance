@@ -28,6 +28,26 @@ Feature: Accounts Management, Multi-Currency Balances and Bank Integration Links
     When I open the link bank flow modal
     Then I should see available bank providers "Mock Sandbox" and "GoCardless"
 
+  Scenario: Starting integrated bank account connection in development mode
+    Given an authenticated user "jan@example.com" on budget "Family Home"
+    And the application is running in development mode
+    When I open the link bank flow modal
+    Then I should see available bank providers "Mock Sandbox", "GoCardless", and "GoCardLess Sandbox"
+
+  Scenario: Starting integrated bank account connection in production mode
+    Given an authenticated user "jan@example.com" on budget "Family Home"
+    And the application is running in production mode
+    When I open the link bank flow modal
+    Then I should see available bank providers "Mock Sandbox" and "GoCardless"
+    And I should not see bank provider "GoCardLess Sandbox"
+
+  Scenario: Selecting GoCardLess Sandbox directly starts integration flow
+    Given an authenticated user "jan@example.com" on budget "Family Home"
+    And the application is running in development mode
+    When I select provider "GOCARDLESS_SANDBOX" to connect
+    Then a bank requisition for institution "SANDBOXFINANCE_SFIN0000" should be initialized
+    And the connection queue should advance to the authorization step
+
   Scenario: Selecting bank provider and country in link bank flow
     Given an authenticated user "jan@example.com" on budget "Family Home"
     When I select provider "MOCK" and country "PL"
