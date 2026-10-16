@@ -1396,20 +1396,20 @@ func (h *AccountsHandler) GoCardlessCallback(c echo.Context) error {
 	now := time.Now().UTC().UnixMicro()
 
 	// 1. Locate user integration by requisition external_reference_id OR ref pattern
-	var intID, instID, dbUserID string
+	var intID, instID, dbUserID, requisitionID string
 	err := h.mainDB.QueryRowContext(c.Request().Context(), `
-		SELECT id, institution_id, user_id
+		SELECT id, institution_id, user_id, COALESCE(external_reference_id, '')
 		FROM user_integrations
 		WHERE external_reference_id = ?
-		LIMIT 1`, ref).Scan(&intID, &instID, &dbUserID)
+		LIMIT 1`, ref).Scan(&intID, &instID, &dbUserID, &requisitionID)
 
 	if err != nil {
 		// Try matching by reference prefix if ref is the userRef
 		err = h.mainDB.QueryRowContext(c.Request().Context(), `
-			SELECT id, institution_id, user_id
+			SELECT id, institution_id, user_id, COALESCE(external_reference_id, '')
 			FROM user_integrations
 			WHERE provider = 'GOCARDLESS' AND status = 'PENDING'
-			ORDER BY created_at DESC LIMIT 1`).Scan(&intID, &instID, &dbUserID)
+			ORDER BY created_at DESC LIMIT 1`).Scan(&intID, &instID, &dbUserID, &requisitionID)
 	}
 
 	if userID == "" && dbUserID != "" {
@@ -1443,10 +1443,20 @@ func (h *AccountsHandler) GoCardlessCallback(c echo.Context) error {
 
 	// 2. If gocardless client is configured, inspect requisition accounts and import them
 	if h.gocardlessClient != nil {
-		reqDetails, err := h.gocardlessClient.GetRequisition(c.Request().Context(), ref)
-		if err == nil && reqDetails != nil && len(reqDetails.Accounts) > 0 {
+		reqLookupID := requisitionID
+		if reqLookupID == "" {
+			reqLookupID = ref
+		}
+		reqDetails, err := h.gocardlessClient.GetRequisition(c.Request().Context(), reqLookupID)
+		if err != nil {
+			logger.Error(ctx, "Failed to fetch GoCardless requisition details", "requisition_id", reqLookupID, "ref", ref, "error", err.Error())
+		} else if reqDetails == nil || len(reqDetails.Accounts) == 0 {
+			logger.Warn(ctx, "GoCardless requisition returned no accounts", "requisition_id", reqLookupID, "ref", ref)
+		} else {
 			tenantDB, err := h.tenantMgr.GetTenantDB(targetBudgetID, false)
-			if err == nil && tenantDB != nil {
+			if err != nil || tenantDB == nil {
+				logger.Error(ctx, "Failed to open tenant DB for imported accounts", "budget_id", targetBudgetID, "error", err)
+			} else {
 				userPartyID := h.ensureUserParty(c.Request().Context(), tenantDB, userID, now)
 				for idx, extAcctID := range reqDetails.Accounts {
 					details, err := h.gocardlessClient.GetAccountDetails(c.Request().Context(), extAcctID)
