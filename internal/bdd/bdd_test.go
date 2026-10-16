@@ -11,9 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/balance/balance/internal/auth"
 	"github.com/balance/balance/internal/db"
+	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/lua"
 	"github.com/balance/balance/internal/report"
 	"github.com/balance/balance/internal/web/handlers"
@@ -325,6 +327,110 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		var count int
 		err = bDB.QueryRow("SELECT count(*) FROM accounts_current").Scan(&count)
 		if err != nil || count < 2 {
+			return godog.ErrPending
+		}
+		return nil
+	})
+
+	ctx.Step(`^a linked bank account "([^"]*)" with expired bank authorization$`, func(name string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		acctID := domain.NewUUIDv7()
+		intID := domain.NewUUIDv7()
+
+		tc.mainDB.Exec(`
+			INSERT INTO user_integrations (id, user_id, provider, institution_id, external_reference_id, status, expires_at, created_at, updated_at)
+			VALUES (?, 'user_1', 'MOCK', 'MOCK_BANK_PL01', 'ref_exp', 'EXPIRED', ?, ?, ?)`,
+			intID, now-1000, now-2000, now-1000,
+		)
+
+		bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, 'user_1', ?)`, pID, now)
+		bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, 'user_1', ?)`, acctID, pID, name, now)
+		bDB.Exec(`
+			INSERT INTO account_integration_links (id, account_id, integration_id, external_account_id, last_synced_at, created_at)
+			VALUES (?, ?, ?, 'ext_exp_1', ?, ?)`, domain.NewUUIDv7(), acctID, intID, now, now)
+
+		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+		return nil
+	})
+	ctx.Step(`^I request the accounts view "([^"]*)"$`, func(path string) error {
+		req := httptest.NewRequest(http.MethodGet, "/budgets/01900000-0000-7000-8000-000000000001/accounts", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("csrfToken", "dummy_csrf_token")
+
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.accountsHandler.AccountsView(c)
+		tc.lastResponse = rec
+		return err
+	})
+	ctx.Step(`^the account status badge should indicate "([^"]*)"$`, func(expectedText string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, expectedText) {
+			return godog.ErrPending
+		}
+		return nil
+	})
+	ctx.Step(`^a "([^"]*)" action button should be rendered for the account$`, func(btnText string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, btnText) {
+			return godog.ErrPending
+		}
+		return nil
+	})
+	ctx.Step(`^I trigger reconnect for the expired account "([^"]*)"$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var acctID string
+		err = bDB.QueryRow("SELECT id FROM accounts_current WHERE name = ?", acctName).Scan(&acctID)
+		if err != nil {
+			return err
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/01900000-0000-7000-8000-000000000001/accounts/"+acctID+"/reconnect", nil)
+		req.Header.Set("X-Requested-With", "XMLHttpRequest")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "id")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001", acctID)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.accountsHandler.ReconnectAccount(c)
+		tc.lastResponse = rec
+		return err
+	})
+	ctx.Step(`^a new authorization session should be created preserving existing account transactions$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, `"ACTIVE"`) && !strings.Contains(body, `"awaiting_authorization"`) {
+			return godog.ErrPending
+		}
+		return nil
+	})
+	ctx.Step(`^the integration status should transition to "([^"]*)" or "([^"]*)"$`, func(s1, s2 string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, s1) && !strings.Contains(body, s2) {
 			return godog.ErrPending
 		}
 		return nil

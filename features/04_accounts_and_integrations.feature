@@ -39,3 +39,18 @@ Feature: Accounts Management, Multi-Currency Balances and Bank Integration Links
     Then the connection queue should initialize with 2 pending institutions
     And connecting the first institution should link its discovered accounts to the budget
     And the flow should automatically advance to the next institution in the queue
+
+  Scenario: Displaying consent expired warning on accounts view
+    Given an authenticated user "jan@example.com" on budget "Family Home"
+    And a linked bank account "mBank Checking" with expired bank authorization
+    When I request the accounts view "/budgets/:budgetId/accounts"
+    Then the response status should be 200 OK
+    And the account status badge should indicate "Consent Expired"
+    And a "Reconnect" action button should be rendered for the account
+
+  Scenario: Reconnecting an expired bank account integration
+    Given an authenticated user "jan@example.com" on budget "Family Home"
+    And a linked bank account "mBank Checking" with expired bank authorization
+    When I trigger reconnect for the expired account "mBank Checking"
+    Then a new authorization session should be created preserving existing account transactions
+    And the integration status should transition to "ACTIVE" or "awaiting_authorization"

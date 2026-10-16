@@ -89,6 +89,7 @@ func main() {
 	tenantEditor.POST("/accounts", accountsHandler.CreateAccount)
 	tenantEditor.POST("/accounts/link-bank", accountsHandler.LinkBankAccount)
 	tenantEditor.POST("/accounts/connect-queue", accountsHandler.ConnectBankQueue)
+	tenantEditor.POST("/accounts/:id/reconnect", accountsHandler.ReconnectAccount)
 	tenantEditor.POST("/accounts/:id/update", accountsHandler.UpdateAccount)
 	tenantEditor.POST("/accounts/:id/toggle-close", accountsHandler.ToggleCloseAccount)
 	tenantEditor.POST("/accounts/:id/delete", accountsHandler.DeleteAccount)

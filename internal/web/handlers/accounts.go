@@ -48,7 +48,8 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 	rows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT a.id, a.name, a.account_type, a.primary_currency, COALESCE(a.iban, ''),
 		       a.is_closed, COALESCE(acb.balance_minor, 0),
-		       COALESCE(ail.external_account_id, '')
+		       COALESCE(ail.external_account_id, ''),
+		       COALESCE(ail.integration_id, '')
 		FROM accounts_current a
 		JOIN parties_current p ON a.party_id = p.id
 		LEFT JOIN account_currency_balances acb ON a.id = acb.account_id AND a.primary_currency = acb.currency
@@ -60,17 +61,35 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 	}
 	defer rows.Close()
 
+	now := time.Now().UTC().UnixMicro()
+
 	var accountRows strings.Builder
 	hasAccounts := false
 	for rows.Next() {
 		hasAccounts = true
-		var id, name, aType, curr, iban, extID string
+		var id, name, aType, curr, iban, extID, intID string
 		var isClosed int
 		var balanceMinor int64
-		rows.Scan(&id, &name, &aType, &curr, &iban, &isClosed, &balanceMinor, &extID)
+		rows.Scan(&id, &name, &aType, &curr, &iban, &isClosed, &balanceMinor, &extID, &intID)
+
+		// Check if bank integration is expired in main.db
+		isConsentExpired := false
+		if intID != "" {
+			var intStatus string
+			var expiresAt sql.NullInt64
+			err := h.mainDB.QueryRowContext(c.Request().Context(), `
+				SELECT status, expires_at FROM user_integrations WHERE id = ?`, intID).Scan(&intStatus, &expiresAt)
+			if err == nil {
+				if intStatus == "EXPIRED" || (expiresAt.Valid && expiresAt.Int64 > 0 && expiresAt.Int64 < now) {
+					isConsentExpired = true
+				}
+			}
+		}
 
 		statusBadge := `<span class="badge badge-success badge-sm font-semibold">Active</span>`
-		if isClosed == 1 {
+		if isConsentExpired {
+			statusBadge = `<span class="badge badge-warning badge-sm font-bold gap-1 animate-pulse"><span>⚠️</span><span>Consent Expired</span></span>`
+		} else if isClosed == 1 {
 			statusBadge = `<span class="badge badge-neutral badge-sm font-semibold opacity-60">Closed</span>`
 		}
 
@@ -91,6 +110,19 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 			integrationBadge = `<span class="badge badge-info badge-soft badge-sm font-bold gap-1"><span>🔄</span><span>Bank Linked</span></span>`
 		}
 
+		reconnectBtn := ""
+		if extID != "" {
+			btnClass := "btn-ghost text-primary"
+			btnText := "Reconnect"
+			if isConsentExpired {
+				btnClass = "btn-warning animate-bounce font-bold shadow-xs"
+				btnText = "⚠️ Reconnect"
+			}
+			reconnectBtn = fmt.Sprintf(`
+				<button onclick="reconnectAccount('%s', '%s')" class="btn btn-xs %s gap-1" title="Renew bank authorization">%s</button>
+			`, id, strings.ReplaceAll(name, "'", "\\'"), btnClass, btnText)
+		}
+
 		accountRows.WriteString(fmt.Sprintf(`
 			<tr class="hover">
 				<td>
@@ -104,28 +136,32 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 					%.2f <span class="text-xs font-normal opacity-60">%s</span>
 				</td>
 				<td class="text-right">
-					<div class="dropdown dropdown-end">
-						<button class="btn btn-ghost btn-xs">•••</button>
-						<ul tabindex="0" class="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-36 text-xs z-10 border border-base-300">
-							<li><a onclick="openEditModal('%s', '%s', '%s', '%s')">✏️ Edit</a></li>
-							<li>
-								<form method="POST" action="/budgets/%s/accounts/%s/toggle-close">
-									<input type="hidden" name="csrf_token" value="%s" />
-									<button type="submit" class="text-left w-full">%s</button>
-								</form>
-							</li>
-							<li>
-								<form method="POST" action="/budgets/%s/accounts/%s/delete" onsubmit="return confirm('Delete this account?')">
-									<input type="hidden" name="csrf_token" value="%s" />
-									<button type="submit" class="text-error text-left w-full">🗑️ Delete</button>
-								</form>
-							</li>
-						</ul>
+					<div class="flex items-center justify-end gap-1.5">
+						%s
+						<div class="dropdown dropdown-end">
+							<button class="btn btn-ghost btn-xs">•••</button>
+							<ul tabindex="0" class="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-36 text-xs z-10 border border-base-300">
+								<li><a onclick="openEditModal('%s', '%s', '%s', '%s')">✏️ Edit</a></li>
+								<li>
+									<form method="POST" action="/budgets/%s/accounts/%s/toggle-close">
+										<input type="hidden" name="csrf_token" value="%s" />
+										<button type="submit" class="text-left w-full">%s</button>
+									</form>
+								</li>
+								<li>
+									<form method="POST" action="/budgets/%s/accounts/%s/delete" onsubmit="return confirm('Delete this account?')">
+										<input type="hidden" name="csrf_token" value="%s" />
+										<button type="submit" class="text-error text-left w-full">🗑️ Delete</button>
+									</form>
+								</li>
+							</ul>
+						</div>
 					</div>
 				</td>
 			</tr>`,
 			name, iban, typeBadge, aType, integrationBadge, statusBadge,
 			float64(balanceMinor)/100.0, curr,
+			reconnectBtn,
 			id, strings.ReplaceAll(name, "'", "\\'"), curr, aType,
 			budgetID, id, c.Get("csrfToken"), toggleActionText(isClosed),
 			budgetID, id, c.Get("csrfToken"),
@@ -661,6 +697,32 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
             document.getElementById('queue_done_btn').classList.remove('hidden');
         }
 
+        async function reconnectAccount(acctId, acctName) {
+            if (!confirm('Reconnect bank feed for "' + acctName + '"? This will renew your open banking authorization.')) return;
+            try {
+                const res = await fetch('/budgets/' + ACTIVE_BUDGET_ID + '/accounts/' + acctId + '/reconnect', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-Token': CSRF_TOKEN
+                    },
+                    body: JSON.stringify({ csrf_token: CSRF_TOKEN })
+                });
+                const data = await res.json();
+                if (data.auth_url) {
+                    window.location.href = data.auth_url;
+                } else if (data.status === 'ACTIVE' || data.status === 'connected') {
+                    window.location.reload();
+                } else {
+                    alert('Reconnect response: ' + (data.message || data.status || 'OK'));
+                    window.location.reload();
+                }
+            } catch (err) {
+                alert('Failed to initiate reconnect: ' + err.message);
+            }
+        }
+
         function openEditModal(id, name, curr, type) {
             document.getElementById('edit_name').value = name;
             document.getElementById('edit_account_form').action = '/budgets/' + ACTIVE_BUDGET_ID + '/accounts/' + id + '/update';
@@ -1115,3 +1177,85 @@ func (h *AccountsHandler) ConnectBankQueue(c echo.Context) error {
 
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/accounts", budgetID))
 }
+
+// ReconnectAccount handles in-place re-consent / re-authorization for an existing bank-linked account.
+func (h *AccountsHandler) ReconnectAccount(c echo.Context) error {
+	acctID := c.Param("id")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+
+	now := time.Now().UTC().UnixMicro()
+
+	// 1. Fetch existing account and its integration mapping
+	var integrationID, externalAcctID, acctName string
+	err := tenantDB.QueryRowContext(c.Request().Context(), `
+		SELECT a.name, COALESCE(ail.integration_id, ''), COALESCE(ail.external_account_id, '')
+		FROM accounts_current a
+		LEFT JOIN account_integration_links ail ON a.id = ail.account_id
+		WHERE a.id = ?`, acctID).Scan(&acctName, &integrationID, &externalAcctID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, "Account not found")
+	}
+
+	if externalAcctID == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "Account is not linked to any bank integration")
+	}
+
+	// 2. Fetch integration record from main.db
+	var provider, institutionID string
+	err = h.mainDB.QueryRowContext(c.Request().Context(), `
+		SELECT provider, COALESCE(institution_id, '')
+		FROM user_integrations WHERE id = ? AND user_id = ?`, integrationID, userID).Scan(&provider, &institutionID)
+	if err != nil {
+		// If integration was not registered or mock pattern
+		provider = "MOCK"
+	}
+
+	if provider == "GOCARDLESS" && h.gocardlessClient != nil {
+		userRef := fmt.Sprintf("bal_recon_%s_%d", userID, time.Now().Unix())
+		requisition, err := h.gocardlessClient.CreateRequisition(c.Request().Context(), institutionID, userRef)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create bank reconnection session: "+err.Error())
+		}
+
+		// Update or insert renewed integration
+		newIntID := domain.NewUUIDv7()
+		h.mainDB.ExecContext(c.Request().Context(), `
+			INSERT INTO user_integrations (id, user_id, provider, institution_id, external_reference_id, status, created_at, updated_at)
+			VALUES (?, ?, 'GOCARDLESS', ?, ?, 'PENDING', ?, ?)`,
+			newIntID, userID, institutionID, requisition.ID, now, now,
+		)
+
+		// Link account to new integration record
+		tenantDB.ExecContext(c.Request().Context(), `
+			UPDATE account_integration_links SET integration_id = ?, last_synced_at = ? WHERE account_id = ?`,
+			newIntID, now, acctID,
+		)
+
+		return c.JSON(http.StatusOK, map[string]any{
+			"status":   "awaiting_authorization",
+			"auth_url": requisition.Link,
+			"account":  acctName,
+		})
+	}
+
+	// Mock Provider: Instant re-activation and renewal
+	if integrationID != "" {
+		h.mainDB.ExecContext(c.Request().Context(), `
+			UPDATE user_integrations SET status = 'ACTIVE', expires_at = ?, updated_at = ? WHERE id = ?`,
+			now+180*24*3600*1_000_000, now, integrationID,
+		)
+	}
+
+	tenantDB.ExecContext(c.Request().Context(), `
+		UPDATE account_integration_links SET last_synced_at = ? WHERE account_id = ?`,
+		now, acctID,
+	)
+
+	return c.JSON(http.StatusOK, map[string]any{
+		"status":  "ACTIVE",
+		"account": acctName,
+		"message": "Bank access successfully renewed",
+	})
+}
+
