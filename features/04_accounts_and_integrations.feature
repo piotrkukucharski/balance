@@ -54,3 +54,12 @@ Feature: Accounts Management, Multi-Currency Balances and Bank Integration Links
     When I trigger reconnect for the expired account "mBank Checking"
     Then a new authorization session should be created preserving existing account transactions
     And the integration status should transition to "ACTIVE" or "awaiting_authorization"
+
+  Scenario: Successfully processing GoCardless OAuth callback and importing accounts
+    Given an authenticated user "jan@example.com" on budget "Family Home"
+    And a pending GoCardless requisition for institution "MBANK_PL"
+    When the GoCardless OAuth callback is received with valid requisition reference
+    Then the bank accounts from the requisition should be imported into the budget
+    And the integration status should be marked as "ACTIVE"
+    And the browser should be redirected to the budget accounts view
+

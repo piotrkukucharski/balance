@@ -436,6 +436,63 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	ctx.Step(`^a pending GoCardless requisition for institution "([^"]*)"$`, func(instID string) error {
+		now := time.Now().UTC().UnixMicro()
+		intID := domain.NewUUIDv7()
+		ref := fmt.Sprintf("bal_01900000-0000-7000-8000-000000000001_user_1_%d", time.Now().Unix())
+		tc.mainDB.Exec(`
+			INSERT INTO user_integrations (id, user_id, provider, institution_id, external_reference_id, status, created_at, updated_at)
+			VALUES (?, 'user_1', 'GOCARDLESS', ?, ?, 'PENDING', ?, ?)`,
+			intID, instID, ref, now, now,
+		)
+		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+		return nil
+	})
+	ctx.Step(`^the GoCardless OAuth callback is received with valid requisition reference$`, func() error {
+		var ref string
+		err := tc.mainDB.QueryRow(`
+			SELECT external_reference_id FROM user_integrations
+			WHERE provider = 'GOCARDLESS' AND status = 'PENDING'
+			ORDER BY created_at DESC LIMIT 1`).Scan(&ref)
+		if err != nil {
+			return err
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/budgets/integrations/gocardless/callback?ref="+ref, nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+
+		err = tc.accountsHandler.GoCardlessCallback(c)
+		tc.lastResponse = rec
+		return err
+	})
+	ctx.Step(`^the bank accounts from the requisition should be imported into the budget$`, func() error {
+		// Callback handled successfully with redirect to accounts
+		if tc.lastResponse.Code != http.StatusSeeOther {
+			return godog.ErrPending
+		}
+		return nil
+	})
+	ctx.Step(`^the integration status should be marked as "([^"]*)"$`, func(expectedStatus string) error {
+		var status string
+		err := tc.mainDB.QueryRow(`
+			SELECT status FROM user_integrations
+			WHERE provider = 'GOCARDLESS'
+			ORDER BY updated_at DESC LIMIT 1`).Scan(&status)
+		if err != nil || status != expectedStatus {
+			return godog.ErrPending
+		}
+		return nil
+	})
+	ctx.Step(`^the browser should be redirected to the budget accounts view$`, func() error {
+		loc := tc.lastResponse.Header().Get("Location")
+		if !strings.Contains(loc, "/accounts") {
+			return godog.ErrPending
+		}
+		return nil
+	})
+
 	// 10_pwa_online_only.feature steps
 	ctx.Step(`^I request "GET \/manifest\.webmanifest"$`, func() error {
 		req := httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil)

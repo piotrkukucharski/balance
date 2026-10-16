@@ -1095,7 +1095,7 @@ func (h *AccountsHandler) ConnectBankQueue(c echo.Context) error {
 		}
 
 		if req.Provider == "GOCARDLESS" && h.gocardlessClient != nil {
-			userRef := fmt.Sprintf("bal_%s_%d", userID, time.Now().Unix())
+			userRef := fmt.Sprintf("bal_%s_%s_%d", budgetID, userID, time.Now().Unix())
 			requisition, err := h.gocardlessClient.CreateRequisition(c.Request().Context(), instID, userRef)
 			if err != nil {
 				results = append(results, ConnectedBankResult{
@@ -1212,7 +1212,8 @@ func (h *AccountsHandler) ReconnectAccount(c echo.Context) error {
 	}
 
 	if provider == "GOCARDLESS" && h.gocardlessClient != nil {
-		userRef := fmt.Sprintf("bal_recon_%s_%d", userID, time.Now().Unix())
+		budgetID := c.Param("budgetId")
+		userRef := fmt.Sprintf("bal_recon_%s_%s_%d", budgetID, userID, time.Now().Unix())
 		requisition, err := h.gocardlessClient.CreateRequisition(c.Request().Context(), institutionID, userRef)
 		if err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create bank reconnection session: "+err.Error())
@@ -1258,4 +1259,128 @@ func (h *AccountsHandler) ReconnectAccount(c echo.Context) error {
 		"message": "Bank access successfully renewed",
 	})
 }
+
+// GoCardlessCallback handles OAuth redirect from GoCardless after user authenticates with their bank.
+func (h *AccountsHandler) GoCardlessCallback(c echo.Context) error {
+	ref := c.QueryParam("ref")
+	if ref == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "Missing requisition reference")
+	}
+
+	userID, _ := c.Get(ContextUserIDKey).(string)
+
+	now := time.Now().UTC().UnixMicro()
+
+	// 1. Locate user integration by requisition external_reference_id OR ref pattern
+	var intID, instID, dbUserID string
+	err := h.mainDB.QueryRowContext(c.Request().Context(), `
+		SELECT id, institution_id, user_id
+		FROM user_integrations
+		WHERE external_reference_id = ?
+		LIMIT 1`, ref).Scan(&intID, &instID, &dbUserID)
+
+	if err != nil {
+		// Try matching by reference prefix if ref is the userRef
+		err = h.mainDB.QueryRowContext(c.Request().Context(), `
+			SELECT id, institution_id, user_id
+			FROM user_integrations
+			WHERE provider = 'GOCARDLESS' AND status = 'PENDING'
+			ORDER BY created_at DESC LIMIT 1`).Scan(&intID, &instID, &dbUserID)
+	}
+
+	if userID == "" && dbUserID != "" {
+		userID = dbUserID
+	}
+
+	// Extract budgetID from userRef pattern: bal_<budgetID>_<userID>_<timestamp>
+	var targetBudgetID string
+	parts := strings.Split(ref, "_")
+	if len(parts) >= 3 && domain.IsValidUUIDv7(parts[1]) {
+		targetBudgetID = parts[1]
+	} else if len(parts) >= 4 && parts[1] == "recon" && domain.IsValidUUIDv7(parts[2]) {
+		targetBudgetID = parts[2]
+	}
+
+	// Fallback to query param if passed
+	if targetBudgetID == "" {
+		targetBudgetID = c.QueryParam("budget_id")
+	}
+
+	// Fallback to first user budget if still empty
+	if targetBudgetID == "" && userID != "" {
+		h.mainDB.QueryRowContext(c.Request().Context(), `
+			SELECT budget_id FROM budget_members WHERE user_id = ? ORDER BY joined_at ASC LIMIT 1`,
+			userID).Scan(&targetBudgetID)
+	}
+
+	if targetBudgetID == "" {
+		return c.Redirect(http.StatusSeeOther, "/budgets")
+	}
+
+	// 2. If gocardless client is configured, inspect requisition accounts and import them
+	if h.gocardlessClient != nil {
+		reqDetails, err := h.gocardlessClient.GetRequisition(c.Request().Context(), ref)
+		if err == nil && reqDetails != nil && len(reqDetails.Accounts) > 0 {
+			tenantDB, err := h.tenantMgr.GetTenantDB(targetBudgetID, false)
+			if err == nil && tenantDB != nil {
+				userPartyID := h.ensureUserParty(c.Request().Context(), tenantDB, userID, now)
+				for idx, extAcctID := range reqDetails.Accounts {
+					details, err := h.gocardlessClient.GetAccountDetails(c.Request().Context(), extAcctID)
+					var acctName, iban, curr string
+					curr = "PLN"
+					if err == nil && details != nil {
+						iban = details.Account.IBAN
+						if details.Account.Currency != "" {
+							curr = details.Account.Currency
+						}
+						if details.Account.Name != "" {
+							acctName = details.Account.Name
+						} else if details.Account.DisplayName != "" {
+							acctName = details.Account.DisplayName
+						} else if iban != "" {
+							acctName = iban
+						}
+					}
+					if acctName == "" {
+						acctName = fmt.Sprintf("Bank Account #%d (%s)", idx+1, instID)
+					}
+
+					// Check if account already linked
+					var existingAcctID string
+					tenantDB.QueryRowContext(c.Request().Context(), `
+						SELECT account_id FROM account_integration_links WHERE external_account_id = ?`,
+						extAcctID).Scan(&existingAcctID)
+
+					if existingAcctID != "" {
+						// Update last synced and integration id
+						tenantDB.ExecContext(c.Request().Context(), `
+							UPDATE account_integration_links SET integration_id = ?, last_synced_at = ? WHERE account_id = ?`,
+							intID, now, existingAcctID)
+					} else {
+						newAcctID := domain.NewUUIDv7()
+						tenantDB.ExecContext(c.Request().Context(), `
+							INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, iban, is_closed, agent_id, updated_at)
+							VALUES (?, 1, ?, ?, 'CHECKING', ?, ?, 0, ?, ?)`,
+							newAcctID, userPartyID, acctName, curr, iban, userID, now)
+
+						tenantDB.ExecContext(c.Request().Context(), `
+							INSERT INTO account_integration_links (id, account_id, integration_id, external_account_id, last_synced_at, created_at)
+							VALUES (?, ?, ?, ?, ?, ?)`,
+							domain.NewUUIDv7(), newAcctID, intID, extAcctID, now, now)
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Transition integration to ACTIVE in mainDB
+	if intID != "" {
+		h.mainDB.ExecContext(c.Request().Context(), `
+			UPDATE user_integrations SET status = 'ACTIVE', expires_at = ?, updated_at = ? WHERE id = ?`,
+			now+90*24*3600*1_000_000, now, intID)
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/accounts", targetBudgetID))
+}
+
 

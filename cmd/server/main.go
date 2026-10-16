@@ -73,6 +73,10 @@ func main() {
 	authGroup.GET("/budgets", workspaceHandler.BudgetsList)
 	authGroup.POST("/budgets", workspaceHandler.CreateBudget)
 
+	// Bank Integration Callbacks (Must precede /budgets/:budgetId pattern)
+	e.GET("/budgets/integrations/gocardless/callback", accountsHandler.GoCardlessCallback)
+	authGroup.GET("/budgets/integrations/gocardless/callback", accountsHandler.GoCardlessCallback)
+
 	// Tenant scoped routes with RBAC
 	tenantViewer := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "VIEWER"))
 	tenantViewer.GET("/budget", workspaceHandler.BudgetView)
