@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/http"
@@ -562,12 +563,12 @@ type accountSyncResult struct {
 	Error         error
 }
 
-func (h *TransactionsHandler) executeAccountSync(ctx echo.Context, tenantDB *sql.DB, userAcctID, userID, corrID string, daysWindow int) (int, error) {
-	logCtx := logger.WithComponent(ctx.Request().Context(), "biz:transaction:bank_sync:account")
+func (h *TransactionsHandler) executeAccountSync(ctx context.Context, tenantDB *sql.DB, userAcctID, userID, corrID string, daysWindow int) (int, error) {
+	logCtx := logger.WithComponent(ctx, "biz:transaction:bank_sync:account")
 	now := time.Now().UTC().UnixMicro()
 
 	// Ensure account_integration_sync_logs table exists
-	_, err := tenantDB.ExecContext(ctx.Request().Context(), `
+	_, err := tenantDB.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS account_integration_sync_logs (
 			id TEXT PRIMARY KEY,
 			account_id TEXT NOT NULL,
@@ -582,7 +583,7 @@ func (h *TransactionsHandler) executeAccountSync(ctx echo.Context, tenantDB *sql
 	// Rate limit check: max 4 imports per account in the last 24 hours (86400 seconds)
 	oneDayAgo := now - 24*3600*1_000_000
 	var syncCount24h int
-	err = tenantDB.QueryRowContext(ctx.Request().Context(), `
+	err = tenantDB.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM account_integration_sync_logs
 		WHERE account_id = ? AND synced_at >= ?`, userAcctID, oneDayAgo).Scan(&syncCount24h)
 	if err == nil && syncCount24h >= 4 {
@@ -595,7 +596,7 @@ func (h *TransactionsHandler) executeAccountSync(ctx echo.Context, tenantDB *sql
 
 	// Fetch primary currency for this account
 	var acctCurrency string
-	err = tenantDB.QueryRowContext(ctx.Request().Context(), `
+	err = tenantDB.QueryRowContext(ctx, `
 		SELECT primary_currency FROM accounts_current WHERE id = ?`, userAcctID).Scan(&acctCurrency)
 	if err != nil {
 		acctCurrency = "PLN"
@@ -603,9 +604,9 @@ func (h *TransactionsHandler) executeAccountSync(ctx echo.Context, tenantDB *sql
 
 	// Check if this account already has any transactions (either raw_transactions or budget_transactions)
 	var latestRawDate, latestBudgetTxDate sql.NullInt64
-	_ = tenantDB.QueryRowContext(ctx.Request().Context(), `
+	_ = tenantDB.QueryRowContext(ctx, `
 		SELECT MAX(booking_date) FROM raw_transactions_current WHERE account_id = ?`, userAcctID).Scan(&latestRawDate)
-	_ = tenantDB.QueryRowContext(ctx.Request().Context(), `
+	_ = tenantDB.QueryRowContext(ctx, `
 		SELECT MAX(transaction_date) FROM budget_transactions_current 
 		WHERE source_account_id = ? OR destination_account_id = ?`, userAcctID, userAcctID).Scan(&latestBudgetTxDate)
 
@@ -636,14 +637,14 @@ func (h *TransactionsHandler) executeAccountSync(ctx echo.Context, tenantDB *sql
 	}
 
 	// Fetch transactions from mock bank adapter
-	extTxs, err := h.mockAdapter.FetchTransactions(ctx.Request().Context(), userAcctID, sinceMicro)
+	extTxs, err := h.mockAdapter.FetchTransactions(ctx, userAcctID, sinceMicro)
 	if err != nil {
 		logger.Error(logCtx, "Bank sync failed fetching transactions from adapter", "account_id", userAcctID, "error", err.Error())
 		return 0, err
 	}
 
 	// Fetch external account balance from adapter for this account
-	extAccounts, _ := h.mockAdapter.FetchAccounts(ctx.Request().Context(), userID)
+	extAccounts, _ := h.mockAdapter.FetchAccounts(ctx, userID)
 	var bankBalanceMinor int64
 	for _, ea := range extAccounts {
 		if ea.Currency == acctCurrency {
@@ -663,7 +664,7 @@ func (h *TransactionsHandler) executeAccountSync(ctx echo.Context, tenantDB *sql
 		dedup := transaction.ComputeCanonicalDedupHash(userAcctID, ext.ExternalTxID, ext.BookingDateMicro, ext.AmountMinor, ext.Currency, ext.Payee, ext.Reference)
 		rawID := domain.NewUUIDv7()
 
-		res, err := tenantDB.ExecContext(ctx.Request().Context(), `
+		res, err := tenantDB.ExecContext(ctx, `
 			INSERT INTO raw_transactions_current (
 				id, version, account_id, external_transaction_id, dedup_hash, booking_date,
 				amount_minor, currency, raw_payee, reference, status, updated_at
@@ -687,7 +688,7 @@ func (h *TransactionsHandler) executeAccountSync(ctx echo.Context, tenantDB *sql
 	// then record an initial Set Balance transaction so starting balance + pending transactions = real bank balance.
 	if isFirstSync {
 		var setBalancePartyID, setBalanceAcctID string
-		err := tenantDB.QueryRowContext(ctx.Request().Context(), `
+		err := tenantDB.QueryRowContext(ctx, `
 			SELECT p.id, a.id FROM parties_current p
 			JOIN accounts_current a ON a.party_id = p.id
 			WHERE p.name = 'Set Balance' AND p.is_user_owned = 0
@@ -695,10 +696,10 @@ func (h *TransactionsHandler) executeAccountSync(ctx echo.Context, tenantDB *sql
 		if err != nil {
 			setBalancePartyID = domain.NewUUIDv7()
 			setBalanceAcctID = domain.NewUUIDv7()
-			tenantDB.ExecContext(ctx.Request().Context(), `
+			tenantDB.ExecContext(ctx, `
 				INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
 				VALUES (?, 1, 'Set Balance', 'ORGANIZATION', 0, ?, ?)`, setBalancePartyID, userID, now)
-			tenantDB.ExecContext(ctx.Request().Context(), `
+			tenantDB.ExecContext(ctx, `
 				INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
 				VALUES (?, 1, ?, 'Set Balance Offset', 'EXTERNAL', ?, 0, ?, ?)`, setBalanceAcctID, setBalancePartyID, acctCurrency, userID, now)
 		}
@@ -707,7 +708,7 @@ func (h *TransactionsHandler) executeAccountSync(ctx echo.Context, tenantDB *sql
 		startingBalanceMinor := bankBalanceMinor - sumImportedDelta
 		if startingBalanceMinor > 0 {
 			notes := "Starting Balance (Set Balance Offset)"
-			_, err = transaction.ExecuteResolution(ctx.Request().Context(), tenantDB, transaction.ResolveResolutionInput{
+			_, err = transaction.ExecuteResolution(ctx, tenantDB, transaction.ResolveResolutionInput{
 				OperationType: transaction.OpDirectMove,
 				BudgetTransactions: []transaction.BudgetTxInput{
 					{
@@ -741,7 +742,7 @@ func (h *TransactionsHandler) executeAccountSync(ctx echo.Context, tenantDB *sql
 
 	// Log successful sync for rate limit accounting
 	logID := domain.NewUUIDv7()
-	_, _ = tenantDB.ExecContext(ctx.Request().Context(), `
+	_, _ = tenantDB.ExecContext(ctx, `
 		INSERT INTO account_integration_sync_logs (id, account_id, synced_at)
 		VALUES (?, ?, ?)`, logID, userAcctID, now)
 
@@ -836,7 +837,7 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 
 	isAsync := c.Request().Header.Get("HX-Request") == "true" || c.FormValue("async") == "true"
 
-	syncFunc := func() ([]accountSyncResult, error) {
+	syncFunc := func(opCtx context.Context) ([]accountSyncResult, error) {
 		defer func() {
 			h.syncMu.Lock()
 			delete(h.activeSyncs, budgetID)
@@ -849,7 +850,7 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 
 		for i, acctID := range accountIDs {
 			h.broadcastSyncEvent(budgetID, "sync-progress", fmt.Sprintf(`{"account_id":"%s","index":%d,"total":%d}`, acctID, i+1, len(accountIDs)))
-			imported, sErr := h.executeAccountSync(c, tenantDB, acctID, userID, corrID, daysWindow)
+			imported, sErr := h.executeAccountSync(opCtx, tenantDB, acctID, userID, corrID, daysWindow)
 			results = append(results, accountSyncResult{
 				AccountID:     acctID,
 				ImportedCount: imported,
@@ -871,7 +872,8 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 	}
 
 	if isAsync {
-		go syncFunc()
+		bgCtx := context.WithoutCancel(c.Request().Context())
+		go syncFunc(bgCtx)
 		return c.HTML(http.StatusAccepted, `
 			<div role="alert" class="alert alert-info shadow-lg animate-fade-in">
 				<span class="loading loading-spinner loading-sm text-info"></span>
@@ -884,7 +886,7 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 	}
 
 	// Synchronous execution
-	results, syncErr := syncFunc()
+	results, syncErr := syncFunc(c.Request().Context())
 	if syncErr != nil {
 		if strings.HasPrefix(syncErr.Error(), "RATE_LIMIT:") {
 			return echo.NewHTTPError(http.StatusTooManyRequests, syncErr.Error())
