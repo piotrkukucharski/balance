@@ -1,14 +1,43 @@
-# Binaries
+# Binaries & build artifacts
 bin/
-server
-balance
+dist/
+/balance
+/server
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
 
-# Databases & local data
+# Databases & local user/tenant data
 data/
 *.db
 *.db-wal
 *.db-shm
+*.sqlite
+*.sqlite3
 
-# Cache & temporary files
-.cache/
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Temporary & cache files
 tmp/
+.cache/
+*.log
+
+# IDE & Editor settings
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Test coverage & profiling
+coverage.txt
+coverage.html
+*.prof
+*.pprof

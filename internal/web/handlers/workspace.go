@@ -355,10 +355,11 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
         <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
             <ul class="menu menu-md w-full p-0 gap-1">
                 <li><a href="/budgets/%s/budget" class="active font-bold">📂 1. Budget (Buckets)</a></li>
-                <li><a href="/budgets/%s/transactions">💳 2. Transactions</a></li>
-                <li><a href="/budgets/%s/reports">📊 3. Reports</a></li>
-                <li><a href="/budgets/%s/parties">🏢 4. External Parties</a></li>
-                <li><a href="/budgets/%s/members">👥 5. Members</a></li>
+                <li><a href="/budgets/%s/accounts">💳 2. Accounts</a></li>
+                <li><a href="/budgets/%s/transactions">💸 3. Transactions</a></li>
+                <li><a href="/budgets/%s/reports">📊 4. Reports</a></li>
+                <li><a href="/budgets/%s/parties">🏢 5. External Parties</a></li>
+                <li><a href="/budgets/%s/members">👥 6. Members</a></li>
             </ul>
 
             <div class="divider my-0"></div>
@@ -437,8 +438,12 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             <span class="text-xl">📂</span>
             <span class="dock-label">Budget</span>
         </a>
-        <a href="/budgets/%s/transactions">
+        <a href="/budgets/%s/accounts">
             <span class="text-xl">💳</span>
+            <span class="dock-label">Accounts</span>
+        </a>
+        <a href="/budgets/%s/transactions">
+            <span class="text-xl">💸</span>
             <span class="dock-label">Txns</span>
         </a>
         <a href="/budgets/%s/reports">
@@ -456,10 +461,10 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
     </div>
 </body>
 </html>`, budgetName, budgetName, role, csrfToken,
-		budgetID, budgetID, budgetID, budgetID, budgetID,
+		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
 		defaultCurr, defaultCurr,
 		defaultCurr, bucketRows.String(),
-		budgetID, budgetID, budgetID, budgetID, budgetID)
+		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID)
 
 	return c.HTML(http.StatusOK, html)
 }

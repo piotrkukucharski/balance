@@ -51,6 +51,7 @@ func main() {
 	reportsHandler := handlers.NewReportsHandler(mainDB, tenantMgr)
 	partiesHandler := handlers.NewPartiesHandler(mainDB, tenantMgr)
 	membersHandler := handlers.NewMembersHandler(mainDB, tenantMgr)
+	accountsHandler := handlers.NewAccountsHandler(mainDB, tenantMgr)
 	pwaHandler := handlers.NewPWAHandler()
 
 	// PWA routes
@@ -77,12 +78,18 @@ func main() {
 	tenantViewer.GET("/budget", workspaceHandler.BudgetView)
 	tenantViewer.GET("", workspaceHandler.BudgetView)
 	tenantViewer.GET("/dashboard", workspaceHandler.BudgetView)
+	tenantViewer.GET("/accounts", accountsHandler.AccountsView)
 	tenantViewer.GET("/transactions", txHandler.TransactionsView)
 	tenantViewer.GET("/reports", reportsHandler.ReportsView)
 	tenantViewer.GET("/parties", partiesHandler.PartiesView)
 	tenantViewer.GET("/members", membersHandler.MembersView)
 
 	tenantEditor := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "EDITOR"))
+	tenantEditor.POST("/accounts", accountsHandler.CreateAccount)
+	tenantEditor.POST("/accounts/link-bank", accountsHandler.LinkBankAccount)
+	tenantEditor.POST("/accounts/:id/update", accountsHandler.UpdateAccount)
+	tenantEditor.POST("/accounts/:id/toggle-close", accountsHandler.ToggleCloseAccount)
+	tenantEditor.POST("/accounts/:id/delete", accountsHandler.DeleteAccount)
 	tenantEditor.POST("/transactions", txHandler.AddManualTransaction)
 	tenantEditor.POST("/transactions/sync", txHandler.SyncWithBank)
 	tenantEditor.POST("/parties", partiesHandler.CreateParty)
