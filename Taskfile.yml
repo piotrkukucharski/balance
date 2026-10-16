@@ -67,6 +67,11 @@ tasks:
     cmds:
       - go test -v ./internal/web/handlers/...
 
+  test:bdd:
+    desc: "Run Godog BDD feature test suite"
+    cmds:
+      - go test -v ./internal/bdd/...
+
   test:heavy:
     desc: "Run 10-year multi-currency heavy load fixture test"
     cmds:
