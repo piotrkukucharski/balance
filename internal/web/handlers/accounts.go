@@ -481,6 +481,7 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 
     <script>
         const ACTIVE_BUDGET_ID = '%s';
+        const CSRF_TOKEN = '%s';
         let wizardState = {
             provider: 'MOCK',
             country: 'PL',
@@ -622,9 +623,11 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest'
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'X-CSRF-Token': CSRF_TOKEN
                         },
                         body: JSON.stringify({
+                            csrf_token: CSRF_TOKEN,
                             provider: wizardState.provider,
                             country: wizardState.country,
                             institution_ids: [instId]
@@ -671,7 +674,7 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 		budgetID, budgetID, budgetID, budgetID, budgetID,
 		budgetID, csrfToken,
 		csrfToken,
-		budgetID)
+		budgetID, csrfToken)
 
 	return c.HTML(http.StatusOK, html)
 }
