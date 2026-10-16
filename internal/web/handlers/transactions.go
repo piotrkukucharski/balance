@@ -39,10 +39,47 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 	h.mainDB.QueryRowContext(c.Request().Context(), `SELECT name, default_currency FROM budgets WHERE id = ?`, budgetID).
 		Scan(&budgetName, &defaultCurr)
 
+	// Fetch buckets for dropdown
+	bucketRows, err := tenantDB.QueryContext(c.Request().Context(), `SELECT id, name FROM buckets_projection WHERE is_archived = 0 ORDER BY name ASC`)
+	var bucketOptions strings.Builder
+	var editBucketOptions strings.Builder
+	bucketOptions.WriteString(`<option value="">Unassigned</option>`)
+	editBucketOptions.WriteString(`<option value="">Unassigned</option>`)
+	if err == nil {
+		defer bucketRows.Close()
+		for bucketRows.Next() {
+			var bID, bName string
+			bucketRows.Scan(&bID, &bName)
+			opt := fmt.Sprintf(`<option value="%s">%s</option>`, bID, bName)
+			bucketOptions.WriteString(opt)
+			editBucketOptions.WriteString(opt)
+		}
+	}
+
+	// Fetch user checking/cash accounts for dropdown
+	acctRows, err := tenantDB.QueryContext(c.Request().Context(), `
+		SELECT a.id, a.name, a.primary_currency FROM accounts_current a
+		JOIN parties_current p ON a.party_id = p.id
+		WHERE p.is_user_owned = 1 AND a.is_closed = 0
+		ORDER BY a.name ASC`)
+	var acctOptions strings.Builder
+	var editAcctOptions strings.Builder
+	if err == nil {
+		defer acctRows.Close()
+		for acctRows.Next() {
+			var aID, aName, aCurr string
+			acctRows.Scan(&aID, &aName, &aCurr)
+			opt := fmt.Sprintf(`<option value="%s">%s (%s)</option>`, aID, aName, aCurr)
+			acctOptions.WriteString(opt)
+			editAcctOptions.WriteString(opt)
+		}
+	}
+
 	// Fetch recent budget transactions
 	rows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT bt.id, bt.source_amount_minor, bt.source_currency, bt.transaction_date,
-		       COALESCE(bt.notes, ''), COALESCE(bp.name, 'Unassigned')
+		       COALESCE(bt.notes, ''), COALESCE(bp.name, 'Unassigned'), COALESCE(bt.bucket_id, ''),
+		       bt.source_account_id
 		FROM budget_transactions_current bt
 		LEFT JOIN buckets_projection bp ON bt.bucket_id = bp.id
 		ORDER BY bt.transaction_date DESC
@@ -54,13 +91,20 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 
 	var txRows strings.Builder
 	hasTxs := false
+	csrfToken, _ := c.Get("csrfToken").(string)
+
 	for rows.Next() {
 		hasTxs = true
-		var id, curr, notes, bucketName string
+		var id, curr, notes, bucketName, bucketIDVal, srcAcctID string
 		var amountMinor, txDate int64
-		rows.Scan(&id, &amountMinor, &curr, &txDate, &notes, &bucketName)
+		rows.Scan(&id, &amountMinor, &curr, &txDate, &notes, &bucketName, &bucketIDVal, &srcAcctID)
 
 		dateStr := time.UnixMicro(txDate).Format("2006-01-02")
+		amountMajor := float64(amountMinor) / 100.0
+
+		escapedNotes := strings.ReplaceAll(notes, "'", "\\'")
+		escapedNotes = strings.ReplaceAll(escapedNotes, "\"", "&quot;")
+
 		txRows.WriteString(fmt.Sprintf(`
 			<tr class="hover">
 				<td class="font-mono text-xs">%s</td>
@@ -69,20 +113,44 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 				<td class="font-mono text-right font-bold text-sm">
 					-%.2f <span class="text-xs font-normal text-base-content/60">%s</span>
 				</td>
-			</tr>`, dateStr, bucketName, notes, float64(amountMinor)/100.0, curr))
+				<td class="text-right">
+					<div class="dropdown dropdown-end">
+						<div tabindex="0" role="button" class="btn btn-ghost btn-xs btn-circle">
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+							</svg>
+						</div>
+						<ul tabindex="0" class="dropdown-content menu menu-sm bg-base-100 rounded-box z-50 w-36 p-2 shadow-lg border border-base-300">
+							<li>
+								<button type="button" onclick="openEditTxModal('%s', '%.2f', '%s', '%s', '%s', '%s')" class="text-left w-full">
+									✏️ Edit
+								</button>
+							</li>
+							<li>
+								<form method="POST" action="/budgets/%s/transactions/%s/delete" onsubmit="return confirm('Are you sure you want to delete this transaction?')">
+									<input type="hidden" name="csrf_token" value="%s" />
+									<button type="submit" class="text-error text-left w-full">🗑️ Delete</button>
+								</form>
+							</li>
+						</ul>
+					</div>
+				</td>
+			</tr>`,
+			dateStr, bucketName, notes, amountMajor, curr,
+			id, amountMajor, dateStr, escapedNotes, bucketIDVal, srcAcctID,
+			budgetID, id, csrfToken,
+		))
 	}
 
 	if !hasTxs {
 		txRows.WriteString(`
 			<tr>
-				<td colspan="4" class="text-center py-8 text-base-content/50">
-					No transactions recorded yet. Use 🔄 Sync with Bank or ➕ Add Manual Transaction.
+				<td colspan="5" class="text-center py-8 text-base-content/50">
+					No transactions recorded yet. Use 🔄 Sync with Bank or ➕ Add Transaction.
 				</td>
 			</tr>
 		`)
 	}
-
-	csrfToken, _ := c.Get("csrfToken").(string)
 
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en" data-theme="dark">
@@ -161,6 +229,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
                                     <th class="font-bold">Envelope (Bucket)</th>
                                     <th class="font-bold">Notes / Payee</th>
                                     <th class="font-bold text-right">Amount</th>
+                                    <th class="font-bold text-right">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -205,19 +274,39 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
     <dialog id="add_tx_modal" class="modal modal-bottom sm:modal-middle">
         <div class="modal-box card-border border-base-300 p-6">
             <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight">Add Manual Transaction</h3>
+                <h3 class="font-extrabold text-xl tracking-tight">Add Transaction</h3>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
             </div>
             <form method="POST" action="/budgets/%s/transactions" class="flex flex-col gap-4">
                 <input type="hidden" name="csrf_token" value="%s" />
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Amount (in major units e.g. 45.50)</span></label>
-                    <input type="number" step="0.01" name="amount" required placeholder="50.00" class="input input-bordered w-full input-md focus:input-primary" />
+                <div class="grid grid-cols-2 gap-4">
+                    <fieldset class="fieldset">
+                        <legend class="fieldset-legend">Amount</legend>
+                        <input type="number" step="0.01" name="amount" required placeholder="50.00" class="input input-bordered w-full input-md focus:input-primary" />
+                    </fieldset>
+                    <fieldset class="fieldset">
+                        <legend class="fieldset-legend">Date</legend>
+                        <input type="date" name="transaction_date" value="%s" required class="input input-bordered w-full input-md focus:input-primary" />
+                    </fieldset>
                 </div>
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Description / Payee</span></label>
+                <div class="grid grid-cols-2 gap-4">
+                    <fieldset class="fieldset">
+                        <legend class="fieldset-legend">Account</legend>
+                        <select name="account_id" class="select select-bordered w-full select-md focus:select-primary">
+                            %s
+                        </select>
+                    </fieldset>
+                    <fieldset class="fieldset">
+                        <legend class="fieldset-legend">Envelope (Bucket)</legend>
+                        <select name="bucket_id" class="select select-bordered w-full select-md focus:select-primary">
+                            %s
+                        </select>
+                    </fieldset>
+                </div>
+                <fieldset class="fieldset">
+                    <legend class="fieldset-legend">Description / Notes</legend>
                     <input type="text" name="notes" placeholder="e.g. Lunch with team or Groceries" class="input input-bordered w-full input-md focus:input-primary" />
-                </div>
+                </fieldset>
                 <div class="modal-action mt-6 gap-2">
                     <button type="button" class="btn btn-ghost" onclick="add_tx_modal.close()">Cancel</button>
                     <button type="submit" class="btn btn-primary font-semibold shadow-md">Record Outflow</button>
@@ -226,12 +315,80 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
         </div>
         <form method="dialog" class="modal-backdrop"><button>close</button></form>
     </dialog>
+
+    <!-- Edit Transaction Modal -->
+    <dialog id="edit_tx_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Edit Transaction</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form id="edit_tx_form" method="POST" action="" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="%s" />
+                <div class="grid grid-cols-2 gap-4">
+                    <fieldset class="fieldset">
+                        <legend class="fieldset-legend">Amount</legend>
+                        <input id="edit_tx_amount" type="number" step="0.01" name="amount" required placeholder="50.00" class="input input-bordered w-full input-md focus:input-primary" />
+                    </fieldset>
+                    <fieldset class="fieldset">
+                        <legend class="fieldset-legend">Date</legend>
+                        <input id="edit_tx_date" type="date" name="transaction_date" required class="input input-bordered w-full input-md focus:input-primary" />
+                    </fieldset>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <fieldset class="fieldset">
+                        <legend class="fieldset-legend">Account</legend>
+                        <select id="edit_tx_account" name="account_id" class="select select-bordered w-full select-md focus:select-primary">
+                            %s
+                        </select>
+                    </fieldset>
+                    <fieldset class="fieldset">
+                        <legend class="fieldset-legend">Envelope (Bucket)</legend>
+                        <select id="edit_tx_bucket" name="bucket_id" class="select select-bordered w-full select-md focus:select-primary">
+                            %s
+                        </select>
+                    </fieldset>
+                </div>
+                <fieldset class="fieldset">
+                    <legend class="fieldset-legend">Description / Notes</legend>
+                    <input id="edit_tx_notes" type="text" name="notes" placeholder="e.g. Lunch with team or Groceries" class="input input-bordered w-full input-md focus:input-primary" />
+                </fieldset>
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="edit_tx_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Changes</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <script>
+        const ACTIVE_BUDGET_ID = '%s';
+        function openEditTxModal(id, amount, dateStr, notes, bucketId, accountId) {
+            document.getElementById('edit_tx_amount').value = amount;
+            document.getElementById('edit_tx_date').value = dateStr;
+            document.getElementById('edit_tx_notes').value = notes;
+            if (bucketId) {
+                document.getElementById('edit_tx_bucket').value = bucketId;
+            } else {
+                document.getElementById('edit_tx_bucket').value = '';
+            }
+            if (accountId) {
+                document.getElementById('edit_tx_account').value = accountId;
+            }
+            document.getElementById('edit_tx_form').action = '/budgets/' + ACTIVE_BUDGET_ID + '/transactions/' + id + '/update';
+            edit_tx_modal.showModal();
+        }
+    </script>
 </body>
-</html>`, budgetName, csrfToken,
+</html>`,
+		budgetName, csrfToken,
 		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
 		budgetID, csrfToken, txRows.String(),
 		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
-		budgetID, csrfToken)
+		budgetID, csrfToken, time.Now().UTC().Format("2006-01-02"), acctOptions.String(), bucketOptions.String(),
+		csrfToken, editAcctOptions.String(), editBucketOptions.String(),
+		budgetID)
 
 	_ = role
 	return c.HTML(http.StatusOK, html)
@@ -338,21 +495,33 @@ func (h *TransactionsHandler) AddManualTransaction(c echo.Context) error {
 
 	now := time.Now().UTC().UnixMicro()
 
-	var userAcctID, extAcctID string
-	err := tenantDB.QueryRowContext(c.Request().Context(), `
-		SELECT a.id FROM accounts_current a JOIN parties_current p ON a.party_id = p.id WHERE p.is_user_owned = 1 LIMIT 1`).Scan(&userAcctID)
-	if err != nil {
-		pID := domain.NewUUIDv7()
-		userAcctID = domain.NewUUIDv7()
-		tenantDB.ExecContext(c.Request().Context(), `
-			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
-			VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, ?, ?)`, pID, userID, now)
-		tenantDB.ExecContext(c.Request().Context(), `
-			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
-			VALUES (?, 1, ?, 'Checking Account', 'CHECKING', 'PLN', 0, ?, ?)`, userAcctID, pID, userID, now)
+	// Parse custom transaction date if provided (YYYY-MM-DD)
+	txDate := now
+	dateForm := c.FormValue("transaction_date")
+	if dateForm != "" {
+		if parsedDate, err := time.Parse("2006-01-02", dateForm); err == nil {
+			txDate = parsedDate.UTC().UnixMicro()
+		}
 	}
 
-	err = tenantDB.QueryRowContext(c.Request().Context(), `
+	userAcctID := c.FormValue("account_id")
+	if userAcctID == "" {
+		err := tenantDB.QueryRowContext(c.Request().Context(), `
+			SELECT a.id FROM accounts_current a JOIN parties_current p ON a.party_id = p.id WHERE p.is_user_owned = 1 LIMIT 1`).Scan(&userAcctID)
+		if err != nil {
+			pID := domain.NewUUIDv7()
+			userAcctID = domain.NewUUIDv7()
+			tenantDB.ExecContext(c.Request().Context(), `
+				INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+				VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, ?, ?)`, pID, userID, now)
+			tenantDB.ExecContext(c.Request().Context(), `
+				INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+				VALUES (?, 1, ?, 'Checking Account', 'CHECKING', 'PLN', 0, ?, ?)`, userAcctID, pID, userID, now)
+		}
+	}
+
+	var extAcctID string
+	err := tenantDB.QueryRowContext(c.Request().Context(), `
 		SELECT a.id FROM accounts_current a JOIN parties_current p ON a.party_id = p.id WHERE p.is_user_owned = 0 LIMIT 1`).Scan(&extAcctID)
 	if err != nil {
 		pID := domain.NewUUIDv7()
@@ -366,6 +535,12 @@ func (h *TransactionsHandler) AddManualTransaction(c echo.Context) error {
 	}
 
 	notes := c.FormValue("notes")
+	var bucketIDPtr *string
+	bucketIDVal := c.FormValue("bucket_id")
+	if bucketIDVal != "" {
+		bucketIDPtr = &bucketIDVal
+	}
+
 	opID, err := transaction.ExecuteResolution(c.Request().Context(), tenantDB, transaction.ResolveResolutionInput{
 		OperationType: transaction.OpDirectMove,
 		BudgetTransactions: []transaction.BudgetTxInput{
@@ -376,8 +551,9 @@ func (h *TransactionsHandler) AddManualTransaction(c echo.Context) error {
 				SourceCurrency:       "PLN",
 				DestAmountMinor:      amountMinor,
 				DestCurrency:         "PLN",
+				BucketID:             bucketIDPtr,
 				Notes:                &notes,
-				TransactionDate:      now,
+				TransactionDate:      txDate,
 			},
 		},
 		AgentID:       userID,
@@ -398,3 +574,97 @@ func (h *TransactionsHandler) AddManualTransaction(c echo.Context) error {
 
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
 }
+
+// UpdateTransaction handles editing an existing transaction.
+func (h *TransactionsHandler) UpdateTransaction(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:transaction:update")
+
+	budgetID := c.Param("budgetId")
+	txID := c.Param("txId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	var amountFloat float64
+	fmt.Sscanf(c.FormValue("amount"), "%f", &amountFloat)
+	amountMinor := int64(amountFloat * 100)
+
+	if amountMinor <= 0 {
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid transaction amount")
+	}
+
+	// Fetch existing transaction details
+	var curSrcAcctID, curDstAcctID, curSrcCurr, curDstCurr string
+	var curTxDate int64
+	err := tenantDB.QueryRowContext(c.Request().Context(), `
+		SELECT source_account_id, destination_account_id, source_currency, destination_currency, transaction_date
+		FROM budget_transactions_current WHERE id = ?`, txID).Scan(
+		&curSrcAcctID, &curDstAcctID, &curSrcCurr, &curDstCurr, &curTxDate,
+	)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, "Transaction not found")
+	}
+
+	newSrcAcctID := c.FormValue("account_id")
+	if newSrcAcctID == "" {
+		newSrcAcctID = curSrcAcctID
+	}
+
+	txDate := curTxDate
+	dateForm := c.FormValue("transaction_date")
+	if dateForm != "" {
+		if parsedDate, err := time.Parse("2006-01-02", dateForm); err == nil {
+			txDate = parsedDate.UTC().UnixMicro()
+		}
+	}
+
+	notes := c.FormValue("notes")
+	var bucketIDPtr *string
+	bucketIDVal := c.FormValue("bucket_id")
+	if bucketIDVal != "" {
+		bucketIDPtr = &bucketIDVal
+	}
+
+	err = transaction.UpdateBudgetTransaction(c.Request().Context(), tenantDB, transaction.UpdateBudgetTxInput{
+		ID:                   txID,
+		SourceAccountID:      newSrcAcctID,
+		DestinationAccountID: curDstAcctID,
+		SourceAmountMinor:    amountMinor,
+		SourceCurrency:       curSrcCurr,
+		DestAmountMinor:      amountMinor,
+		DestCurrency:         curDstCurr,
+		BucketID:             bucketIDPtr,
+		TransactionDate:      txDate,
+		Notes:                &notes,
+		AgentID:              userID,
+		CorrelationID:        corrID,
+	})
+	if err != nil {
+		logger.Error(ctx, "Failed updating transaction", "tx_id", txID, "error", err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to update transaction: %v", err))
+	}
+
+	logger.Info(ctx, "Transaction updated successfully", "budget_id", budgetID, "tx_id", txID)
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
+}
+
+// DeleteTransaction handles deleting an existing transaction.
+func (h *TransactionsHandler) DeleteTransaction(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:transaction:delete")
+
+	budgetID := c.Param("budgetId")
+	txID := c.Param("txId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	err := transaction.DeleteBudgetTransaction(c.Request().Context(), tenantDB, txID, userID, corrID)
+	if err != nil {
+		logger.Error(ctx, "Failed deleting transaction", "tx_id", txID, "error", err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to delete transaction: %v", err))
+	}
+
+	logger.Info(ctx, "Transaction deleted successfully", "budget_id", budgetID, "tx_id", txID)
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
+}
+

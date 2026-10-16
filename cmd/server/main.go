@@ -107,8 +107,11 @@ func main() {
 	tenantEditor.POST("/accounts/:id/toggle-close", accountsHandler.ToggleCloseAccount)
 	tenantEditor.POST("/accounts/:id/delete", accountsHandler.DeleteAccount)
 	tenantEditor.POST("/transactions", txHandler.AddManualTransaction)
+	tenantEditor.POST("/transactions/:txId/update", txHandler.UpdateTransaction)
+	tenantEditor.POST("/transactions/:txId/delete", txHandler.DeleteTransaction)
 	tenantEditor.POST("/transactions/sync", txHandler.SyncWithBank)
 	tenantEditor.POST("/parties", partiesHandler.CreateParty)
+
 
 	tenantAdmin := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "ADMIN"))
 	tenantAdmin.POST("/members/invite", membersHandler.InviteMember)

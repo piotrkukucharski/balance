@@ -786,6 +786,184 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		return nil
 	})
+
+	// 06_transaction_resolution.feature CRUD steps
+	var createdTxID string
+	ctx.Step(`^an active checking account in "([^"]*)"$`, func(budgetName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		userAcctID := domain.NewUUIDv7()
+
+		tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, created_at, updated_at)
+			VALUES ('01900000-0000-7000-8000-000000000001', ?, 'PLN', ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name`, budgetName, now, now)
+
+		bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, 'user_1', ?)`, pID, now)
+		bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, 'Checking Account', 'CHECKING', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, now)
+
+		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+		tc.activeUserID = "user_1"
+		return nil
+	})
+
+	ctx.Step(`^I create a manual transaction with amount "([^"]*)", date "([^"]*)", and note "([^"]*)"$`, func(amountStr, dateStr, note string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		parts := strings.Split(amountStr, " ")
+		amt := parts[0]
+
+		form := url.Values{}
+		form.Set("amount", amt)
+		form.Set("transaction_date", dateStr)
+		form.Set("notes", note)
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/01900000-0000-7000-8000-000000000001/transactions", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.AddManualTransaction(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the transaction should appear in the budget transactions ledger with amount "([^"]*)"$`, func(amountStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var count int
+		err = bDB.QueryRow("SELECT id, count(*) FROM budget_transactions_current ORDER BY updated_at DESC LIMIT 1").Scan(&createdTxID, &count)
+		if err != nil || count == 0 {
+			return fmt.Errorf("transaction not found in ledger")
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/budgets/01900000-0000-7000-8000-000000000001/transactions", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextRoleKey, "OWNER")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("csrfToken", "dummy_csrf_token")
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.TransactionsView(c)
+		if err != nil {
+			return err
+		}
+		parts := strings.Split(amountStr, " ")
+		if !strings.Contains(rec.Body.String(), parts[0]) {
+			return fmt.Errorf("amount %s not found in view", parts[0])
+		}
+		return nil
+	})
+
+	ctx.Step(`^I edit the transaction notes to "([^"]*)" and amount to "([^"]*)"$`, func(newNotes, newAmountStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		parts := strings.Split(newAmountStr, " ")
+		amt := parts[0]
+
+		form := url.Values{}
+		form.Set("amount", amt)
+		form.Set("notes", newNotes)
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/01900000-0000-7000-8000-000000000001/transactions/%s/update", createdTxID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "txId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001", createdTxID)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.UpdateTransaction(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the transaction ledger should reflect note "([^"]*)" and amount "([^"]*)"$`, func(expectedNotes, expectedAmountStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var notes string
+		var amountMinor int64
+		err = bDB.QueryRow("SELECT notes, source_amount_minor FROM budget_transactions_current WHERE id = ?", createdTxID).Scan(&notes, &amountMinor)
+		if err != nil {
+			return err
+		}
+
+		parts := strings.Split(expectedAmountStr, " ")
+		var expectedMinor int64
+		var f float64
+		fmt.Sscanf(parts[0], "%f", &f)
+		expectedMinor = int64(f * 100)
+
+		if notes != expectedNotes || amountMinor != expectedMinor {
+			return fmt.Errorf("ledger mismatch: got (%s, %d), want (%s, %d)", notes, amountMinor, expectedNotes, expectedMinor)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I delete the transaction$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/01900000-0000-7000-8000-000000000001/transactions/%s/delete", createdTxID), nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "txId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001", createdTxID)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.DeleteTransaction(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the transaction should no longer appear in the budget transactions ledger$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var count int
+		err = bDB.QueryRow("SELECT count(*) FROM budget_transactions_current WHERE id = ?", createdTxID).Scan(&count)
+		if err != nil || count != 0 {
+			return fmt.Errorf("transaction still exists in budget_transactions_current")
+		}
+		return nil
+	})
+
 }
 
 func TestFeatures(t *testing.T) {

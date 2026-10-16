@@ -31,3 +31,13 @@ Feature: Two-Tier Transaction Resolution (Move, Merge, Split) and Deduplication
       | Household  | 100.00 PLN |
     Then the raw transaction should transition to status "PROCESSED"
     And two distinct budget transactions should be created and linked under the operation
+
+  Scenario: Manual creation, updating, and deletion (CRUD) of budget transactions
+    Given an active checking account in "Family Home"
+    When I create a manual transaction with amount "150.00 PLN", date "2026-10-16", and note "Office supplies"
+    Then the transaction should appear in the budget transactions ledger with amount "150.00 PLN"
+    When I edit the transaction notes to "Updated office supplies" and amount to "120.00 PLN"
+    Then the transaction ledger should reflect note "Updated office supplies" and amount "120.00 PLN"
+    When I delete the transaction
+    Then the transaction should no longer appear in the budget transactions ledger
+
