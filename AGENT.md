@@ -27,9 +27,8 @@ Every new feature, change request, or task **MUST** strictly follow a two-step *
 
 ## 2. Language & Naming Policy
 
-- **Codebase (100% English)**: All Go source code, package names, identifiers, comments, SQL migrations, table/column names, API routes, Gherkin `.feature` scenarios, and commit messages **must be written strictly in English**.
-- **User Communication**: Respond to the user in the language they use (Polish).
-- **UI Labels**: User-facing HTML views use Polish interface labels while keeping all underlying routes, form fields, and database identifiers in English.
+- **Codebase & Web UI (100% English)**: All Go source code, package names, identifiers, comments, SQL migrations, table/column names, API routes, Gherkin `.feature` scenarios, commit messages, and **all Web Application UI labels/views/buttons/templates must be written strictly in English**.
+- **User Communication**: Respond to the user in Polish (or the language they communicate in).
 
 ---
 
@@ -37,7 +36,7 @@ Every new feature, change request, or task **MUST** strictly follow a two-step *
 
 Whenever creating or modifying HTML views or JSX/templates (`internal/web/handlers/*.go`):
 
-1. **Activate the `daisyui` skill**: Always follow the rules in [`.agents/skills/daisyui/SKILL.md`](.agents/skills/daisyui/SKILL.md).
+1. **Mandatory daisyUI Skill First**: You **MUST ALWAYS** consult and read the daisyUI skill instructions in [`.agents/skills/daisyui/SKILL.md`](.agents/skills/daisyui/SKILL.md) **BEFORE** writing, modifying, or proposing any UI, HTML, or template code. Never write UI components from memory or guess daisyUI classes without consulting the skill first.
 2. **DaisyUI v5 + Tailwind CSS v4 CDN**:
    - Use exclusively the official DaisyUI v5 + Tailwind v4 browser CDN tags (never use the broken `daisyui@5.0.0/dist/full.min.css` URL):
      ```html
