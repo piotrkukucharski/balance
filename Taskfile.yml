@@ -44,27 +44,32 @@ tasks:
   dev:worktree:create:
     desc: "Create an isolated git worktree with dedicated port and data directory in ../development/<name>"
     cmds:
-      - ./scripts/worktree.sh create {{.CLI_ARGS}}
+      - go run ./scripts/worktree.go create {{.CLI_ARGS}}
 
   dev:worktree:clear:
     desc: "Remove an isolated git worktree (preserves branch by default, pass --delete-branch to delete branch)"
     cmds:
-      - ./scripts/worktree.sh clear {{.CLI_ARGS}}
+      - go run ./scripts/worktree.go clear {{.CLI_ARGS}}
 
   dev:worktree:clearWithBranch:
     desc: "Remove an isolated git worktree and delete its branch"
     cmds:
-      - ./scripts/worktree.sh clear --delete-branch {{.CLI_ARGS}}
+      - go run ./scripts/worktree.go clear --delete-branch {{.CLI_ARGS}}
+
+  dev:worktree:finish:
+    desc: "Finish worktree: rebase branch on main, rebase main on branch, and remove worktree"
+    cmds:
+      - go run ./scripts/worktree.go finish {{.CLI_ARGS}}
 
   dev:worktree:update:maintree:
     desc: "Fast-forward maintree branch from specified worktree branch (only runs on maintree)"
     cmds:
-      - ./scripts/worktree.sh update-maintree {{.CLI_ARGS}}
+      - go run ./scripts/worktree.go update-maintree {{.CLI_ARGS}}
 
   dev:worktree:update:branch:
     desc: "Rebase current worktree branch onto main (only runs inside secondary worktree)"
     cmds:
-      - ./scripts/worktree.sh update-branch {{.CLI_ARGS}}
+      - go run ./scripts/worktree.go update-branch {{.CLI_ARGS}}
 
   # Test tasks
   test:all:
