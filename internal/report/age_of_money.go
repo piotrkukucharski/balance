@@ -20,8 +20,8 @@ type OutflowRecord struct {
 
 // AgeOfMoneyResult contains the headline metric and historical time-series points.
 type AgeOfMoneyResult struct {
-	HeadlineDays int                 `json:"headline_days"` // Average of last 10 liquid outflows
-	History      []AgeOfMoneyPoint   `json:"history"`
+	HeadlineDays int               `json:"headline_days"` // Average of last 10 liquid outflows
+	History      []AgeOfMoneyPoint `json:"history"`
 }
 
 type AgeOfMoneyPoint struct {

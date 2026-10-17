@@ -10,7 +10,7 @@ import (
 
 // Constants as defined in specification
 const (
-	MaxSafeAmountMinor int64 = 100_000_000_000_00 // 10^14 minor units (100 billion major units)
+	MaxSafeAmountMinor  int64 = 100_000_000_000_00 // 10^14 minor units (100 billion major units)
 	MicroUnitMultiplier int64 = 1_000_000
 )
 

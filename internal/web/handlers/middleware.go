@@ -14,10 +14,10 @@ import (
 )
 
 const (
-	SessionCookieName = "balance_session"
-	ContextUserIDKey  = "userID"
-	ContextSessionKey = "sessionToken"
-	ContextRoleKey    = "budgetRole"
+	SessionCookieName  = "balance_session"
+	ContextUserIDKey   = "userID"
+	ContextSessionKey  = "sessionToken"
+	ContextRoleKey     = "budgetRole"
 	ContextBudgetDBKey = "budgetDB"
 )
 

@@ -28,15 +28,15 @@ const (
 
 // MatchingRule represents an auto-assignment rule.
 type MatchingRule struct {
-	ID                         string
-	Name                       string
-	Priority                   int
-	MatchField                 string
-	MatchOperator              string
-	MatchPattern               string
-	TargetCounterpartyAcctID   string
-	DefaultBucketID            *string
-	compiledRe                 *regexp.Regexp
+	ID                       string
+	Name                     string
+	Priority                 int
+	MatchField               string
+	MatchOperator            string
+	MatchPattern             string
+	TargetCounterpartyAcctID string
+	DefaultBucketID          *string
+	compiledRe               *regexp.Regexp
 }
 
 // MatchingEngine evaluates raw transactions against priority-ordered rules.

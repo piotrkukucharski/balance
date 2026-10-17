@@ -19,13 +19,13 @@ type BucketContextMeta struct {
 }
 
 type TargetContextMeta struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	BucketName     string `json:"bucket_name"`
-	Priority       int    `json:"priority"`
-	Currency       string `json:"currency"`
-	RequiredMinor  int64  `json:"required_minor"`
-	FundedMinor    int64  `json:"funded_minor"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	BucketName    string `json:"bucket_name"`
+	Priority      int    `json:"priority"`
+	Currency      string `json:"currency"`
+	RequiredMinor int64  `json:"required_minor"`
+	FundedMinor   int64  `json:"funded_minor"`
 }
 
 type FormulaGenerationRequest struct {

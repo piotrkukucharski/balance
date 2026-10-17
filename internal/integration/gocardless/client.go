@@ -12,13 +12,13 @@ import (
 )
 
 type Institution struct {
-	ID                     string   `json:"id"`
-	Name                   string   `json:"name"`
-	BIC                    string   `json:"bic"`
-	TransactionTotalDays   string   `json:"transaction_total_days"`
-	Countries              []string `json:"countries"`
-	Logo                   string   `json:"logo"`
-	MaxAccessValidForDays  string   `json:"max_access_valid_for_days"`
+	ID                    string   `json:"id"`
+	Name                  string   `json:"name"`
+	BIC                   string   `json:"bic"`
+	TransactionTotalDays  string   `json:"transaction_total_days"`
+	Countries             []string `json:"countries"`
+	Logo                  string   `json:"logo"`
+	MaxAccessValidForDays string   `json:"max_access_valid_for_days"`
 }
 
 type EndUserAgreement struct {

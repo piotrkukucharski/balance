@@ -29,27 +29,28 @@ type TargetDefinition struct {
 	ID                  string
 	BucketID            string
 	Name                string
-	Priority            int    // higher = more important (1=Optional, 2=Recommended, 3=Mandatory)
+	Priority            int // higher = more important (1=Optional, 2=Recommended, 3=Mandatory)
 	SortOrder           int
-	AmountMinor         int64  // Evaluated or static required cycle/target amount
+	AmountMinor         int64 // Evaluated or static required cycle/target amount
 	Currency            string
 	RecurrenceCadence   string
-	RecurrenceDays      int    // >= 1 for CUSTOM_DAYS
-	DueDate             int64  // UTC microsecond timestamp
+	RecurrenceDays      int   // >= 1 for CUSTOM_DAYS
+	DueDate             int64 // UTC microsecond timestamp
 	NonSpendingStrategy string
 	CeilingAmountMinor  *int64
 	CurrentFundedMinor  int64
-	CurrentBalanceMinor int64  // Current unspent balance attributed to this target
-	ArrearsMinor        int64  // Cumulative unpaid debt from previous periods for ARREARS_CUMULATIVE
+	CurrentBalanceMinor int64 // Current unspent balance attributed to this target
+	ArrearsMinor        int64 // Cumulative unpaid debt from previous periods for ARREARS_CUMULATIVE
 }
 
 // TargetRequirement computes the exact funding requirement in minor units for windowDays.
 // Given horizon H days starting at Tstart:
 // 1. One-off target:
-//    - If Tdue <= Tstart + H: full remaining amount U (AmountMinor - CurrentFundedMinor)
-//    - If Tdue > Tstart + H: Prorated: U * (H / (Tdue - Tstart))
+//   - If Tdue <= Tstart + H: full remaining amount U (AmountMinor - CurrentFundedMinor)
+//   - If Tdue > Tstart + H: Prorated: U * (H / (Tdue - Tstart))
+//
 // 2. Recurring target:
-//    - Number of cycles in window H: floor(H / N) (with N >= 1)
+//   - Number of cycles in window H: floor(H / N) (with N >= 1)
 func ComputeTargetRequirement(t *TargetDefinition, windowDays int, nowUTC time.Time) int64 {
 	if windowDays < 1 {
 		windowDays = 1

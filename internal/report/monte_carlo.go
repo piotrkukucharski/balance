@@ -13,34 +13,34 @@ import (
 
 // MonteCarloConfig mirrors the configuration schema defined in spec 13.3.
 type MonteCarloConfig struct {
-	CurrentAge       int           `json:"current_age"`
-	TargetAge        int           `json:"target_age"`
-	SimulationsCount int           `json:"simulations_count"` // 1000..10000 (default 5000)
-	ReturnModel      string        `json:"return_model"`      // RANDOM_NORMAL, HISTORICAL_SHUFFLED, etc.
-	InflationMeanPct float64       `json:"inflation_mean_pct"`
-	InflationStdDev  float64       `json:"inflation_std_dev"`
-	Pots             []MontePot    `json:"pots"`
-	SpendingPhases   []SpendPhase  `json:"spending_phases"`
+	CurrentAge       int          `json:"current_age"`
+	TargetAge        int          `json:"target_age"`
+	SimulationsCount int          `json:"simulations_count"` // 1000..10000 (default 5000)
+	ReturnModel      string       `json:"return_model"`      // RANDOM_NORMAL, HISTORICAL_SHUFFLED, etc.
+	InflationMeanPct float64      `json:"inflation_mean_pct"`
+	InflationStdDev  float64      `json:"inflation_std_dev"`
+	Pots             []MontePot   `json:"pots"`
+	SpendingPhases   []SpendPhase `json:"spending_phases"`
 }
 
 type MontePot struct {
-	Name                string  `json:"name"`
-	StartingBalanceMinor int64  `json:"starting_balance_minor"`
-	ExpectedReturnPct   float64 `json:"expected_return_pct"`
-	VolatilityStdDevPct float64 `json:"volatility_std_dev_pct"`
-	AccessibleFromAge   int     `json:"accessible_from_age"`
+	Name                 string  `json:"name"`
+	StartingBalanceMinor int64   `json:"starting_balance_minor"`
+	ExpectedReturnPct    float64 `json:"expected_return_pct"`
+	VolatilityStdDevPct  float64 `json:"volatility_std_dev_pct"`
+	AccessibleFromAge    int     `json:"accessible_from_age"`
 }
 
 type SpendPhase struct {
-	FromAge          int   `json:"from_age"`
-	ToAge            int   `json:"to_age"`
+	FromAge           int   `json:"from_age"`
+	ToAge             int   `json:"to_age"`
 	AnnualTargetMinor int64 `json:"annual_target_minor"`
 }
 
 type MonteCarloResult struct {
-	SuccessRatePct       float64   `json:"success_rate_pct"`
-	MedianEndingBalance  int64     `json:"median_ending_balance"`
-	ChanceOfRunningOut   float64   `json:"chance_of_running_out"`
+	SuccessRatePct         float64 `json:"success_rate_pct"`
+	MedianEndingBalance    int64   `json:"median_ending_balance"`
+	ChanceOfRunningOut     float64 `json:"chance_of_running_out"`
 	Percentile10Trajectory []int64 `json:"p10_trajectory"`
 	Percentile50Trajectory []int64 `json:"p50_trajectory"`
 	Percentile90Trajectory []int64 `json:"p90_trajectory"`
@@ -161,9 +161,9 @@ func RunMonteCarloSimulation(ctx context.Context, cfg MonteCarloConfig) (*MonteC
 	successRate := (float64(successCount) / float64(count)) * 100.0
 
 	return &MonteCarloResult{
-		SuccessRatePct:       math.Round(successRate*100) / 100,
-		MedianEndingBalance:  p50[years],
-		ChanceOfRunningOut:   math.Round((100.0-successRate)*100) / 100,
+		SuccessRatePct:         math.Round(successRate*100) / 100,
+		MedianEndingBalance:    p50[years],
+		ChanceOfRunningOut:     math.Round((100.0-successRate)*100) / 100,
 		Percentile10Trajectory: p10,
 		Percentile50Trajectory: p50,
 		Percentile90Trajectory: p90,

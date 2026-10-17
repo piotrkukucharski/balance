@@ -127,7 +127,7 @@ type fakeTB struct {
 	cleanups []func()
 }
 
-func (f *fakeTB) Helper() {}
+func (f *fakeTB) Helper()      {}
 func (f *fakeTB) Failed() bool { return f.failed }
 func (f *fakeTB) Log(args ...any) {
 	var sb strings.Builder
@@ -179,4 +179,3 @@ func TestBindTestLoggerFailureFlushed(t *testing.T) {
 		t.Errorf("flushed log missing expected message: %s", fake.logs[0])
 	}
 }
-

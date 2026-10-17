@@ -23,24 +23,24 @@ const (
 )
 
 var (
-	ErrScriptTooLarge           = errors.New("script exceeds 2048 bytes limit")
-	ErrScriptTooManyLines       = errors.New("script exceeds 50 lines limit")
-	ErrBytecodeHeaderForbidden  = errors.New("precompiled bytecode header is strictly forbidden")
-	ErrForbiddenToken           = errors.New("forbidden language construct (loops, function declarations, string concatenation are blocked)")
-	ErrHostCallLimitExceeded    = errors.New("lua host API call quota exceeded (32 calls)")
-	ErrInvalidReturnValue       = errors.New("lua formula must return a single numeric integer in minor units")
+	ErrScriptTooLarge          = errors.New("script exceeds 2048 bytes limit")
+	ErrScriptTooManyLines      = errors.New("script exceeds 50 lines limit")
+	ErrBytecodeHeaderForbidden = errors.New("precompiled bytecode header is strictly forbidden")
+	ErrForbiddenToken          = errors.New("forbidden language construct (loops, function declarations, string concatenation are blocked)")
+	ErrHostCallLimitExceeded   = errors.New("lua host API call quota exceeded (32 calls)")
+	ErrInvalidReturnValue      = errors.New("lua formula must return a single numeric integer in minor units")
 )
 
 // TargetMeta represents an in-memory target snapshot
 type TargetMeta struct {
-	ID        string
-	Name      string
-	Planned   int64
-	Required  int64
-	Funded    int64
-	Spent     int64
-	Priority  int
-	Currency  string
+	ID       string
+	Name     string
+	Planned  int64
+	Required int64
+	Funded   int64
+	Spent    int64
+	Priority int
+	Currency string
 }
 
 // InMemoryBudgetSnapshot provides O(1) in-memory financial data to the VM without database I/O.

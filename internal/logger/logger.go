@@ -62,10 +62,10 @@ func SetOutput(w io.Writer, level slog.Level) {
 }
 
 // BindTestLogger binds logging during a test to testing.TB.
-// - If the test succeeds, all logs are suppressed (clean stdout).
-// - If the test fails, testing.TB automatically dumps all captured logs with their original correlation IDs.
-// - If the environment variable BALANCE_DEV_LOGS=true or BALANCE_TEST_LOGS=all is set,
-//   logs are also printed live to stdout during development.
+//   - If the test succeeds, all logs are suppressed (clean stdout).
+//   - If the test fails, testing.TB automatically dumps all captured logs with their original correlation IDs.
+//   - If the environment variable BALANCE_DEV_LOGS=true or BALANCE_TEST_LOGS=all is set,
+//     logs are also printed live to stdout during development.
 func BindTestLogger(t testing.TB) {
 	devMode := strings.EqualFold(os.Getenv("BALANCE_DEV_LOGS"), "true") ||
 		strings.EqualFold(os.Getenv("BALANCE_TEST_LOGS"), "all")
