@@ -1,5 +1,7 @@
 version: '3'
 
+silent: true
+
 dotenv: ['.env']
 
 vars:
@@ -32,6 +34,7 @@ tasks:
     desc: "Start the Balance development server"
     deps: [dev:init]
     cmds:
+      - echo "http://localhost:{{.PORT}}"
       - DATA_DIR={{.DATA_DIR}} PORT={{.PORT}} go run ./cmd/server
 
   dev:stop:
