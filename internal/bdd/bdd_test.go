@@ -170,6 +170,60 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		tc.activeCSRF = csrf
 		return nil
 	})
+	ctx.Step(`^an existing registered user with email "([^"]*)" and password "([^"]*)"$`, func(email, pass string) error {
+		hash, err := auth.HashPassword(pass)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		userID := domain.NewUUIDv7()
+		_, err = tc.mainDB.Exec(`
+			INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at)
+			VALUES (?, ?, ?, 'Test User', ?, ?)`, userID, email, hash, now, now)
+		return err
+	})
+	ctx.Step(`^I submit a login request with email "([^"]*)" and password "([^"]*)"$`, func(email, pass string) error {
+		form := url.Values{}
+		form.Set("email", email)
+		form.Set("password", pass)
+
+		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+
+		err := tc.authHandler.HandleLogin(c)
+		tc.lastResponse = rec
+		for _, cookie := range rec.Result().Cookies() {
+			if cookie.Name == handlers.SessionCookieName {
+				tc.sessionCookie = cookie
+				break
+			}
+		}
+		return err
+	})
+	ctx.Step(`^an active session should be persisted in "([^"]*)" table$`, func(tableName string) error {
+		if tc.sessionCookie == nil {
+			return fmt.Errorf("expected session cookie to be set")
+		}
+		tokenHash := auth.HashToken(tc.sessionCookie.Value)
+		var count int
+		err := tc.mainDB.QueryRow("SELECT count(*) FROM sessions WHERE token_hash = ?", tokenHash).Scan(&count)
+		if err != nil || count != 1 {
+			return fmt.Errorf("expected 1 active session in sessions table, got %d (err: %v)", count, err)
+		}
+		return nil
+	})
+	ctx.Step(`^the login page should be rendered with an error message to try again$`, func() error {
+		if tc.lastResponse.Code != http.StatusUnauthorized {
+			return fmt.Errorf("expected 401 status code, got %d", tc.lastResponse.Code)
+		}
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, `role="alert"`) || !strings.Contains(body, "Invalid email or password. Please try again.") {
+			return fmt.Errorf("expected error alert on login page, got: %s", body)
+		}
+		return nil
+	})
 
 	// 08_lua_formula_and_ai.feature steps
 	ctx.Step(`^a target "([^"]*)" with required amount "([^"]*)"$`, func(targetName, amountStr string) error {

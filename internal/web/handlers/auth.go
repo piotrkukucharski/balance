@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"database/sql"
+	"fmt"
+	"html"
 	"net/http"
 	"time"
 
@@ -123,7 +125,20 @@ func (h *AuthHandler) HandleRegister(c echo.Context) error {
 
 // LoginPage renders the login HTML page with DaisyUI 5 styling.
 func (h *AuthHandler) LoginPage(c echo.Context) error {
-	html := `<!DOCTYPE html>
+	return h.renderLoginPage(c, http.StatusOK, "", "")
+}
+
+func (h *AuthHandler) renderLoginPage(c echo.Context, status int, errMsg string, emailVal string) error {
+	errorBanner := ""
+	if errMsg != "" {
+		errorBanner = fmt.Sprintf(`
+            <div role="alert" class="alert alert-error alert-soft text-xs font-medium shadow-xs">
+                <span>⚠️</span>
+                <span>%s</span>
+            </div>`, html.EscapeString(errMsg))
+	}
+
+	pageHTML := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
@@ -145,13 +160,13 @@ func (h *AuthHandler) LoginPage(c echo.Context) error {
             </div>
 
             <div class="divider my-0 text-xs opacity-40">CREDENTIALS</div>
-
+            %s
             <form method="POST" action="/login" class="flex flex-col gap-4">
                 <div class="form-control">
                     <label class="label pb-1">
                         <span class="label-text font-medium text-xs">Email Address</span>
                     </label>
-                    <input type="email" name="email" required placeholder="jan@example.com" class="input input-bordered w-full input-md focus:input-primary" />
+                    <input type="email" name="email" value="%s" required placeholder="jan@example.com" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
                 <div class="form-control">
                     <label class="label pb-1">
@@ -172,8 +187,8 @@ func (h *AuthHandler) LoginPage(c echo.Context) error {
         </div>
     </div>
 </body>
-</html>`
-	return c.HTML(http.StatusOK, html)
+</html>`, errorBanner, html.EscapeString(emailVal))
+	return c.HTML(status, pageHTML)
 }
 
 // HandleLogin authenticates password and creates a new stateful session.
@@ -188,13 +203,13 @@ func (h *AuthHandler) HandleLogin(c echo.Context) error {
 		SELECT id, password_hash FROM users WHERE email = ?`, email).Scan(&userID, &hash)
 	if err != nil {
 		logger.Warn(ctx, "Login failed: user not found", "email", email)
-		return echo.NewHTTPError(http.StatusUnauthorized, "Invalid credentials")
+		return h.renderLoginPage(c, http.StatusUnauthorized, "Invalid email or password. Please try again.", email)
 	}
 
 	valid, err := auth.VerifyPassword(password, hash)
 	if err != nil || !valid {
 		logger.Warn(ctx, "Login failed: invalid password", "email", email, "user_id", userID)
-		return echo.NewHTTPError(http.StatusUnauthorized, "Invalid credentials")
+		return h.renderLoginPage(c, http.StatusUnauthorized, "Invalid email or password. Please try again.", email)
 	}
 
 	logger.Info(ctx, "User authenticated successfully", "user_id", userID, "email", email)

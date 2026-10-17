@@ -370,6 +370,32 @@ func TestFaviconServingAndViews(t *testing.T) {
 			t.Fatalf("RegisterPage missing favicon link")
 		}
 	})
+
+	t.Run("HandleLogin renders login page with error alert when user does not exist", func(t *testing.T) {
+		form := url.Values{}
+		form.Set("email", "missing@example.com")
+		form.Set("password", "WrongPass123!")
+
+		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+
+		if err := authHandler.HandleLogin(c); err != nil {
+			t.Fatalf("expected HTML response instead of unhandled error: %v", err)
+		}
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("expected status 401 Unauthorized, got %d", rec.Code)
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, `role="alert"`) || !strings.Contains(body, "Invalid email or password. Please try again.") {
+			t.Fatalf("expected error alert on login page, got: %s", body)
+		}
+		if !strings.Contains(body, `value="missing@example.com"`) {
+			t.Fatalf("expected email input to preserve submitted email")
+		}
+	})
 }
+
 
 

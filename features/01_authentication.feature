@@ -35,3 +35,9 @@ Feature: User Authentication and Stateful Browser Sessions
     When I request a protected API endpoint "/budgets" with JSON accept header
     Then the response status should be 401 Unauthorized
 
+  Scenario: Login with non-existent user displays error message on login page
+    Given the Balance application database is initialized
+    When I submit a login request with email "nonexistent@example.com" and password "WrongPassword123!"
+    Then the login page should be rendered with an error message to try again
+
+
