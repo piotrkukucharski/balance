@@ -317,3 +317,59 @@ func TestSessionOrBearerAuthMiddleware(t *testing.T) {
 	})
 }
 
+func TestFaviconServingAndViews(t *testing.T) {
+	logger.BindTestLogger(t)
+
+	tmpDir, err := os.MkdirTemp("", "balance_fav_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mainPath := filepath.Join(tmpDir, "main.db")
+	mainDB, err := db.OpenDB(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tmpDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	authHandler := NewAuthHandler(mainDB, tenantMgr)
+	e := echo.New()
+
+	t.Run("LoginPage contains favicon link", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/login", nil)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		if err := authHandler.LoginPage(c); err != nil {
+			t.Fatalf("LoginPage failed: %v", err)
+		}
+		if !strings.Contains(rec.Body.String(), `<link rel="icon" type="image/x-icon" href="/favicon.ico">`) {
+			t.Fatalf("LoginPage missing favicon link")
+		}
+	})
+
+	t.Run("RegisterPage contains favicon link", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/register", nil)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		if err := authHandler.RegisterPage(c); err != nil {
+			t.Fatalf("RegisterPage failed: %v", err)
+		}
+		if !strings.Contains(rec.Body.String(), `<link rel="icon" type="image/x-icon" href="/favicon.ico">`) {
+			t.Fatalf("RegisterPage missing favicon link")
+		}
+	})
+}
+
+

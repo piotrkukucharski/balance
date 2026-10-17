@@ -271,6 +271,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <script src="https://unpkg.com/htmx.org@2.0.4/dist/ext/sse.js"></script>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <link rel="manifest" href="/manifest.webmanifest">
 </head>
 <body class="bg-base-200 text-base-content min-h-screen flex flex-col">

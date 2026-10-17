@@ -93,6 +93,7 @@ func (h *PartiesHandler) PartiesView(c echo.Context) error {
     <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <link rel="manifest" href="/manifest.webmanifest">
 </head>
 <body class="bg-base-200 text-base-content min-h-screen flex flex-col">

@@ -9,6 +9,7 @@ import (
 
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/logger"
+	webassets "github.com/balance/balance/internal/web/assets"
 	"github.com/balance/balance/internal/web/handlers"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -69,7 +70,7 @@ func main() {
 
 	// Public Auth routes
 	e.GET("/favicon.ico", func(c echo.Context) error {
-		return c.NoContent(http.StatusNoContent)
+		return c.Blob(http.StatusOK, "image/x-icon", webassets.FaviconICO)
 	})
 	e.GET("/", func(c echo.Context) error {
 		return c.Redirect(303, "/budgets")
