@@ -56,9 +56,9 @@ func main() {
 	e.Use(handlers.StructuredRequestLoggerMiddleware())
 
 	authHandler := handlers.NewAuthHandler(mainDB, tenantMgr)
-	workspaceHandler := handlers.NewWorkspaceHandler(mainDB, tenantMgr)
-	txHandler := handlers.NewTransactionsHandler(mainDB, tenantMgr)
 	reportsHandler := handlers.NewReportsHandler(mainDB, tenantMgr)
+	workspaceHandler := handlers.NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+	txHandler := handlers.NewTransactionsHandler(mainDB, tenantMgr)
 	partiesHandler := handlers.NewPartiesHandler(mainDB, tenantMgr)
 	membersHandler := handlers.NewMembersHandler(mainDB, tenantMgr)
 	accountsHandler := handlers.NewAccountsHandler(mainDB, tenantMgr)
@@ -120,6 +120,16 @@ func main() {
 	tenantEditor.POST("/transactions/raw/:rawId/ignore", txHandler.IgnoreRawTransaction)
 	tenantEditor.POST("/transactions/reconcile/auto-match", txHandler.AutoMatchRawTransactions)
 	tenantEditor.POST("/parties", partiesHandler.CreateParty)
+	tenantEditor.POST("/buckets", workspaceHandler.CreateBucket)
+	tenantEditor.POST("/buckets/:id/update", workspaceHandler.UpdateBucket)
+	tenantEditor.POST("/buckets/:id/archive", workspaceHandler.ArchiveBucket)
+	tenantEditor.POST("/buckets/:id/assign", workspaceHandler.AssignFunds)
+	tenantEditor.POST("/buckets/move", workspaceHandler.MoveFunds)
+	tenantEditor.POST("/buckets/auto-assign", workspaceHandler.AutoAssign)
+	tenantEditor.POST("/budget/auto-assign", workspaceHandler.AutoAssign)
+	tenantEditor.POST("/targets", workspaceHandler.CreateTarget)
+	tenantEditor.POST("/targets/:id/update", workspaceHandler.UpdateTarget)
+	tenantEditor.POST("/targets/:id/delete", workspaceHandler.DeleteTarget)
 
 
 	tenantAdmin := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "ADMIN"))

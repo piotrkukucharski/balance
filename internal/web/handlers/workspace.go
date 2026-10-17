@@ -2,11 +2,15 @@ package handlers
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/logger"
@@ -14,14 +18,16 @@ import (
 )
 
 type WorkspaceHandler struct {
-	mainDB    *sql.DB
-	tenantMgr *db.TenantDBManager
+	mainDB         *sql.DB
+	tenantMgr      *db.TenantDBManager
+	reportsHandler *ReportsHandler
 }
 
-func NewWorkspaceHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *WorkspaceHandler {
+func NewWorkspaceHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager, reportsHandler *ReportsHandler) *WorkspaceHandler {
 	return &WorkspaceHandler{
-		mainDB:    mainDB,
-		tenantMgr: tenantMgr,
+		mainDB:         mainDB,
+		tenantMgr:      tenantMgr,
+		reportsHandler: reportsHandler,
 	}
 }
 
@@ -78,7 +84,7 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 						</div>
 					</div>
 				</div>
-			</div>`, name, tz, role, curr, id, id))
+			</div>`, html.EscapeString(name), html.EscapeString(tz), html.EscapeString(role), html.EscapeString(curr), id, id))
 	}
 
 	if !hasBudgets {
@@ -96,7 +102,7 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 
 	csrfToken, _ := c.Get("csrfToken").(string)
 
-	html := fmt.Sprintf(`<!DOCTYPE html>
+	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
@@ -183,7 +189,7 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 </body>
 </html>`, csrfToken, budgetCards.String(), csrfToken)
 
-	return c.HTML(http.StatusOK, html)
+	return c.HTML(http.StatusOK, htmlContent)
 }
 
 // CreateBudget creates a new budget in main.db and provisions the tenant SQLite database.
@@ -249,6 +255,35 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
 }
 
+type bucketViewData struct {
+	ID           string
+	GroupName    string
+	Name         string
+	BalanceMinor int64
+	Currency     string
+	Targets      []targetViewData
+}
+
+type targetViewData struct {
+	ID                  string
+	BucketID            string
+	Name                string
+	TargetType          string
+	Priority            int
+	SortOrder           int
+	AmountMinor         int64
+	Currency            string
+	RecurrenceCadence   string
+	RecurrenceDays      int
+	DueDate             int64
+	NonSpendingStrategy string
+	CeilingAmountMinor  *int64
+	CurrentFundedMinor  int64
+	RequiredMinor       int64
+	HealthBadge         string
+	HealthBadgeClass    string
+}
+
 // BudgetView renders the YNAB-style Budget/Envelopes view with DaisyUI 5 stats, tables, and badges.
 func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	budgetID := c.Param("budgetId")
@@ -259,7 +294,109 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	h.mainDB.QueryRowContext(c.Request().Context(), `SELECT name, default_currency, timezone FROM budgets WHERE id = ?`, budgetID).
 		Scan(&budgetName, &defaultCurr, &tz)
 
-	// Fetch buckets and balances
+	// Horizon parameter (e.g. 30, 90, or 30 for monthly)
+	horizonParam := c.QueryParam("horizon")
+	if horizonParam == "" {
+		horizonParam = "monthly"
+	}
+	windowDays := 30
+	if horizonParam == "90d" {
+		windowDays = 90
+	} else if horizonParam == "30d" {
+		windowDays = 30
+	}
+
+	// 1. Calculate Age of Money dynamically
+	aomHeadline := 0
+	if h.reportsHandler != nil {
+		if aomResult, _ := h.reportsHandler.CalculateAgeOfMoneyForBudget(c.Request().Context(), tenantDB); aomResult != nil {
+			aomHeadline = aomResult.HeadlineDays
+		}
+	}
+
+	// 2. Calculate Ready to Assign dynamically
+	rtaMap, err := budget.CalculateReadyToAssign(c.Request().Context(), tenantDB)
+	if err != nil {
+		logger.Error(c.Request().Context(), "Failed calculating ready to assign", "error", err.Error())
+		rtaMap = make(map[string]int64)
+	}
+	defaultRTA := rtaMap[defaultCurr]
+
+	var rtaOtherBadges strings.Builder
+	for curr, amt := range rtaMap {
+		if curr != defaultCurr && amt != 0 {
+			badgeColor := "badge-info"
+			if amt < 0 {
+				badgeColor = "badge-error"
+			}
+			rtaOtherBadges.WriteString(fmt.Sprintf(`<span class="badge %s badge-sm font-bold ml-1">%.2f %s</span>`, badgeColor, float64(amt)/100.0, curr))
+		}
+	}
+
+	// 3. Fetch all active targets
+	nowUTC := time.Now().UTC()
+	targetRows, err := tenantDB.QueryContext(c.Request().Context(), `
+		SELECT id, bucket_id, name, target_type, priority, sort_order, amount_minor, currency,
+		       recurrence_cadence, recurrence_days, due_date, non_spending_strategy,
+		       ceiling_amount_minor, current_funded_minor
+		FROM targets_projection
+		WHERE is_archived = 0
+		ORDER BY priority DESC, due_date ASC, sort_order ASC`)
+	targetsByBucket := make(map[string][]targetViewData)
+	if err == nil {
+		defer targetRows.Close()
+		for targetRows.Next() {
+			var t targetViewData
+			var dueDate sql.NullInt64
+			var ceiling sql.NullInt64
+			targetRows.Scan(&t.ID, &t.BucketID, &t.Name, &t.TargetType, &t.Priority, &t.SortOrder,
+				&t.AmountMinor, &t.Currency, &t.RecurrenceCadence, &t.RecurrenceDays,
+				&dueDate, &t.NonSpendingStrategy, &ceiling, &t.CurrentFundedMinor)
+			if dueDate.Valid {
+				t.DueDate = dueDate.Int64
+			}
+			if ceiling.Valid {
+				cVal := ceiling.Int64
+				t.CeilingAmountMinor = &cVal
+			}
+
+			tDef := &budget.TargetDefinition{
+				ID:                  t.ID,
+				BucketID:            t.BucketID,
+				Name:                t.Name,
+				Priority:            t.Priority,
+				SortOrder:           t.SortOrder,
+				AmountMinor:         t.AmountMinor,
+				Currency:            t.Currency,
+				RecurrenceCadence:   t.RecurrenceCadence,
+				RecurrenceDays:      t.RecurrenceDays,
+				DueDate:             t.DueDate,
+				NonSpendingStrategy: t.NonSpendingStrategy,
+				CeilingAmountMinor:  t.CeilingAmountMinor,
+				CurrentFundedMinor:  t.CurrentFundedMinor,
+			}
+			t.RequiredMinor = budget.ComputeTargetRequirement(tDef, windowDays, nowUTC)
+
+			// Health evaluation
+			if t.CurrentFundedMinor < 0 {
+				t.HealthBadge = "Overspent"
+				t.HealthBadgeClass = "badge-error text-error-content"
+			} else if t.CurrentFundedMinor >= t.RequiredMinor && t.RequiredMinor > 0 {
+				t.HealthBadge = "Funded / On Track"
+				t.HealthBadgeClass = "badge-success text-success-content"
+			} else if t.CurrentFundedMinor < t.RequiredMinor {
+				t.HealthBadge = "Underfunded"
+				t.HealthBadgeClass = "badge-warning text-warning-content"
+			} else {
+				t.HealthBadge = "Funded / On Track"
+				t.HealthBadgeClass = "badge-success text-success-content"
+			}
+
+			targetsByBucket[t.BucketID] = append(targetsByBucket[t.BucketID], t)
+		}
+	}
+
+	// 4. Fetch buckets and balances
 	rows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT b.id, b.group_name, b.name, COALESCE(bcb.balance_minor, 0)
 		FROM buckets_projection b
@@ -271,36 +408,81 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	}
 	defer rows.Close()
 
-	var bucketRows strings.Builder
-	hasBuckets := false
+	var buckets []bucketViewData
 	for rows.Next() {
-		hasBuckets = true
-		var id, group, name string
-		var balance int64
-		rows.Scan(&id, &group, &name, &balance)
+		var b bucketViewData
+		rows.Scan(&b.ID, &b.GroupName, &b.Name, &b.BalanceMinor)
+		b.Currency = defaultCurr
+		b.Targets = targetsByBucket[b.ID]
+		buckets = append(buckets, b)
+	}
+
+	csrfToken, _ := c.Get("csrfToken").(string)
+
+	var bucketRows strings.Builder
+	for _, b := range buckets {
+		// Calculate bucket overall health
+		var totalRequired int64
+		for _, t := range b.Targets {
+			if t.Currency == defaultCurr {
+				totalRequired += t.RequiredMinor
+			}
+		}
 
 		badgeClass := "badge-success text-success-content"
 		statusText := "Funded / On Track"
 		statusDot := "bg-success"
-		if balance < 0 {
+		if b.BalanceMinor < 0 {
 			badgeClass = "badge-error text-error-content"
 			statusText = "Overspent"
 			statusDot = "bg-error"
-		} else if balance == 0 {
+		} else if totalRequired > 0 && b.BalanceMinor < totalRequired {
 			badgeClass = "badge-warning text-warning-content"
 			statusText = "Underfunded"
 			statusDot = "bg-warning"
+		} else if totalRequired == 0 && b.BalanceMinor == 0 {
+			badgeClass = "badge-ghost text-base-content/60"
+			statusText = "Zero Balance"
+			statusDot = "bg-base-300"
+		}
+
+		var targetsSublist strings.Builder
+		if len(b.Targets) > 0 {
+			targetsSublist.WriteString(`<div class="mt-2 space-y-1 pl-4 border-l-2 border-base-300 text-xs">`)
+			for _, t := range b.Targets {
+				priorityLabel := "Optional"
+				if t.Priority == 3 {
+					priorityLabel = "Mandatory"
+				} else if t.Priority == 2 {
+					priorityLabel = "Recommended"
+				}
+				targetsSublist.WriteString(fmt.Sprintf(`
+					<div class="flex items-center justify-between text-base-content/70 py-0.5">
+						<span class="font-medium">• %s <span class="opacity-50 text-[10px]">(%s, %s)</span></span>
+						<div class="flex items-center gap-2">
+							<span class="badge %s badge-xs">%s</span>
+							<span class="font-mono">%.2f / %.2f %s</span>
+						</div>
+					</div>`,
+					html.EscapeString(t.Name), priorityLabel, t.RecurrenceCadence,
+					t.HealthBadgeClass, t.HealthBadge,
+					float64(t.CurrentFundedMinor)/100.0, float64(t.RequiredMinor)/100.0, t.Currency))
+			}
+			targetsSublist.WriteString(`</div>`)
 		}
 
 		bucketRows.WriteString(fmt.Sprintf(`
 			<tr class="hover">
 				<td>
-					<div class="flex items-center gap-3">
-						<span class="w-2.5 h-2.5 rounded-full %s"></span>
-						<div>
-							<div class="font-bold text-sm">%s</div>
-							<div class="text-xs text-base-content/50">%s</div>
+					<div class="flex flex-col">
+						<div class="flex items-center gap-3">
+							<span class="w-2.5 h-2.5 rounded-full %s"></span>
+							<div>
+								<div class="font-bold text-sm">%s</div>
+								<div class="text-xs text-base-content/50">%s (%d targets)</div>
+							</div>
 						</div>
+						%s
 					</div>
 				</td>
 				<td>
@@ -310,12 +492,42 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 					%.2f <span class="text-xs font-normal text-base-content/60">%s</span>
 				</td>
 				<td class="text-right">
-					<button class="btn btn-ghost btn-xs text-primary font-semibold">Inspect</button>
+					<div class="flex items-center justify-end gap-1.5">
+						<button class="btn btn-ghost btn-xs text-primary font-semibold" onclick="openBucketDrawer('%s', '%s', '%s', '%.2f', '%s')">Inspect</button>
+						%s
+					</div>
 				</td>
-			</tr>`, statusDot, name, group, badgeClass, statusText, float64(balance)/100.0, defaultCurr))
+			</tr>`,
+			statusDot, html.EscapeString(b.Name), html.EscapeString(b.GroupName), len(b.Targets),
+			targetsSublist.String(),
+			badgeClass, statusText,
+			float64(b.BalanceMinor)/100.0, b.Currency,
+			b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), strings.ReplaceAll(b.GroupName, "'", "\\'"), float64(b.BalanceMinor)/100.0, b.Currency,
+			RenderPopoverActionMenu("bucket", b.ID, []TableActionItem{
+				{
+					Label:   "✏️ Edit Bucket",
+					OnClick: fmt.Sprintf("openEditBucketModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), strings.ReplaceAll(b.GroupName, "'", "\\'")),
+				},
+				{
+					Label:      "💵 Assign Funds",
+					OnClick:    fmt.Sprintf("openAssignModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
+				},
+				{
+					Label:      "↔️ Move Money",
+					OnClick:    fmt.Sprintf("openMoveModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
+				},
+				{
+					Label:      "📁 Archive Bucket",
+					FormAction: fmt.Sprintf("/budgets/%s/buckets/%s/archive", budgetID, b.ID),
+					CSRFToken:  csrfToken,
+					IsDanger:   true,
+					ConfirmMsg: "Archive this bucket? It must have zero balance and zero targets.",
+				},
+			}),
+		))
 	}
 
-	if !hasBuckets {
+	if len(buckets) == 0 {
 		bucketRows.WriteString(`
 			<tr>
 				<td colspan="4" class="text-center py-8 text-base-content/50">
@@ -378,9 +590,26 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		`, budgetID))
 	}
 
-	csrfToken, _ := c.Get("csrfToken").(string)
+	// Active Horizon Join button classes
+	monthlyActive := "btn-ghost"
+	d30Active := "btn-ghost"
+	d90Active := "btn-ghost"
+	switch horizonParam {
+	case "30d":
+		d30Active = "btn-primary"
+	case "90d":
+		d90Active = "btn-primary"
+	default:
+		monthlyActive = "btn-primary"
+	}
 
-	html := fmt.Sprintf(`<!DOCTYPE html>
+	// Other bucket options for Move Money modal
+	var bucketSelectOptions strings.Builder
+	for _, b := range buckets {
+		bucketSelectOptions.WriteString(fmt.Sprintf(`<option value="%s">%s (%s)</option>`, b.ID, html.EscapeString(b.Name), html.EscapeString(b.GroupName)))
+	}
+
+	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
@@ -410,7 +639,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
         <div class="navbar-end gap-3">
             <div class="badge badge-accent badge-soft font-bold py-3 text-xs gap-1.5">
                 <span>⏳</span>
-                <span>Age of Money: 28 days</span>
+                <span>Age of Money: %d days</span>
             </div>
             <form method="POST" action="/logout">
                 <input type="hidden" name="csrf_token" value="%s" />
@@ -448,17 +677,20 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 <div class="stat">
                     <div class="stat-figure text-success text-3xl">💵</div>
                     <div class="stat-title text-xs font-bold uppercase tracking-wider">Ready to Assign</div>
-                    <div class="stat-value text-success text-2xl font-black">0.00 %s</div>
-                    <div class="stat-desc text-xs">Unallocated funds in active window</div>
+                    <div class="stat-value text-success text-2xl font-black">
+                        %.2f %s
+                        %s
+                    </div>
+                    <div class="stat-desc text-xs">Unallocated liquid funds across budget accounts</div>
                 </div>
 
                 <div class="stat">
                     <div class="stat-title text-xs font-bold uppercase tracking-wider">Active Horizon</div>
                     <div class="stat-actions mt-2">
                         <div class="join">
-                            <button class="btn btn-xs join-item btn-primary">Monthly</button>
-                            <button class="btn btn-xs join-item btn-ghost">30d</button>
-                            <button class="btn btn-xs join-item btn-ghost">90d</button>
+                            <a href="/budgets/%s/budget?horizon=monthly" class="btn btn-xs join-item %s">Monthly</a>
+                            <a href="/budgets/%s/budget?horizon=30d" class="btn btn-xs join-item %s">30d</a>
+                            <a href="/budgets/%s/budget?horizon=90d" class="btn btn-xs join-item %s">90d</a>
                         </div>
                     </div>
                 </div>
@@ -466,9 +698,23 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 <div class="stat">
                     <div class="stat-title text-xs font-bold uppercase tracking-wider">Quick Actions</div>
                     <div class="stat-actions mt-2">
-                        <button class="btn btn-xs btn-outline btn-primary font-semibold">Auto-Assign by Priority</button>
+                        <form method="POST" action="/budgets/%s/budget/auto-assign" class="inline">
+                            <input type="hidden" name="csrf_token" value="%s" />
+                            <input type="hidden" name="currency" value="%s" />
+                            <input type="hidden" name="horizon" value="%s" />
+                            <button type="submit" class="btn btn-xs btn-outline btn-primary font-semibold shadow-xs">Auto-Assign by Priority</button>
+                        </form>
                     </div>
                 </div>
+            </div>
+
+            <!-- Buckets Table Header Toolbar -->
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-bold tracking-tight">Envelopes & Categories</h2>
+                <button class="btn btn-primary btn-sm gap-1.5 shadow font-semibold" onclick="new_bucket_modal.showModal()">
+                    <span>+</span>
+                    <span>New Bucket</span>
+                </button>
             </div>
 
             <!-- Buckets Table Card -->
@@ -478,7 +724,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                         <table class="table table-zebra w-full">
                             <thead>
                                 <tr class="bg-base-200/50">
-                                    <th class="font-bold">Bucket / Category</th>
+                                    <th class="font-bold">Bucket / Category & Targets</th>
                                     <th class="font-bold">Health Status</th>
                                     <th class="font-bold text-right">Available Balance</th>
                                     <th class="font-bold text-right">Actions</th>
@@ -521,12 +767,663 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             <span class="dock-label">Members</span>
         </a>
     </div>
+
+    <!-- New Bucket Modal -->
+    <dialog id="new_bucket_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Create New Bucket</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form method="POST" action="/budgets/%s/buckets" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="%s" />
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Bucket Name</span></label>
+                    <input type="text" name="name" required placeholder="e.g. Groceries, Living Expenses" class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Group / Category</span></label>
+                    <input type="text" name="group_name" value="Needs" required placeholder="e.g. Needs, Wants, Savings" class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="new_bucket_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Create Bucket</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Edit Bucket Modal -->
+    <dialog id="edit_bucket_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Edit Bucket</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form id="edit_bucket_form" method="POST" action="" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="%s" />
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Bucket Name</span></label>
+                    <input type="text" id="edit_bucket_name" name="name" required class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Group / Category</span></label>
+                    <input type="text" id="edit_bucket_group" name="group_name" required class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="edit_bucket_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Changes</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Assign Funds Modal -->
+    <dialog id="assign_funds_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Assign Funds to Envelope</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form id="assign_funds_form" method="POST" action="" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="%s" />
+                <input type="hidden" id="assign_currency" name="currency" value="%s" />
+                <div class="text-xs text-base-content/70">
+                    Assign funds directly from Ready to Assign into <span id="assign_bucket_name" class="font-bold text-primary"></span>.
+                    (Enter negative amount to return funds back to pool).
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Amount</span></label>
+                    <div class="join w-full">
+                        <input type="number" step="0.01" name="amount" required placeholder="100.00" class="input input-bordered join-item w-full input-md focus:input-primary font-mono" />
+                        <span id="assign_currency_label" class="btn join-item btn-neutral no-animation">%s</span>
+                    </div>
+                </div>
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="assign_funds_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Assign Funds</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Move Funds Modal -->
+    <dialog id="move_funds_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Move Funds Between Envelopes</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form method="POST" action="/budgets/%s/buckets/move" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="%s" />
+                <input type="hidden" id="move_source_id" name="source_bucket_id" value="" />
+                <input type="hidden" id="move_currency" name="currency" value="%s" />
+                <div class="text-xs text-base-content/70">
+                    Move money out of <span id="move_source_name" class="font-bold text-primary"></span> into another envelope.
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Destination Envelope</span></label>
+                    <select name="dest_bucket_id" required class="select select-bordered w-full select-md focus:select-primary">
+                        %s
+                    </select>
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Amount to Move</span></label>
+                    <div class="join w-full">
+                        <input type="number" step="0.01" min="0.01" name="amount" required placeholder="50.00" class="input input-bordered join-item w-full input-md focus:input-primary font-mono" />
+                        <span id="move_currency_label" class="btn join-item btn-neutral no-animation">%s</span>
+                    </div>
+                </div>
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="move_funds_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Move Funds</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Bucket Inspector Drawer / Modal -->
+    <dialog id="bucket_drawer" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6 max-w-2xl">
+            <div class="flex justify-between items-start mb-4">
+                <div>
+                    <h3 id="drawer_bucket_name" class="font-extrabold text-2xl tracking-tight"></h3>
+                    <div id="drawer_bucket_meta" class="text-xs text-base-content/60 mt-0.5"></div>
+                </div>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+
+            <div class="stats stats-horizontal shadow-sm w-full bg-base-200/60 border border-base-300 mb-6">
+                <div class="stat p-4">
+                    <div class="stat-title text-[10px] font-bold uppercase tracking-wider">Available Envelope Balance</div>
+                    <div id="drawer_bucket_balance" class="stat-value text-xl font-mono font-black text-primary"></div>
+                </div>
+            </div>
+
+            <!-- Target Management Section -->
+            <div class="flex justify-between items-center mb-3">
+                <h4 class="font-bold text-sm uppercase tracking-wider text-base-content/70">Targets in this Bucket</h4>
+                <button class="btn btn-xs btn-primary gap-1 font-semibold" onclick="openNewTargetModal()">+ Add Target</button>
+            </div>
+
+            <div id="drawer_targets_container" class="space-y-3 mb-6">
+                <!-- Populated dynamically via JS -->
+            </div>
+
+            <div class="modal-action">
+                <button type="button" class="btn btn-ghost btn-sm" onclick="bucket_drawer.close()">Close</button>
+            </div>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Create Target Modal -->
+    <dialog id="target_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 id="target_modal_title" class="font-extrabold text-xl tracking-tight">Add Target</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form id="target_form" method="POST" action="/budgets/%s/targets" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="%s" />
+                <input type="hidden" id="target_bucket_id" name="bucket_id" value="" />
+                <input type="hidden" id="target_currency" name="currency" value="%s" />
+
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Target Name</span></label>
+                    <input type="text" id="target_name" name="name" required placeholder="e.g. Monthly Rent, Electricity" class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Priority</span></label>
+                        <select id="target_priority" name="priority" class="select select-bordered w-full select-md focus:select-primary">
+                            <option value="3" selected>Mandatory (3)</option>
+                            <option value="2">Recommended (2)</option>
+                            <option value="1">Optional (1)</option>
+                        </select>
+                    </div>
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Cadence</span></label>
+                        <select id="target_cadence" name="recurrence_cadence" class="select select-bordered w-full select-md focus:select-primary">
+                            <option value="MONTHLY" selected>Monthly</option>
+                            <option value="WEEKLY">Weekly</option>
+                            <option value="ANNUAL">Annual</option>
+                            <option value="ONE_OFF">One-Off</option>
+                            <option value="CUSTOM_DAYS">Custom Days</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Required Amount</span></label>
+                        <input type="number" step="0.01" min="0" id="target_amount" name="amount" required placeholder="2000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
+                    </div>
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Non-Spending Strategy</span></label>
+                        <select id="target_strategy" name="non_spending_strategy" class="select select-bordered w-full select-md focus:select-primary">
+                            <option value="ROLL_OVER" selected>Roll Over</option>
+                            <option value="RETURN_TO_POOL">Return to Pool</option>
+                            <option value="ARREARS_CUMULATIVE">Arrears Cumulative</option>
+                            <option value="CAP_AND_HOLD">Cap and Hold</option>
+                            <option value="PRORATE_FUTURE">Prorate Future</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="target_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Target</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <script>
+        const currentBudgetID = '%s';
+        const csrfTokenVal = '%s';
+        const bucketsData = %s;
+
+        function openEditBucketModal(id, name, group) {
+            document.getElementById('edit_bucket_form').action = '/budgets/' + currentBudgetID + '/buckets/' + id + '/update';
+            document.getElementById('edit_bucket_name').value = name;
+            document.getElementById('edit_bucket_group').value = group;
+            edit_bucket_modal.showModal();
+        }
+
+        function openAssignModal(id, name, curr) {
+            document.getElementById('assign_funds_form').action = '/budgets/' + currentBudgetID + '/buckets/' + id + '/assign';
+            document.getElementById('assign_bucket_name').innerText = name;
+            document.getElementById('assign_currency').value = curr;
+            document.getElementById('assign_currency_label').innerText = curr;
+            assign_funds_modal.showModal();
+        }
+
+        function openMoveModal(id, name, curr) {
+            document.getElementById('move_source_id').value = id;
+            document.getElementById('move_source_name').innerText = name;
+            document.getElementById('move_currency').value = curr;
+            document.getElementById('move_currency_label').innerText = curr;
+            move_funds_modal.showModal();
+        }
+
+        let activeDrawerBucketID = '';
+
+        function openBucketDrawer(id, name, group, bal, curr) {
+            activeDrawerBucketID = id;
+            document.getElementById('drawer_bucket_name').innerText = name;
+            document.getElementById('drawer_bucket_meta').innerText = 'Group: ' + group + ' • ID: ' + id;
+            document.getElementById('drawer_bucket_balance').innerText = bal + ' ' + curr;
+
+            const b = bucketsData.find(x => x.ID === id);
+            const container = document.getElementById('drawer_targets_container');
+            container.innerHTML = '';
+
+            if (b && b.Targets && b.Targets.length > 0) {
+                b.Targets.forEach(t => {
+                    const card = document.createElement('div');
+                    card.className = 'card card-border bg-base-100 border-base-300 shadow-xs p-4 flex flex-col gap-2';
+                    const priorityText = t.Priority === 3 ? 'Mandatory' : (t.Priority === 2 ? 'Recommended' : 'Optional');
+                    card.innerHTML = 
+                        '<div class="flex justify-between items-start">' +
+                            '<div>' +
+                                '<div class="font-bold text-sm tracking-tight">' + t.Name + '</div>' +
+                                '<div class="text-[11px] text-base-content/60">Priority: ' + priorityText + ' • Cadence: ' + t.RecurrenceCadence + ' • Strategy: ' + t.NonSpendingStrategy + '</div>' +
+                            '</div>' +
+                            '<span class="badge ' + t.HealthBadgeClass + ' badge-sm font-semibold">' + t.HealthBadge + '</span>' +
+                        '</div>' +
+                        '<div class="flex justify-between items-center text-xs mt-1">' +
+                            '<span class="font-mono">Funded: ' + (t.CurrentFundedMinor/100).toFixed(2) + ' / Required: ' + (t.RequiredMinor/100).toFixed(2) + ' ' + t.Currency + '</span>' +
+                            '<form method="POST" action="/budgets/' + currentBudgetID + '/targets/' + t.ID + '/delete" onsubmit="return confirm(\'Delete this target?\')">' +
+                                '<input type="hidden" name="csrf_token" value="' + csrfTokenVal + '" />' +
+                                '<button type="submit" class="btn btn-ghost btn-xs text-error font-semibold">Delete</button>' +
+                            '</form>' +
+                        '</div>';
+                    container.appendChild(card);
+                });
+            } else {
+                container.innerHTML = '<div class="text-xs text-base-content/50 py-3 text-center border border-dashed border-base-300 rounded-lg">No targets added to this envelope yet.</div>';
+            }
+
+            bucket_drawer.showModal();
+        }
+
+        function openNewTargetModal() {
+            document.getElementById('target_form').action = '/budgets/' + currentBudgetID + '/targets';
+            document.getElementById('target_bucket_id').value = activeDrawerBucketID;
+            document.getElementById('target_name').value = '';
+            document.getElementById('target_amount').value = '';
+            target_modal.showModal();
+        }
+    </script>
 </body>
-</html>`, budgetName, budgetName, role, csrfToken,
+</html>`,
+		budgetName, budgetName, role, aomHeadline, csrfToken,
 		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
 		accountSummaryRows.String(),
-		defaultCurr, bucketRows.String(),
-		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID)
+		float64(defaultRTA)/100.0, defaultCurr, rtaOtherBadges.String(),
+		budgetID, monthlyActive, budgetID, d30Active, budgetID, d90Active,
+		budgetID, csrfToken, defaultCurr, horizonParam,
+		bucketRows.String(),
+		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
+		budgetID, csrfToken,
+		csrfToken,
+		csrfToken, defaultCurr, defaultCurr,
+		budgetID, csrfToken, defaultCurr, bucketSelectOptions.String(), defaultCurr,
+		budgetID, csrfToken, defaultCurr,
+		budgetID, csrfToken, toJSONString(buckets))
 
-	return c.HTML(http.StatusOK, html)
+	return c.HTML(http.StatusOK, htmlContent)
+}
+
+func toJSONString(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+// CreateBucket handles creating an envelope bucket.
+func (h *WorkspaceHandler) CreateBucket(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	name := strings.TrimSpace(c.FormValue("name"))
+	groupName := strings.TrimSpace(c.FormValue("group_name"))
+	if groupName == "" {
+		groupName = "Needs"
+	}
+
+	_, err := budget.CreateBucket(c.Request().Context(), tenantDB, budget.CreateBucketInput{
+		GroupName:     groupName,
+		Name:          name,
+		AgentID:       userID,
+		CorrelationID: corrID,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+}
+
+// UpdateBucket handles updating bucket name or group.
+func (h *WorkspaceHandler) UpdateBucket(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	bucketID := c.Param("id")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	name := strings.TrimSpace(c.FormValue("name"))
+	groupName := strings.TrimSpace(c.FormValue("group_name"))
+
+	err := budget.UpdateBucket(c.Request().Context(), tenantDB, budget.UpdateBucketInput{
+		ID:            bucketID,
+		GroupName:     groupName,
+		Name:          name,
+		AgentID:       userID,
+		CorrelationID: corrID,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+}
+
+// ArchiveBucket archives a bucket if it has zero balance and zero targets.
+func (h *WorkspaceHandler) ArchiveBucket(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	bucketID := c.Param("id")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	err := budget.ArchiveBucket(c.Request().Context(), tenantDB, bucketID, userID, corrID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+}
+
+// AssignFunds assigns funds from ready to assign to bucket.
+func (h *WorkspaceHandler) AssignFunds(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	bucketID := c.Param("id")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	currency := c.FormValue("currency")
+	if currency == "" {
+		currency = "PLN"
+	}
+	amtStr := c.FormValue("amount")
+	var amtFloat float64
+	fmt.Sscanf(amtStr, "%f", &amtFloat)
+	amtMinor := int64(amtFloat * 100)
+
+	var targetID *string
+	tID := c.FormValue("target_id")
+	if tID != "" {
+		targetID = &tID
+	}
+
+	err := budget.AssignFunds(c.Request().Context(), tenantDB, budget.AssignFundsInput{
+		BucketID:      bucketID,
+		TargetID:      targetID,
+		Currency:      currency,
+		AmountMinor:   amtMinor,
+		AgentID:       userID,
+		CorrelationID: corrID,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+}
+
+// MoveFunds moves funds between buckets.
+func (h *WorkspaceHandler) MoveFunds(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	srcID := c.FormValue("source_bucket_id")
+	dstID := c.FormValue("dest_bucket_id")
+	currency := c.FormValue("currency")
+	if currency == "" {
+		currency = "PLN"
+	}
+	amtStr := c.FormValue("amount")
+	var amtFloat float64
+	fmt.Sscanf(amtStr, "%f", &amtFloat)
+	amtMinor := int64(amtFloat * 100)
+
+	err := budget.MoveFunds(c.Request().Context(), tenantDB, budget.MoveFundsInput{
+		SourceBucketID: srcID,
+		DestBucketID:   dstID,
+		Currency:       currency,
+		AmountMinor:    amtMinor,
+		AgentID:        userID,
+		CorrelationID:  corrID,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+}
+
+// AutoAssign triggers priority waterfall auto-assign from available pool.
+func (h *WorkspaceHandler) AutoAssign(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	currency := c.FormValue("currency")
+	if currency == "" {
+		var defaultCurr string
+		h.mainDB.QueryRowContext(c.Request().Context(), `SELECT default_currency FROM budgets WHERE id = ?`, budgetID).Scan(&defaultCurr)
+		currency = defaultCurr
+	}
+	horizon := c.FormValue("horizon")
+	windowDays := 30
+	if horizon == "90d" {
+		windowDays = 90
+	}
+
+	rtaMap, err := budget.CalculateReadyToAssign(c.Request().Context(), tenantDB)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+	pool := rtaMap[currency]
+	if pool <= 0 {
+		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget?horizon=%s", budgetID, horizon))
+	}
+
+	nowUTC := time.Now().UTC()
+	rows, err := tenantDB.QueryContext(c.Request().Context(), `
+		SELECT t.id, t.bucket_id, t.name, t.priority, t.sort_order, t.amount_minor, t.currency,
+		       t.recurrence_cadence, t.recurrence_days, t.due_date, t.non_spending_strategy,
+		       t.ceiling_amount_minor, t.current_funded_minor
+		FROM targets_projection t
+		JOIN buckets_projection b ON t.bucket_id = b.id
+		WHERE t.currency = ? AND t.is_archived = 0 AND b.is_archived = 0
+		ORDER BY t.priority DESC, t.due_date ASC, t.sort_order ASC`, currency)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+	defer rows.Close()
+
+	var targets []*budget.TargetDefinition
+	for rows.Next() {
+		var t budget.TargetDefinition
+		var dueDate sql.NullInt64
+		var ceiling sql.NullInt64
+		rows.Scan(&t.ID, &t.BucketID, &t.Name, &t.Priority, &t.SortOrder, &t.AmountMinor,
+			&t.Currency, &t.RecurrenceCadence, &t.RecurrenceDays, &dueDate,
+			&t.NonSpendingStrategy, &ceiling, &t.CurrentFundedMinor)
+		if dueDate.Valid {
+			t.DueDate = dueDate.Int64
+		}
+		if ceiling.Valid {
+			cVal := ceiling.Int64
+			t.CeilingAmountMinor = &cVal
+		}
+		targets = append(targets, &t)
+	}
+
+	allocs, _ := budget.PriorityAutoAssign(targets, windowDays, nowUTC, pool)
+	for _, alloc := range allocs {
+		if alloc.Assigned > 0 {
+			// Find bucket for this target
+			var bucketID string
+			for _, t := range targets {
+				if t.ID == alloc.TargetID {
+					bucketID = t.BucketID
+					break
+				}
+			}
+			tID := alloc.TargetID
+			_ = budget.AssignFunds(c.Request().Context(), tenantDB, budget.AssignFundsInput{
+				BucketID:      bucketID,
+				TargetID:      &tID,
+				Currency:      currency,
+				AmountMinor:   alloc.Assigned,
+				AgentID:       userID,
+				CorrelationID: corrID,
+			})
+		}
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget?horizon=%s", budgetID, horizon))
+}
+
+// CreateTarget creates a new target in a bucket.
+func (h *WorkspaceHandler) CreateTarget(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	bucketID := c.FormValue("bucket_id")
+	name := strings.TrimSpace(c.FormValue("name"))
+	tType := c.FormValue("target_type")
+	if tType == "" {
+		tType = "EXPENSE"
+	}
+	priority, _ := strconv.Atoi(c.FormValue("priority"))
+	if priority < 1 {
+		priority = 2
+	}
+	currency := c.FormValue("currency")
+	if currency == "" {
+		currency = "PLN"
+	}
+	cadence := c.FormValue("recurrence_cadence")
+	if cadence == "" {
+		cadence = budget.CadenceMonthly
+	}
+	strategy := c.FormValue("non_spending_strategy")
+	if strategy == "" {
+		strategy = budget.StrategyRollOver
+	}
+	amtStr := c.FormValue("amount")
+	var amtFloat float64
+	fmt.Sscanf(amtStr, "%f", &amtFloat)
+	amtMinor := int64(amtFloat * 100)
+
+	_, err := budget.CreateTarget(c.Request().Context(), tenantDB, budget.CreateTargetInput{
+		BucketID:            bucketID,
+		Name:                name,
+		TargetType:          tType,
+		Priority:            priority,
+		AmountMinor:         amtMinor,
+		Currency:            currency,
+		RecurrenceCadence:   cadence,
+		NonSpendingStrategy: strategy,
+		AgentID:             userID,
+		CorrelationID:       corrID,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+}
+
+// UpdateTarget updates an existing target.
+func (h *WorkspaceHandler) UpdateTarget(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	targetID := c.Param("id")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	name := strings.TrimSpace(c.FormValue("name"))
+	tType := c.FormValue("target_type")
+	if tType == "" {
+		tType = "EXPENSE"
+	}
+	priority, _ := strconv.Atoi(c.FormValue("priority"))
+	if priority < 1 {
+		priority = 2
+	}
+	cadence := c.FormValue("recurrence_cadence")
+	if cadence == "" {
+		cadence = budget.CadenceMonthly
+	}
+	strategy := c.FormValue("non_spending_strategy")
+	if strategy == "" {
+		strategy = budget.StrategyRollOver
+	}
+	amtStr := c.FormValue("amount")
+	var amtFloat float64
+	fmt.Sscanf(amtStr, "%f", &amtFloat)
+	amtMinor := int64(amtFloat * 100)
+
+	err := budget.UpdateTarget(c.Request().Context(), tenantDB, budget.UpdateTargetInput{
+		ID:                  targetID,
+		Name:                name,
+		TargetType:          tType,
+		Priority:            priority,
+		AmountMinor:         amtMinor,
+		RecurrenceCadence:   cadence,
+		NonSpendingStrategy: strategy,
+		AgentID:             userID,
+		CorrelationID:       corrID,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+}
+
+// DeleteTarget deletes (archives) a target.
+func (h *WorkspaceHandler) DeleteTarget(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	targetID := c.Param("id")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	err := budget.DeleteTarget(c.Request().Context(), tenantDB, targetID, userID, corrID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/balance/balance/internal/auth"
+	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/logger"
@@ -74,10 +75,10 @@ func (tc *bddTestContext) setup() error {
 
 	tc.echoEngine = echo.New()
 	tc.authHandler = handlers.NewAuthHandler(mainDB, tenantMgr)
-	tc.workspaceHandler = handlers.NewWorkspaceHandler(mainDB, tenantMgr)
+	tc.reportsHandler = handlers.NewReportsHandler(mainDB, tenantMgr)
+	tc.workspaceHandler = handlers.NewWorkspaceHandler(mainDB, tenantMgr, tc.reportsHandler)
 	tc.accountsHandler = handlers.NewAccountsHandler(mainDB, tenantMgr)
 	tc.txHandler = handlers.NewTransactionsHandler(mainDB, tenantMgr)
-	tc.reportsHandler = handlers.NewReportsHandler(mainDB, tenantMgr)
 	tc.partiesHandler = handlers.NewPartiesHandler(mainDB, tenantMgr)
 	tc.membersHandler = handlers.NewMembersHandler(mainDB, tenantMgr)
 	tc.pwaHandler = handlers.NewPWAHandler()
@@ -1680,6 +1681,585 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		err = tc.txHandler.AutoMatchRawTransactions(c)
 		tc.lastResponse = rec
 		return err
+	})
+
+	// 07_buckets_and_targets.feature steps
+	var activeBucketID string
+	var activeTargetID string
+	var lastTargetErr error
+
+	ctx.Step(`^an open budget "([^"]*)"$`, func(budgetName string) error {
+		now := time.Now().UTC().UnixMicro()
+		budgetID := domain.NewUUIDv7()
+		_, err := tc.mainDB.Exec(`
+			INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at)
+			VALUES ('user_1', 'user1@example.com', 'hash', 'User 1', ?, ?)
+			ON CONFLICT(id) DO NOTHING`, now, now)
+		if err != nil {
+			return err
+		}
+		_, err = tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at)
+			VALUES (?, ?, 'PLN', 'Europe/Warsaw', 'user_1', ?, ?)`, budgetID, budgetName, now, now)
+		if err != nil {
+			return err
+		}
+		_, err = tc.mainDB.Exec(`
+			INSERT INTO budget_members (budget_id, user_id, role, joined_at)
+			VALUES (?, 'user_1', 'OWNER', ?)`, budgetID, now)
+		if err != nil {
+			return err
+		}
+		tc.activeBudgetID = budgetID
+		tc.activeUserID = "user_1"
+
+		// ensure tenant DB is initialized
+		_, err = tc.tenantMgr.GetTenantDB(budgetID, true)
+		return err
+	})
+
+	ctx.Step(`^I create a bucket "([^"]*)" in group "([^"]*)"$`, func(bucketName, groupName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		bID, err := budget.CreateBucket(context.Background(), bDB, budget.CreateBucketInput{
+			GroupName:     groupName,
+			Name:          bucketName,
+			AgentID:       tc.activeUserID,
+			CorrelationID: domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		activeBucketID = bID
+		return nil
+	})
+
+	parseAmountStr := func(amtStr string) int64 {
+		clean := strings.TrimSpace(amtStr)
+		clean = strings.ReplaceAll(clean, ",", "")
+		clean = strings.TrimSuffix(clean, " PLN")
+		var f float64
+		fmt.Sscanf(clean, "%f", &f)
+		return int64(f * 100)
+	}
+
+	ctx.Step(`^I add a mandatory target "([^"]*)" with priority (\d+), cadence "([^"]*)", amount "([^"]*)"$`, func(name string, prio int, cadence, amt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		tID, err := budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:          activeBucketID,
+			Name:              name,
+			TargetType:        "EXPENSE",
+			Priority:          prio,
+			AmountMinor:       parseAmountStr(amt),
+			Currency:          "PLN",
+			RecurrenceCadence: cadence,
+			AgentID:           tc.activeUserID,
+			CorrelationID:     domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		activeTargetID = tID
+		return nil
+	})
+
+	ctx.Step(`^I add a recommended target "([^"]*)" with priority (\d+), cadence "([^"]*)", amount "([^"]*)"$`, func(name string, prio int, cadence, amt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		_, err = budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:          activeBucketID,
+			Name:              name,
+			TargetType:        "EXPENSE",
+			Priority:          prio,
+			AmountMinor:       parseAmountStr(amt),
+			Currency:          "PLN",
+			RecurrenceCadence: cadence,
+			AgentID:           tc.activeUserID,
+			CorrelationID:     domain.NewUUIDv7(),
+		})
+		return err
+	})
+
+	ctx.Step(`^the bucket and targets should be recorded in event streams and projections$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var bCount, tCount int
+		err = bDB.QueryRow(`SELECT count(*) FROM bucket_events WHERE aggregate_id = ?`, activeBucketID).Scan(&bCount)
+		if err != nil || bCount < 1 {
+			return fmt.Errorf("expected bucket event, got count %d, err %v", bCount, err)
+		}
+		err = bDB.QueryRow(`SELECT count(*) FROM target_events WHERE bucket_id = ?`, activeBucketID).Scan(&tCount)
+		if err != nil || tCount < 2 {
+			return fmt.Errorf("expected at least 2 target events, got %d, err %v", tCount, err)
+		}
+		return nil
+	})
+
+	ctx.Step(`^an existing bucket "([^"]*)" in group "([^"]*)" with funded balance "([^"]*)"$`, func(name, group, balanceStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		bID, err := budget.CreateBucket(context.Background(), bDB, budget.CreateBucketInput{
+			GroupName:     group,
+			Name:          name,
+			AgentID:       tc.activeUserID,
+			CorrelationID: domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		activeBucketID = bID
+		amt := parseAmountStr(balanceStr)
+		if amt != 0 {
+			err = budget.AssignFunds(context.Background(), bDB, budget.AssignFundsInput{
+				BucketID:      bID,
+				Currency:      "PLN",
+				AmountMinor:   amt,
+				AgentID:       tc.activeUserID,
+				CorrelationID: domain.NewUUIDv7(),
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	ctx.Step(`^an existing target "([^"]*)" in bucket "([^"]*)" with required amount "([^"]*)"$`, func(targetName, bucketName, amtStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		tID, err := budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:          activeBucketID,
+			Name:              targetName,
+			TargetType:        "EXPENSE",
+			Priority:          2,
+			AmountMinor:       parseAmountStr(amtStr),
+			Currency:          "PLN",
+			RecurrenceCadence: budget.CadenceMonthly,
+			AgentID:           tc.activeUserID,
+			CorrelationID:     domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		activeTargetID = tID
+		return nil
+	})
+
+	ctx.Step(`^I update target "([^"]*)" amount to "([^"]*)" and priority to (\d+)$`, func(targetName, amtStr string, prio int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		return budget.UpdateTarget(context.Background(), bDB, budget.UpdateTargetInput{
+			ID:                  activeTargetID,
+			Name:                targetName,
+			TargetType:          "EXPENSE",
+			Priority:            prio,
+			AmountMinor:         parseAmountStr(amtStr),
+			RecurrenceCadence:   budget.CadenceMonthly,
+			NonSpendingStrategy: budget.StrategyRollOver,
+			AgentID:             tc.activeUserID,
+			CorrelationID:       domain.NewUUIDv7(),
+		})
+	})
+
+	ctx.Step(`^the target requirement in projections should be "([^"]*)"$`, func(expectedAmt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var amt int64
+		err = bDB.QueryRow(`SELECT amount_minor FROM targets_projection WHERE id = ?`, activeTargetID).Scan(&amt)
+		if err != nil {
+			return err
+		}
+		if amt != parseAmountStr(expectedAmt) {
+			return fmt.Errorf("expected target amount %s (%d), got %d", expectedAmt, parseAmountStr(expectedAmt), amt)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I attempt to archive bucket "([^"]*)"$`, func(bucketName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		lastTargetErr = budget.ArchiveBucket(context.Background(), bDB, activeBucketID, tc.activeUserID, domain.NewUUIDv7())
+		return nil
+	})
+
+	ctx.Step(`^the bucket archiving should be rejected because it has active balance or targets$`, func() error {
+		if lastTargetErr == nil {
+			return fmt.Errorf("expected bucket archiving to fail, but it succeeded")
+		}
+		return nil
+	})
+
+	ctx.Step(`^I delete target "([^"]*)"$`, func(targetName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		return budget.DeleteTarget(context.Background(), bDB, activeTargetID, tc.activeUserID, domain.NewUUIDv7())
+	})
+
+	ctx.Step(`^I move "([^"]*)" from bucket "([^"]*)" to ready to assign$`, func(amtStr, bucketName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		amt := parseAmountStr(amtStr)
+		// Returning funds from bucket to pool is negative assignment
+		return budget.AssignFunds(context.Background(), bDB, budget.AssignFundsInput{
+			BucketID:      activeBucketID,
+			Currency:      "PLN",
+			AmountMinor:   -amt,
+			AgentID:       tc.activeUserID,
+			CorrelationID: domain.NewUUIDv7(),
+		})
+	})
+
+	ctx.Step(`^I archive bucket "([^"]*)"$`, func(bucketName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		return budget.ArchiveBucket(context.Background(), bDB, activeBucketID, tc.activeUserID, domain.NewUUIDv7())
+	})
+
+	ctx.Step(`^the target should be marked archived in projections$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var isArchived int
+		err = bDB.QueryRow(`SELECT is_archived FROM targets_projection WHERE id = ?`, activeTargetID).Scan(&isArchived)
+		if err != nil || isArchived != 1 {
+			return fmt.Errorf("expected target to be archived, got %d, err %v", isArchived, err)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the bucket should be marked archived in projections$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var isArchived int
+		err = bDB.QueryRow(`SELECT is_archived FROM buckets_projection WHERE id = ?`, activeBucketID).Scan(&isArchived)
+		if err != nil || isArchived != 1 {
+			return fmt.Errorf("expected bucket to be archived, got %d, err %v", isArchived, err)
+		}
+		return nil
+	})
+
+	var healthFundedMinor int64
+	var healthRequiredMinor int64
+
+	ctx.Step(`^a bucket "([^"]*)" with funded balance "([^"]*)" and required target amount "([^"]*)"$`, func(bName, fundedStr, reqStr string) error {
+		healthFundedMinor = parseAmountStr(fundedStr)
+		healthRequiredMinor = parseAmountStr(reqStr)
+		return nil
+	})
+
+	var evaluatedBadge string
+
+	ctx.Step(`^the budget dashboard evaluates the bucket health$`, func() error {
+		if healthFundedMinor < 0 {
+			evaluatedBadge = "Overspent"
+		} else if healthFundedMinor >= healthRequiredMinor && healthRequiredMinor > 0 {
+			evaluatedBadge = "Funded / On Track"
+		} else if healthFundedMinor < healthRequiredMinor {
+			evaluatedBadge = "Underfunded"
+		} else {
+			evaluatedBadge = "Funded / On Track"
+		}
+		return nil
+	})
+
+	ctx.Step(`^the health status badge should display "([^"]*)"$`, func(expectedBadge string) error {
+		if evaluatedBadge != expectedBadge {
+			return fmt.Errorf("expected health badge %s, got %s", expectedBadge, evaluatedBadge)
+		}
+		return nil
+	})
+
+	ctx.Step(`^an open budget "([^"]*)" with "([^"]*)" in checking account$`, func(budgetName, checkingStr string) error {
+		now := time.Now().UTC().UnixMicro()
+		budgetID := domain.NewUUIDv7()
+		_, err := tc.mainDB.Exec(`
+			INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at)
+			VALUES ('user_1', 'user1@example.com', 'hash', 'User 1', ?, ?)
+			ON CONFLICT(id) DO NOTHING`, now, now)
+		if err != nil {
+			return err
+		}
+		_, err = tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at)
+			VALUES (?, ?, 'PLN', 'Europe/Warsaw', 'user_1', ?, ?)`, budgetID, budgetName, now, now)
+		if err != nil {
+			return err
+		}
+		_, err = tc.mainDB.Exec(`
+			INSERT INTO budget_members (budget_id, user_id, role, joined_at)
+			VALUES (?, 'user_1', 'OWNER', ?)`, budgetID, now)
+		if err != nil {
+			return err
+		}
+		tc.activeBudgetID = budgetID
+		tc.activeUserID = "user_1"
+
+		bDB, err := tc.tenantMgr.GetTenantDB(budgetID, true)
+		if err != nil {
+			return err
+		}
+
+		partyID := domain.NewUUIDv7()
+		_, err = bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'Owner', 'INDIVIDUAL', 1, 'user_1', ?)`, partyID, now)
+		if err != nil {
+			return err
+		}
+
+		acctID := domain.NewUUIDv7()
+		_, err = bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, 'Checking', 'CHECKING', 'PLN', 0, 'user_1', ?)`, acctID, partyID, now)
+		if err != nil {
+			return err
+		}
+
+		amt := parseAmountStr(checkingStr)
+		_, err = bDB.Exec(`
+			INSERT INTO account_currency_balances (account_id, currency, balance_minor, updated_at)
+			VALUES (?, 'PLN', ?, ?)`, acctID, amt, now)
+		return err
+	})
+
+	ctx.Step(`^an existing bucket "([^"]*)" with funded balance "([^"]*)"$`, func(bucketName, balanceStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		bID, err := budget.CreateBucket(context.Background(), bDB, budget.CreateBucketInput{
+			GroupName:     "Needs",
+			Name:          bucketName,
+			AgentID:       tc.activeUserID,
+			CorrelationID: domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		activeBucketID = bID
+		amt := parseAmountStr(balanceStr)
+		if amt != 0 {
+			return budget.AssignFunds(context.Background(), bDB, budget.AssignFundsInput{
+				BucketID:      bID,
+				Currency:      "PLN",
+				AmountMinor:   amt,
+				AgentID:       tc.activeUserID,
+				CorrelationID: domain.NewUUIDv7(),
+			})
+		}
+		return nil
+	})
+
+	ctx.Step(`^I request the budget view "([^"]*)"$`, func(path string) error {
+		targetPath := strings.Replace(path, ":budgetId", tc.activeBudgetID, 1)
+		req := httptest.NewRequest(http.MethodGet, targetPath, nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextRoleKey, "OWNER")
+
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.workspaceHandler.BudgetView(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the Ready to Assign banner should display "([^"]*)"$`, func(expectedAmount string) error {
+		body := tc.lastResponse.Body.String()
+		cleanExpected := strings.ReplaceAll(expectedAmount, ",", "")
+		if !strings.Contains(body, expectedAmount) && !strings.Contains(body, cleanExpected) {
+			return fmt.Errorf("expected %s (or %s) in Ready to Assign banner, body: %s", expectedAmount, cleanExpected, body)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I assign "([^"]*)" from ready to assign to bucket "([^"]*)"$`, func(amtStr, bucketName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		amt := parseAmountStr(amtStr)
+		form := url.Values{}
+		form.Set("currency", "PLN")
+		form.Set("amount", fmt.Sprintf("%.2f", float64(amt)/100.0))
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/buckets/%s/assign", tc.activeBudgetID, activeBucketID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "id")
+		c.SetParamValues(tc.activeBudgetID, activeBucketID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.workspaceHandler.AssignFunds(c)
+		if err != nil {
+			return err
+		}
+
+		// Re-fetch budget view so that subsequent banner checks inspect the updated state
+		reqView := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/budgets/%s/budget", tc.activeBudgetID), nil)
+		recView := httptest.NewRecorder()
+		cView := tc.echoEngine.NewContext(reqView, recView)
+		cView.SetParamNames("budgetId")
+		cView.SetParamValues(tc.activeBudgetID)
+		cView.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		cView.Set(handlers.ContextRoleKey, "OWNER")
+		cView.Set(handlers.ContextBudgetDBKey, bDB)
+		err = tc.workspaceHandler.BudgetView(cView)
+		tc.lastResponse = recView
+		return err
+	})
+
+	ctx.Step(`^the bucket "([^"]*)" balance should be "([^"]*)"$`, func(bucketName, expectedAmt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var bal int64
+		err = bDB.QueryRow(`SELECT balance_minor FROM bucket_currency_balances WHERE bucket_id = ? AND currency = 'PLN'`, activeBucketID).Scan(&bal)
+		if err != nil {
+			return err
+		}
+		if bal != parseAmountStr(expectedAmt) {
+			return fmt.Errorf("expected bucket balance %d, got %d", parseAmountStr(expectedAmt), bal)
+		}
+		return nil
+	})
+
+	ctx.Step(`^a bucket "([^"]*)" with the following targets in the active 30-day window:$`, func(bucketName string, table *godog.Table) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		bID, err := budget.CreateBucket(context.Background(), bDB, budget.CreateBucketInput{
+			GroupName:     "Needs",
+			Name:          bucketName,
+			AgentID:       tc.activeUserID,
+			CorrelationID: domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		activeBucketID = bID
+
+		for i, row := range table.Rows {
+			if i == 0 {
+				continue // header
+			}
+			tName := row.Cells[0].Value
+			var prio int
+			fmt.Sscanf(row.Cells[1].Value, "%d", &prio)
+			amt := parseAmountStr(row.Cells[2].Value)
+
+			_, err = budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+				BucketID:          bID,
+				Name:              tName,
+				TargetType:        "EXPENSE",
+				Priority:          prio,
+				AmountMinor:       amt,
+				Currency:          "PLN",
+				RecurrenceCadence: budget.CadenceMonthly,
+				AgentID:           tc.activeUserID,
+				CorrelationID:     domain.NewUUIDv7(),
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	ctx.Step(`^I trigger "Auto-Assign by Priority"$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		form := url.Values{}
+		form.Set("currency", "PLN")
+		form.Set("horizon", "30d")
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/budget/auto-assign", tc.activeBudgetID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.workspaceHandler.AutoAssign(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^target "([^"]*)" should receive "([^"]*)"$`, func(targetName, expectedAmt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var funded int64
+		err = bDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE name = ? AND bucket_id = ?`, targetName, activeBucketID).Scan(&funded)
+		if err != nil {
+			return fmt.Errorf("failed fetching funded amount for target %s: %w", targetName, err)
+		}
+		if funded != parseAmountStr(expectedAmt) {
+			return fmt.Errorf("expected target %s to have funded %d, got %d", targetName, parseAmountStr(expectedAmt), funded)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the unallocated pool should be reduced to "([^"]*)"$`, func(expectedAmt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		rtaMap, err := budget.CalculateReadyToAssign(context.Background(), bDB)
+		if err != nil {
+			return err
+		}
+		expectedMinor := parseAmountStr(expectedAmt)
+		if rtaMap["PLN"] != expectedMinor {
+			return fmt.Errorf("expected Ready to Assign %d, got %d", expectedMinor, rtaMap["PLN"])
+		}
+		return nil
 	})
 }
 

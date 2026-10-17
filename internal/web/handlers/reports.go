@@ -28,7 +28,7 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
 	budgetID := c.Param("budgetId")
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 
-	aomResult, _ := h.calculateAgeOfMoneyForBudget(c.Request().Context(), tenantDB)
+	aomResult, _ := h.CalculateAgeOfMoneyForBudget(c.Request().Context(), tenantDB)
 	aomHeadline := 0
 	if aomResult != nil {
 		aomHeadline = aomResult.HeadlineDays
@@ -274,7 +274,8 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
 	return c.HTML(http.StatusOK, html)
 }
 
-func (h *ReportsHandler) calculateAgeOfMoneyForBudget(ctx context.Context, tenantDB *sql.DB) (*report.AgeOfMoneyResult, error) {
+// CalculateAgeOfMoneyForBudget calculates headline and history Age of Money for tenant DB.
+func (h *ReportsHandler) CalculateAgeOfMoneyForBudget(ctx context.Context, tenantDB *sql.DB) (*report.AgeOfMoneyResult, error) {
 	inflowRows, err := tenantDB.QueryContext(ctx, `
 		SELECT bt.transaction_date, bt.destination_amount_minor
 		FROM budget_transactions_current bt

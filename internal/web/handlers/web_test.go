@@ -46,9 +46,9 @@ func TestAuthAndWorkspaceFlow(t *testing.T) {
 
 	e := echo.New()
 	authHandler := NewAuthHandler(mainDB, tenantMgr)
-	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr)
-	txHandler := NewTransactionsHandler(mainDB, tenantMgr)
 	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+	txHandler := NewTransactionsHandler(mainDB, tenantMgr)
 	partiesHandler := NewPartiesHandler(mainDB, tenantMgr)
 	membersHandler := NewMembersHandler(mainDB, tenantMgr)
 	accountsHandler := NewAccountsHandler(mainDB, tenantMgr)
