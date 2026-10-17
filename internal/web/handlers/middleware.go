@@ -132,6 +132,19 @@ func SessionOrBearerAuthMiddleware(mainDB *sql.DB) echo.MiddlewareFunc {
 				SELECT user_id, csrf_token, expires_at FROM sessions
 				WHERE token_hash = ?`, tokenHash).Scan(&userID, &csrfToken, &expiresAt)
 			if err != nil || expiresAt < now {
+				// Clear the invalid or expired session cookie
+				c.SetCookie(&http.Cookie{
+					Name:     SessionCookieName,
+					Value:    "",
+					Path:     "/",
+					MaxAge:   -1,
+					HttpOnly: true,
+					SameSite: http.SameSiteLaxMode,
+				})
+
+				if strings.Contains(c.Request().Header.Get("Accept"), "text/html") {
+					return c.Redirect(http.StatusSeeOther, "/login")
+				}
 				return echo.NewHTTPError(http.StatusUnauthorized, "Session expired or invalid")
 			}
 

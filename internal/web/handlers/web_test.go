@@ -217,3 +217,103 @@ func TestAuthAndWorkspaceFlow(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionOrBearerAuthMiddleware(t *testing.T) {
+	logger.BindTestLogger(t)
+
+	tmpDir, err := os.MkdirTemp("", "balance_auth_mw_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mainPath := filepath.Join(tmpDir, "main.db")
+	mainDB, err := db.OpenDB(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	e := echo.New()
+	mw := SessionOrBearerAuthMiddleware(mainDB)
+	handler := mw(func(c echo.Context) error {
+		return c.String(http.StatusOK, "protected content")
+	})
+
+	t.Run("Expired or invalid session with HTML accept redirects to /login and clears cookie", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/budgets", nil)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml")
+		req.AddCookie(&http.Cookie{
+			Name:  SessionCookieName,
+			Value: "non_existent_token_12345",
+		})
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+
+		err := handler(c)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("expected status 303 See Other, got %d", rec.Code)
+		}
+		if loc := rec.Header().Get("Location"); loc != "/login" {
+			t.Fatalf("expected redirect to /login, got %s", loc)
+		}
+
+		// Verify cookie was cleared
+		var cleared bool
+		for _, ck := range rec.Result().Cookies() {
+			if ck.Name == SessionCookieName && ck.MaxAge < 0 {
+				cleared = true
+				break
+			}
+		}
+		if !cleared {
+			t.Fatalf("expected session cookie to be cleared (MaxAge < 0)")
+		}
+	})
+
+	t.Run("Expired or invalid session with API JSON accept returns 401 Unauthorized", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/budgets", nil)
+		req.Header.Set("Accept", "application/json")
+		req.AddCookie(&http.Cookie{
+			Name:  SessionCookieName,
+			Value: "non_existent_token_12345",
+		})
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+
+		err := handler(c)
+		if err == nil {
+			t.Fatalf("expected 401 Unauthorized error, got nil")
+		}
+		httpErr, ok := err.(*echo.HTTPError)
+		if !ok || httpErr.Code != http.StatusUnauthorized {
+			t.Fatalf("expected echo.HTTPError 401, got %v", err)
+		}
+	})
+
+	t.Run("Missing cookie with HTML accept redirects to /login", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/budgets", nil)
+		req.Header.Set("Accept", "text/html")
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+
+		err := handler(c)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("expected status 303 See Other, got %d", rec.Code)
+		}
+		if loc := rec.Header().Get("Location"); loc != "/login" {
+			t.Fatalf("expected redirect to /login, got %s", loc)
+		}
+	})
+}
+

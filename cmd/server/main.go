@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 
@@ -67,6 +68,9 @@ func main() {
 	e.GET("/sw.js", pwaHandler.ServiceWorker)
 
 	// Public Auth routes
+	e.GET("/favicon.ico", func(c echo.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	})
 	e.GET("/", func(c echo.Context) error {
 		return c.Redirect(303, "/budgets")
 	})

@@ -23,3 +23,15 @@ Feature: User Authentication and Stateful Browser Sessions
     Then the response status should be 303 Redirect to "/login"
     And the session cookie should be invalidated
     And the session record should be deleted from "sessions" in "main.db"
+
+  Scenario: Expired or invalid session redirects web user to login page
+    Given an expired or invalid session cookie "balance_session"
+    When I request a protected HTML page "/budgets"
+    Then the response status should be 303 Redirect to "/login"
+    And the session cookie should be invalidated
+
+  Scenario: Expired or invalid session returns 401 for non-HTML API requests
+    Given an expired or invalid session cookie "balance_session"
+    When I request a protected API endpoint "/budgets" with JSON accept header
+    Then the response status should be 401 Unauthorized
+
