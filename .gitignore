@@ -41,3 +41,7 @@ coverage.txt
 coverage.html
 *.prof
 *.pprof
+
+# Agent files
+.agents/
+
