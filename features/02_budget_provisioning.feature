@@ -31,3 +31,33 @@ Feature: Multi-Tenant Budget Provisioning and Workspace Navigation
     When I request the budget view "/budgets/:budgetId/budget"
     Then the response status should be 200 OK
     And the Accounts Summary should display account "Main Checking" with balance "1,200.00 PLN"
+
+  Scenario: Renaming an existing budget as OWNER
+    Given an authenticated user "jan@example.com" who owns the budget "Family Home"
+    When I submit a request to rename the budget "Family Home" to "Family Home 2026"
+    Then the budget name in "main.db" should be updated to "Family Home 2026"
+    And the response should redirect to "/budgets"
+
+  Scenario: Deleting an existing budget as OWNER
+    Given an authenticated user "jan@example.com" who owns the budget "Family Home"
+    When I submit a request to delete the budget "Family Home"
+    Then the budget record should be removed from "main.db"
+    And the tenant database file "budget_{id}.db" should be removed from disk
+    And the response should redirect to "/budgets"
+
+  Scenario: Non-owner cannot rename or delete a budget
+    Given an authenticated user "jan@example.com" who owns the budget "Family Home"
+    And an authenticated user "adam@example.com" who is an "ADMIN" in the budget "Family Home"
+    When user "adam@example.com" submits a request to rename the budget "Family Home" to "Adam Budget"
+    Then the response status should be 403 Forbidden
+    When user "adam@example.com" submits a request to delete the budget "Family Home"
+    Then the response status should be 403 Forbidden
+
+  Scenario: Budget management actions are visible only to OWNER in UI
+    Given an authenticated user "jan@example.com" who owns the budget "Family Home"
+    And an authenticated user "adam@example.com" who is an "ADMIN" in the budget "Family Home"
+    When user "jan@example.com" requests the budgets list view "/budgets"
+    Then the response should contain budget edit and delete controls
+    When user "adam@example.com" requests the budgets list view "/budgets"
+    Then the response should not contain budget edit and delete controls
+

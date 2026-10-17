@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
@@ -396,6 +397,148 @@ func TestFaviconServingAndViews(t *testing.T) {
 		}
 	})
 }
+
+func TestBudgetRenameAndDeleteFlow(t *testing.T) {
+	logger.BindTestLogger(t)
+
+	tmpDir, err := os.MkdirTemp("", "balance_budget_crud_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mainPath := filepath.Join(tmpDir, "main.db")
+	mainDB, err := db.OpenDB(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tmpDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+	e := echo.New()
+
+	ownerID := domain.NewUUIDv7()
+	editorID := domain.NewUUIDv7()
+	now := time.Now().UTC().UnixMicro()
+	_, _ = mainDB.Exec(`INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, 'owner@example.com', 'h', 'Owner', ?, ?)`, ownerID, now, now)
+	_, _ = mainDB.Exec(`INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, 'editor@example.com', 'h', 'Editor', ?, ?)`, editorID, now, now)
+
+	// Create budget via workspaceHandler
+	bForm := url.Values{}
+	bForm.Set("name", "Initial Name")
+	bForm.Set("default_currency", "PLN")
+	bForm.Set("timezone", "Europe/Warsaw")
+
+	bReq := httptest.NewRequest(http.MethodPost, "/budgets", strings.NewReader(bForm.Encode()))
+	bReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	bRec := httptest.NewRecorder()
+	bCtx := e.NewContext(bReq, bRec)
+	bCtx.Set(ContextUserIDKey, ownerID)
+
+	if err := workspaceHandler.CreateBudget(bCtx); err != nil {
+		t.Fatalf("CreateBudget failed: %v", err)
+	}
+	loc := bRec.Header().Get("Location")
+	parts := strings.Split(loc, "/")
+	budgetID := parts[2]
+
+	// Add editor membership
+	_, _ = mainDB.Exec(`INSERT INTO budget_members (budget_id, user_id, role, joined_at) VALUES (?, ?, 'EDITOR', ?)`, budgetID, editorID, now)
+
+	// Verify UI visibility: OWNER sees Rename and Delete, EDITOR does not
+	t.Run("UI controls visibility per role", func(t *testing.T) {
+		// Owner view
+		oReq := httptest.NewRequest(http.MethodGet, "/budgets", nil)
+		oRec := httptest.NewRecorder()
+		oCtx := e.NewContext(oReq, oRec)
+		oCtx.Set(ContextUserIDKey, ownerID)
+		oCtx.Set("csrfToken", "test_csrf")
+		if err := workspaceHandler.BudgetsList(oCtx); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(oRec.Body.String(), "Rename") || !strings.Contains(oRec.Body.String(), "Delete Budget") {
+			t.Fatalf("expected OWNER to see Rename and Delete Budget controls")
+		}
+
+		// Editor view
+		eReq := httptest.NewRequest(http.MethodGet, "/budgets", nil)
+		eRec := httptest.NewRecorder()
+		eCtx := e.NewContext(eReq, eRec)
+		eCtx.Set(ContextUserIDKey, editorID)
+		eCtx.Set("csrfToken", "test_csrf")
+		if err := workspaceHandler.BudgetsList(eCtx); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(eRec.Body.String(), "Rename") || strings.Contains(eRec.Body.String(), "Delete Budget") {
+			t.Fatalf("expected non-OWNER not to see Rename or Delete Budget controls")
+		}
+	})
+
+	// Test Rename Budget
+	t.Run("Rename budget", func(t *testing.T) {
+		rForm := url.Values{}
+		rForm.Set("name", "Renamed Budget")
+		rReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/update", strings.NewReader(rForm.Encode()))
+		rReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rRec := httptest.NewRecorder()
+		rCtx := e.NewContext(rReq, rRec)
+		rCtx.SetParamNames("budgetId")
+		rCtx.SetParamValues(budgetID)
+
+		if err := workspaceHandler.UpdateBudget(rCtx); err != nil {
+			t.Fatalf("UpdateBudget failed: %v", err)
+		}
+		if rRec.Code != http.StatusSeeOther {
+			t.Fatalf("expected 303 redirect, got %d", rRec.Code)
+		}
+
+		var updatedName string
+		_ = mainDB.QueryRow("SELECT name FROM budgets WHERE id = ?", budgetID).Scan(&updatedName)
+		if updatedName != "Renamed Budget" {
+			t.Fatalf("expected Renamed Budget, got %s", updatedName)
+		}
+	})
+
+	// Test Delete Budget
+	t.Run("Delete budget removes record and files", func(t *testing.T) {
+		dReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/delete", nil)
+		dRec := httptest.NewRecorder()
+		dCtx := e.NewContext(dReq, dRec)
+		dCtx.SetParamNames("budgetId")
+		dCtx.SetParamValues(budgetID)
+
+		if err := workspaceHandler.DeleteBudget(dCtx); err != nil {
+			t.Fatalf("DeleteBudget failed: %v", err)
+		}
+		if dRec.Code != http.StatusSeeOther {
+			t.Fatalf("expected 303 redirect, got %d", dRec.Code)
+		}
+
+		var count int
+		_ = mainDB.QueryRow("SELECT count(*) FROM budgets WHERE id = ?", budgetID).Scan(&count)
+		if count != 0 {
+			t.Fatalf("expected 0 budgets in main.db, got %d", count)
+		}
+
+		tenantFilePath := filepath.Join(budgetsDir, budgetID+".db")
+		if _, err := os.Stat(tenantFilePath); !os.IsNotExist(err) {
+			t.Fatalf("expected tenant database file to be removed from disk")
+		}
+	})
+}
+
 
 
 

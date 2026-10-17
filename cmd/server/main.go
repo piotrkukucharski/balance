@@ -135,6 +135,11 @@ func main() {
 	tenantAdmin := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "ADMIN"))
 	tenantAdmin.POST("/members/invite", membersHandler.InviteMember)
 
+	tenantOwner := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "OWNER"))
+	tenantOwner.POST("/update", workspaceHandler.UpdateBudget)
+	tenantOwner.POST("/delete", workspaceHandler.DeleteBudget)
+
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"

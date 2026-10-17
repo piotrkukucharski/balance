@@ -251,6 +251,44 @@ func (m *TenantDBManager) evictTail() {
 	logger.Info(ctx, "Tenant database evicted from LRU cache", "budget_id", tail.budgetID, "remaining_cached", len(m.tenants))
 }
 
+// CloseTenantDB closes and evicts a specific tenant DB from LRU cache.
+func (m *TenantDBManager) CloseTenantDB(budgetID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if entry, exists := m.tenants[budgetID]; exists {
+		m.removeNode(entry)
+		delete(m.tenants, budgetID)
+		entry.db.Close()
+		ctx := logger.WithComponent(context.Background(), "infra:tenant_manager")
+		logger.Info(ctx, "Tenant database closed and evicted from LRU cache", "budget_id", budgetID)
+	}
+}
+
+// DeleteTenantDB closes the tenant DB and removes its database and WAL/SHM files from disk.
+func (m *TenantDBManager) DeleteTenantDB(budgetID string) error {
+	if !domain.IsValidUUIDv7(budgetID) {
+		return errors.New("invalid budget ID format")
+	}
+
+	m.CloseTenantDB(budgetID)
+
+	dbPath := filepath.Join(m.budgetsDir, budgetID+".db")
+	if filepath.Dir(dbPath) != m.budgetsDir {
+		return errors.New("path traversal detected")
+	}
+
+	_ = os.Remove(dbPath + "-wal")
+	_ = os.Remove(dbPath + "-shm")
+	if err := os.Remove(dbPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove tenant db file: %w", err)
+	}
+
+	ctx := logger.WithComponent(context.Background(), "infra:tenant_manager")
+	logger.Info(ctx, "Tenant database files deleted from disk", "budget_id", budgetID)
+	return nil
+}
+
 func (m *TenantDBManager) CloseAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -264,3 +302,4 @@ func (m *TenantDBManager) CloseAll() {
 	m.lruTail = nil
 	logger.Info(ctx, "All tenant database connections closed", "closed_count", count)
 }
+

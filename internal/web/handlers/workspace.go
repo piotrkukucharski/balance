@@ -48,10 +48,40 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 
 	var budgetCards strings.Builder
 	hasBudgets := false
+	hasOwnerBudget := false
 	for rows.Next() {
 		hasBudgets = true
 		var id, name, curr, tz, role string
 		rows.Scan(&id, &name, &curr, &tz, &role)
+
+		var ownerControls string
+		if role == "OWNER" {
+			hasOwnerBudget = true
+			ownerControls = fmt.Sprintf(`
+				<div class="dropdown dropdown-end">
+					<div tabindex="0" role="button" class="btn btn-ghost btn-xs btn-square" title="Budget Options">
+						<span>⋮</span>
+					</div>
+					<ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-10 w-44 p-2 shadow-lg border border-base-300 gap-1 text-xs">
+						<li>
+							<button type="button" class="flex items-center gap-2 py-1.5" onclick="openEditBudgetModal('%s', '%s')">
+								<span>✏️</span>
+								<span>Rename</span>
+							</button>
+						</li>
+						<li>
+							<form method="POST" action="/budgets/%s/delete" onsubmit="return confirm('Are you sure you want to delete budget \'%s\'? This action is permanent and deletes all ledger data.')" class="p-0">
+								<input type="hidden" name="csrf_token" value="%s" />
+								<button type="submit" class="flex items-center gap-2 text-error py-1.5 w-full hover:bg-error/10">
+									<span>🗑️</span>
+									<span>Delete Budget</span>
+								</button>
+							</form>
+						</li>
+					</ul>
+				</div>
+			`, id, html.EscapeString(name), id, html.EscapeString(name), c.Get("csrfToken"))
+		}
 
 		budgetCards.WriteString(fmt.Sprintf(`
 			<div class="card card-border bg-base-100 shadow-md hover:shadow-xl transition-all duration-200 border-base-300">
@@ -64,7 +94,10 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 								<div class="text-xs text-base-content/60">Timezone: %s</div>
 							</div>
 						</div>
-						<span class="badge badge-soft badge-primary font-semibold text-xs">%s</span>
+						<div class="flex items-center gap-2">
+							<span class="badge badge-soft badge-primary font-semibold text-xs">%s</span>
+							%s
+						</div>
 					</div>
 					<div class="divider my-0"></div>
 					<div class="flex items-center justify-between">
@@ -84,7 +117,7 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 						</div>
 					</div>
 				</div>
-			</div>`, html.EscapeString(name), html.EscapeString(tz), html.EscapeString(role), html.EscapeString(curr), id, id))
+			</div>`, html.EscapeString(name), html.EscapeString(tz), html.EscapeString(role), ownerControls, html.EscapeString(curr), id, id))
 	}
 
 	if !hasBudgets {
@@ -101,6 +134,42 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
+
+	var editBudgetModalHTML string
+	if hasOwnerBudget {
+		editBudgetModalHTML = fmt.Sprintf(`
+    <!-- Edit Budget Modal -->
+    <dialog id="edit_budget_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Rename Budget</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form id="edit_budget_form" method="POST" action="" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="%s" />
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">New Budget Name</span></label>
+                    <input type="text" id="edit_budget_name" name="name" required placeholder="Budget Name" class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="edit_budget_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Changes</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+    <script>
+        function openEditBudgetModal(budgetId, budgetName) {
+            const form = document.getElementById('edit_budget_form');
+            form.action = '/budgets/' + budgetId + '/update';
+            const nameInput = document.getElementById('edit_budget_name');
+            nameInput.value = budgetName;
+            document.getElementById('edit_budget_modal').showModal();
+        }
+    </script>
+`, csrfToken)
+	}
 
 	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en" data-theme="dark">
@@ -150,6 +219,8 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
         </div>
     </main>
 
+    %s
+
     <!-- New Budget Modal -->
     <dialog id="new_budget_modal" class="modal modal-bottom sm:modal-middle">
         <div class="modal-box card-border border-base-300 p-6">
@@ -187,9 +258,77 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
         <form method="dialog" class="modal-backdrop"><button>close</button></form>
     </dialog>
 </body>
-</html>`, csrfToken, budgetCards.String(), csrfToken)
+</html>`, csrfToken, budgetCards.String(), editBudgetModalHTML, csrfToken)
 
 	return c.HTML(http.StatusOK, htmlContent)
+}
+
+// UpdateBudget updates the budget name in main.db (requires OWNER).
+func (h *WorkspaceHandler) UpdateBudget(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:budget")
+	budgetID := c.Param("budgetId")
+	name := strings.TrimSpace(c.FormValue("name"))
+
+	if name == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "Budget name cannot be empty")
+	}
+
+	now := time.Now().UTC().UnixMicro()
+	res, err := h.mainDB.ExecContext(c.Request().Context(), `
+		UPDATE budgets SET name = ?, updated_at = ?
+		WHERE id = ?`, name, now, budgetID)
+	if err != nil {
+		logger.Error(ctx, "Failed to update budget name", "budget_id", budgetID, "error", err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, "Database error")
+	}
+
+	rowsAff, err := res.RowsAffected()
+	if err != nil || rowsAff == 0 {
+		return echo.NewHTTPError(http.StatusNotFound, "Budget not found")
+	}
+
+	logger.Info(ctx, "Budget renamed successfully", "budget_id", budgetID, "new_name", name)
+	return c.Redirect(http.StatusSeeOther, "/budgets")
+}
+
+// DeleteBudget deletes the budget and its memberships from main.db, and deletes its tenant sqlite database (requires OWNER).
+func (h *WorkspaceHandler) DeleteBudget(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:budget")
+	budgetID := c.Param("budgetId")
+
+	tx, err := h.mainDB.BeginTx(c.Request().Context(), nil)
+	if err != nil {
+		logger.Error(ctx, "Failed to begin transaction for budget deletion", "budget_id", budgetID, "error", err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, "Database error")
+	}
+	defer tx.Rollback()
+
+	// Clean up related records in main.db
+	_, _ = tx.ExecContext(c.Request().Context(), `DELETE FROM budget_invitations WHERE budget_id = ?`, budgetID)
+	_, _ = tx.ExecContext(c.Request().Context(), `DELETE FROM budget_members WHERE budget_id = ?`, budgetID)
+	res, err := tx.ExecContext(c.Request().Context(), `DELETE FROM budgets WHERE id = ?`, budgetID)
+	if err != nil {
+		logger.Error(ctx, "Failed to delete budget record", "budget_id", budgetID, "error", err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to delete budget")
+	}
+
+	rowsAff, err := res.RowsAffected()
+	if err != nil || rowsAff == 0 {
+		return echo.NewHTTPError(http.StatusNotFound, "Budget not found")
+	}
+
+	if err := tx.Commit(); err != nil {
+		logger.Error(ctx, "Failed committing budget deletion", "budget_id", budgetID, "error", err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, "Commit error")
+	}
+
+	// Delete tenant SQLite database file and evict from LRU cache
+	if err := h.tenantMgr.DeleteTenantDB(budgetID); err != nil {
+		logger.Warn(ctx, "Failed deleting tenant db file from disk", "budget_id", budgetID, "error", err.Error())
+	}
+
+	logger.Info(ctx, "Budget deleted successfully", "budget_id", budgetID)
+	return c.Redirect(http.StatusSeeOther, "/budgets")
 }
 
 // CreateBudget creates a new budget in main.db and provisions the tenant SQLite database.
