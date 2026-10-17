@@ -132,6 +132,10 @@ Always use `task` (defined in [`Taskfile.yml`](Taskfile.yml)) to run development
 - `task dev:up` — Start the Balance HTTP server in development mode (`http://localhost:8080`).
 - `task dev:stop` — Stop any running local Balance development server process.
 - `task dev:build` — Compile the production binary to `./bin/balance`.
+- `task dev:worktree:create -- <name>` — Create an isolated git worktree in `../development/<name>` with a dedicated port (10000..11000) and copy of data.
+- `task dev:worktree:clear -- <name> [--delete-branch]` — Remove worktree (preserves branch by default, pass `--delete-branch` to delete branch).
+- `task dev:worktree:update:maintree -- <name>` — Fast-forward maintree branch from specified worktree branch (only runs on maintree).
+- `task dev:worktree:update:branch` — Rebase current worktree branch onto main (only runs inside secondary worktree).
 
 ### Testing (`test:*`)
 - `task test:bdd` — Run all Gherkin BDD scenarios (`features/*.feature`) via Godog (`internal/bdd`).
