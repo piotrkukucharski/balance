@@ -128,14 +128,34 @@ All changes must preserve these non-negotiable invariants from [`docs/architectu
 Always use `task` (defined in [`Taskfile.yml`](Taskfile.yml)) to run development workflows and test suites:
 
 ### Development (`dev:*`)
-- `task dev:init` — Initialize local directories (`./data/tenants`), `.env`, and download/tidy Go dependencies.
+- `task dev:init` — Initialize local directories (`./data/budgets`), `.env`, install agent skills via `npx skills experimental_install`, and download/tidy Go dependencies.
 - `task dev:up` — Start the Balance HTTP server in development mode (`http://localhost:8080`).
 - `task dev:stop` — Stop any running local Balance development server process.
 - `task dev:build` — Compile the production binary to `./bin/balance`.
-- `task dev:worktree:create -- <name>` — Create an isolated git worktree in `../development/<name>` with a dedicated port (10000..11000) and copy of data.
+- `task dev:worktree:create -- <name>` — Create an isolated git worktree in `../development/<name>` with a dedicated port (10000..11000), copy of `.env`, `.agents/`, and copy of data.
 - `task dev:worktree:clear -- <name> [--delete-branch]` — Remove worktree (preserves branch by default, pass `--delete-branch` to delete branch).
 - `task dev:worktree:update:maintree -- <name>` — Fast-forward maintree branch from specified worktree branch (only runs on maintree).
 - `task dev:worktree:update:branch` — Rebase current worktree branch onto main (only runs inside secondary worktree).
+
+---
+
+## 7. Skills & Tooling Management (`skills-lock.json`)
+
+- **`skills-lock.json` is tracked in git**: Defines exact versions/hashes of agent skills (such as `daisyui`).
+- **Restoring skills**: Automatically executed via `task dev:init` using `npx skills experimental_install`.
+- **Worktree propagation**: `task dev:worktree:create` automatically replicates `.agents/` and `skills-lock.json` into secondary worktrees so agent workflows remain functional across all parallel environments.
+
+---
+
+## 8. Environment & Secrets Configuration (`.env`)
+
+- **`.env` is git-ignored**: Local secrets must never be committed. Always update `.env.example` when adding new environment variables.
+- **Taskfile dotenv integration**: `Taskfile.yml` includes `dotenv: ['.env']` so all environment variables are automatically passed to running processes (`dev:up`, `dev:build`, `test:*`).
+- **Key Environment Variables**:
+  - `PORT`: HTTP server port (default `8080` for maintree, isolated `10000..11000` in worktrees).
+  - `DATA_DIR`: Base directory for SQLite databases (`./data`).
+  - `GEMINI_API_KEY` & `GEMINI_MODEL`: Google Gemini API configuration for AI formula assistance (default model: `gemini-3.8-flash`).
+  - `GOCARDLESS_SECRET_ID`, `GOCARDLESS_SECRET_KEY`, `GOCARDLESS_ENVIRONMENT`: Open Banking integration credentials (default environment: `sandbox`).
 
 ### Testing (`test:*`)
 - `task test:bdd` — Run all Gherkin BDD scenarios (`features/*.feature`) via Godog (`internal/bdd`).
