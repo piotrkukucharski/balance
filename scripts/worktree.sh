@@ -4,7 +4,7 @@ set -euo pipefail
 # Balance Git Worktree Manager
 # Usage:
 #   ./scripts/worktree.sh create <name>
-#   ./scripts/worktree.sh clean <name> [--delete-branch]
+#   ./scripts/worktree.sh clear <name> [--delete-branch]
 #   ./scripts/worktree.sh update-maintree <name>
 #   ./scripts/worktree.sh update-branch
 
@@ -149,7 +149,7 @@ cmd_create() {
     echo "To use: cd ${target_dir} && task dev:up"
 }
 
-cmd_clean() {
+cmd_clear() {
     local name="${1:-}"
     local delete_branch="false"
 
@@ -167,7 +167,7 @@ cmd_clean() {
     done
 
     if [[ -z "$name" ]]; then
-        echo "Error: worktree name is required. Usage: task dev:worktree:clean -- <name> [--delete-branch]" >&2
+        echo "Error: worktree name is required. Usage: task dev:worktree:clear -- <name> [--delete-branch]" >&2
         exit 1
     fi
 
@@ -191,7 +191,7 @@ cmd_clean() {
         echo "Branch '${name}' preserved (pass --delete-branch to delete branch as well)."
     fi
 
-    echo "Clean operation for '${name}' completed."
+    echo "Clear operation for '${name}' completed."
 }
 
 cmd_update_maintree() {
@@ -238,8 +238,8 @@ case "$ACTION" in
     create)
         cmd_create "$@"
         ;;
-    clean)
-        cmd_clean "$@"
+    clear|clean)
+        cmd_clear "$@"
         ;;
     update-maintree)
         cmd_update_maintree "$@"

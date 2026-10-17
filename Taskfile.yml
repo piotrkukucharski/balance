@@ -46,15 +46,15 @@ tasks:
     cmds:
       - ./scripts/worktree.sh create {{.CLI_ARGS}}
 
-  dev:worktree:clean:
+  dev:worktree:clear:
     desc: "Remove an isolated git worktree (preserves branch by default, pass --delete-branch to delete branch)"
     cmds:
-      - ./scripts/worktree.sh clean {{.CLI_ARGS}}
+      - ./scripts/worktree.sh clear {{.CLI_ARGS}}
 
-  dev:worktree:cleanWithBranch:
+  dev:worktree:clearWithBranch:
     desc: "Remove an isolated git worktree and delete its branch"
     cmds:
-      - ./scripts/worktree.sh clean --delete-branch {{.CLI_ARGS}}
+      - ./scripts/worktree.sh clear --delete-branch {{.CLI_ARGS}}
 
   dev:worktree:update:maintree:
     desc: "Fast-forward maintree branch from specified worktree branch (only runs on maintree)"
