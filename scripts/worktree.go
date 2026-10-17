@@ -31,6 +31,19 @@ func runCmdInDir(dir, name string, args ...string) error {
 	return cmd.Run()
 }
 
+func cmdCombinedOutput(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+func cmdCombinedOutputInDir(dir, name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
 func cmdOutput(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	out, err := cmd.Output()
@@ -494,6 +507,12 @@ func getWorktreeList() ([]worktreeInfo, error) {
 	return list, nil
 }
 
+type silentError struct{}
+
+func (e silentError) Error() string {
+	return ""
+}
+
 func cmdFinish(args []string) error {
 	topLevel, err := getTopLevel()
 	if err != nil {
@@ -585,7 +604,15 @@ func cmdFinish(args []string) error {
 	// 4. Następny krok zostanie uruchomiony na tamtym branchu: git rebase main
 	// W razie problemów cofnij skutki rebase (git rebase --abort) i zakończ działanie
 	fmt.Printf("Running 'git rebase main' in %s...\n", worktreePath)
-	if err := runCmdInDir(worktreePath, "git", "rebase", "main"); err != nil {
+	if out, err := cmdCombinedOutputInDir(worktreePath, "git", "rebase", "main"); err != nil {
+		if strings.Contains(out, "cannot rebase: You have unstaged changes") || strings.Contains(out, "unstaged changes") {
+			fmt.Fprintln(os.Stderr, "error: cannot rebase: You have unstaged changes.")
+			fmt.Fprintln(os.Stderr, "error: Please commit or stash them.")
+			return silentError{}
+		}
+		if out != "" {
+			fmt.Fprintln(os.Stderr, out)
+		}
 		fmt.Fprintf(os.Stderr, "Error during 'git rebase main' in %s. Aborting rebase to revert state...\n", worktreePath)
 		_ = runCmdInDir(worktreePath, "git", "rebase", "--abort")
 		return fmt.Errorf("rebase failed in worktree '%s': %w", branchName, err)
@@ -598,7 +625,15 @@ func cmdFinish(args []string) error {
 		return fmt.Errorf("failed getting current main branch: %w", err)
 	}
 	fmt.Printf("Rebasing main branch '%s' with '%s'...\n", mainBranch, branchName)
-	if err := runCmd("git", "rebase", branchName); err != nil {
+	if out, err := cmdCombinedOutput("git", "rebase", branchName); err != nil {
+		if strings.Contains(out, "cannot rebase: You have unstaged changes") || strings.Contains(out, "unstaged changes") {
+			fmt.Fprintln(os.Stderr, "error: cannot rebase: You have unstaged changes.")
+			fmt.Fprintln(os.Stderr, "error: Please commit or stash them.")
+			return silentError{}
+		}
+		if out != "" {
+			fmt.Fprintln(os.Stderr, out)
+		}
 		fmt.Fprintf(os.Stderr, "Error rebasing %s with %s. Aborting rebase on main...\n", mainBranch, branchName)
 		_ = runCmd("git", "rebase", "--abort")
 		return fmt.Errorf("rebase on main branch failed: %w", err)
@@ -647,6 +682,9 @@ func main() {
 	}
 
 	if err != nil {
+		if _, ok := err.(silentError); ok {
+			os.Exit(1)
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
