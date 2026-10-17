@@ -112,11 +112,22 @@ cmd_create() {
 
     if [[ -d "$abs_source_data" ]]; then
         echo "Copying data directory from ${abs_source_data} to ${abs_dest_data}..."
-        mkdir -p "$abs_dest_data"
-        # Copy files excluding -wal and -shm
-        rsync -a --exclude="*.db-wal" --exclude="*.db-shm" "${abs_source_data}/" "${abs_dest_data}/" 2>/dev/null || \
-        cp -R "${abs_source_data}/." "${abs_dest_data}/"
-        rm -f "${abs_dest_data}"/*.db-wal "${abs_dest_data}"/*.db-shm 2>/dev/null || true
+        mkdir -p "${abs_dest_data}/budgets"
+        if command -v sqlite3 >/dev/null 2>&1; then
+            # Use sqlite3 .backup to safely snapshot WAL-enabled databases into a clean single file
+            while IFS= read -r -d '' db_file; do
+                rel_path="${db_file#"${abs_source_data}/"}"
+                dest_db="${abs_dest_data}/${rel_path}"
+                mkdir -p "$(dirname "$dest_db")"
+                rm -f "$dest_db" "${dest_db}-wal" "${dest_db}-shm"
+                sqlite3 "$db_file" ".backup '${dest_db}'"
+            done < <(find "$abs_source_data" -type f -name "*.db" -print0)
+        else
+            # Fallback: copy everything including .db-wal so uncommitted WAL transactions are not lost
+            rsync -a --exclude="*.db-shm" "${abs_source_data}/" "${abs_dest_data}/" 2>/dev/null || \
+            cp -R "${abs_source_data}/." "${abs_dest_data}/"
+            rm -f "${abs_dest_data}"/*.db-shm "${abs_dest_data}"/budgets/*.db-shm 2>/dev/null || true
+        fi
     else
         mkdir -p "${abs_dest_data}/budgets"
     fi
