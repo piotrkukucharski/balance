@@ -121,6 +121,18 @@ cmd_create() {
         mkdir -p "${abs_dest_data}/budgets"
     fi
 
+    # Copy .agents directory and skills-lock.json if present
+    if [[ -d "${TOP_LEVEL}/.agents" ]]; then
+        echo "Copying .agents directory to ${abs_target_dir}/.agents..."
+        mkdir -p "${abs_target_dir}/.agents"
+        rsync -a "${TOP_LEVEL}/.agents/" "${abs_target_dir}/.agents/" 2>/dev/null || \
+        cp -R "${TOP_LEVEL}/.agents/." "${abs_target_dir}/.agents/"
+    fi
+
+    if [[ -f "${TOP_LEVEL}/skills-lock.json" ]]; then
+        cp "${TOP_LEVEL}/skills-lock.json" "${abs_target_dir}/skills-lock.json"
+    fi
+
     echo "Worktree '${name}' successfully created at ${target_dir}!"
     echo "Allocated port: ${free_port}"
     echo "To use: cd ${target_dir} && task dev:up"

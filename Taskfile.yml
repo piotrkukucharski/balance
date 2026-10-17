@@ -19,6 +19,7 @@ tasks:
     cmds:
       - mkdir -p {{.DATA_DIR}}/budgets
       - test -f .env || cp .env.example .env
+      - npx skills experimental_install
       - go mod tidy
       - echo "Development environment initialized at {{.DATA_DIR}}"
 
