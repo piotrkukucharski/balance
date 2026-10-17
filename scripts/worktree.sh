@@ -4,7 +4,7 @@ set -euo pipefail
 # Balance Git Worktree Manager
 # Usage:
 #   ./scripts/worktree.sh create <name>
-#   ./scripts/worktree.sh clear <name> [--delete-branch]
+#   ./scripts/worktree.sh clean <name> [--delete-branch]
 #   ./scripts/worktree.sh update-maintree <name>
 #   ./scripts/worktree.sh update-branch
 
@@ -26,7 +26,7 @@ find_free_port() {
     local start_port=10000
     local end_port=11000
     local port
-    
+
     # Try random ports in range first, then sequential
     for _ in {1..50}; do
         port=$(( start_port + RANDOM % (end_port - start_port + 1) ))
@@ -35,7 +35,7 @@ find_free_port() {
             return 0
         fi
     done
-    
+
     # Fallback to sequential scan
     for ((port=start_port; port<=end_port; port++)); do
         if ! ss -tuln | grep -q ":${port} "; then
@@ -43,7 +43,7 @@ find_free_port() {
             return 0
         fi
     done
-    
+
     echo "Error: No free port found in range ${start_port}-${end_port}" >&2
     exit 1
 }
@@ -138,7 +138,7 @@ cmd_create() {
     echo "To use: cd ${target_dir} && task dev:up"
 }
 
-cmd_clear() {
+cmd_clean() {
     local name="${1:-}"
     local delete_branch="false"
 
@@ -156,7 +156,7 @@ cmd_clear() {
     done
 
     if [[ -z "$name" ]]; then
-        echo "Error: worktree name is required. Usage: task dev:worktree:clear -- <name> [--delete-branch]" >&2
+        echo "Error: worktree name is required. Usage: task dev:worktree:clean -- <name> [--delete-branch]" >&2
         exit 1
     fi
 
@@ -180,7 +180,7 @@ cmd_clear() {
         echo "Branch '${name}' preserved (pass --delete-branch to delete branch as well)."
     fi
 
-    echo "Clear operation for '${name}' completed."
+    echo "Clean operation for '${name}' completed."
 }
 
 cmd_update_maintree() {
@@ -227,8 +227,8 @@ case "$ACTION" in
     create)
         cmd_create "$@"
         ;;
-    clear)
-        cmd_clear "$@"
+    clean)
+        cmd_clean "$@"
         ;;
     update-maintree)
         cmd_update_maintree "$@"
@@ -237,7 +237,7 @@ case "$ACTION" in
         cmd_update_branch "$@"
         ;;
     *)
-        echo "Usage: $0 {create <name>|clear <name> [--delete-branch]|update-maintree <name>|update-branch}" >&2
+        echo "Usage: $0 {create <name>|clean <name> [--delete-branch]|update-maintree <name>|update-branch}" >&2
         exit 1
         ;;
 esac
