@@ -102,6 +102,8 @@ func main() {
 	tenantViewer.GET("/transactions/sync/events", txHandler.SyncBankEvents)
 	tenantViewer.GET("/reports", reportsHandler.ReportsView)
 	tenantViewer.GET("/parties", partiesHandler.PartiesView)
+	tenantViewer.GET("/settings", workspaceHandler.SettingsView)
+	tenantViewer.GET("/settings/members", membersHandler.MembersView)
 	tenantViewer.GET("/members", membersHandler.MembersView)
 
 	tenantEditor := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "EDITOR"))
@@ -133,11 +135,14 @@ func main() {
 
 
 	tenantAdmin := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "ADMIN"))
+	tenantAdmin.POST("/settings/members/invite", membersHandler.InviteMember)
 	tenantAdmin.POST("/members/invite", membersHandler.InviteMember)
 
 	tenantOwner := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "OWNER"))
+	tenantOwner.POST("/settings", workspaceHandler.UpdateBudget)
 	tenantOwner.POST("/update", workspaceHandler.UpdateBudget)
 	tenantOwner.POST("/delete", workspaceHandler.DeleteBudget)
+
 
 
 	port := os.Getenv("PORT")

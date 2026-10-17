@@ -109,14 +109,7 @@ func (h *MembersHandler) MembersView(c echo.Context) error {
 
     <div class="flex-1 flex overflow-hidden">
         <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
-            <ul class="menu menu-md w-full p-0 gap-1">
-                <li><a href="/budgets/%s/budget">📂 1. Budget (Buckets)</a></li>
-                <li><a href="/budgets/%s/accounts">💳 2. Accounts</a></li>
-                <li><a href="/budgets/%s/transactions">💸 3. Transactions</a></li>
-                <li><a href="/budgets/%s/reports">📊 4. Reports</a></li>
-                <li><a href="/budgets/%s/parties">🏢 5. External Parties</a></li>
-                <li><a href="/budgets/%s/members" class="active font-bold">👥 6. Members</a></li>
-            </ul>
+            %s
         </aside>
 
         <main class="flex-1 p-6 md:p-8 overflow-y-auto">
@@ -152,33 +145,7 @@ func (h *MembersHandler) MembersView(c echo.Context) error {
         </main>
     </div>
 
-    <!-- Mobile Bottom Navigation Dock -->
-    <div class="dock md:hidden bg-base-100 border-t border-base-300">
-        <a href="/budgets/%s/budget">
-            <span class="text-xl">📂</span>
-            <span class="dock-label">Budget</span>
-        </a>
-        <a href="/budgets/%s/accounts">
-            <span class="text-xl">💳</span>
-            <span class="dock-label">Accounts</span>
-        </a>
-        <a href="/budgets/%s/transactions">
-            <span class="text-xl">💸</span>
-            <span class="dock-label">Txns</span>
-        </a>
-        <a href="/budgets/%s/reports">
-            <span class="text-xl">📊</span>
-            <span class="dock-label">Reports</span>
-        </a>
-        <a href="/budgets/%s/parties">
-            <span class="text-xl">🏢</span>
-            <span class="dock-label">Parties</span>
-        </a>
-        <a href="/budgets/%s/members" class="dock-active">
-            <span class="text-xl">👥</span>
-            <span class="dock-label">Members</span>
-        </a>
-    </div>
+    %s
 
     <!-- Invite Member Modal -->
     <dialog id="invite_modal" class="modal modal-bottom sm:modal-middle">
@@ -187,7 +154,7 @@ func (h *MembersHandler) MembersView(c echo.Context) error {
                 <h3 class="font-extrabold text-xl tracking-tight">Invite Collaborator</h3>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
             </div>
-            <form method="POST" action="/budgets/%s/members/invite" class="flex flex-col gap-4">
+            <form method="POST" action="/budgets/%s/settings/members/invite" class="flex flex-col gap-4">
                 <input type="hidden" name="csrf_token" value="%s" />
                 <div class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Invited Email Address</span></label>
@@ -211,9 +178,9 @@ func (h *MembersHandler) MembersView(c echo.Context) error {
     </dialog>
 </body>
 </html>`, csrfToken,
-		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
+		RenderSidebarNavigation(budgetID, "members"),
 		memberRows.String(),
-		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
+		RenderBottomDock(budgetID, "settings"),
 		budgetID, csrfToken)
 
 	_ = role
@@ -250,5 +217,9 @@ func (h *MembersHandler) InviteMember(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create invitation")
 	}
 
+	if strings.Contains(c.Request().URL.Path, "/settings/members") {
+		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/settings/members", budgetID))
+	}
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/members", budgetID))
 }
+

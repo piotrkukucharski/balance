@@ -118,14 +118,7 @@ func (h *PartiesHandler) PartiesView(c echo.Context) error {
 
     <div class="flex-1 flex overflow-hidden">
         <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
-            <ul class="menu menu-md w-full p-0 gap-1">
-                <li><a href="/budgets/%s/budget">📂 1. Budget (Buckets)</a></li>
-                <li><a href="/budgets/%s/accounts">💳 2. Accounts</a></li>
-                <li><a href="/budgets/%s/transactions">💸 3. Transactions</a></li>
-                <li><a href="/budgets/%s/reports">📊 4. Reports</a></li>
-                <li><a href="/budgets/%s/parties" class="active font-bold">🏢 5. External Parties</a></li>
-                <li><a href="/budgets/%s/members">👥 6. Members</a></li>
-            </ul>
+            %s
         </aside>
 
         <main class="flex-1 p-6 md:p-8 overflow-y-auto">
@@ -163,32 +156,7 @@ func (h *PartiesHandler) PartiesView(c echo.Context) error {
     </div>
 
     <!-- Mobile Bottom Navigation Dock -->
-    <div class="dock md:hidden bg-base-100 border-t border-base-300">
-        <a href="/budgets/%s/budget">
-            <span class="text-xl">📂</span>
-            <span class="dock-label">Budget</span>
-        </a>
-        <a href="/budgets/%s/accounts">
-            <span class="text-xl">💳</span>
-            <span class="dock-label">Accounts</span>
-        </a>
-        <a href="/budgets/%s/transactions">
-            <span class="text-xl">💸</span>
-            <span class="dock-label">Txns</span>
-        </a>
-        <a href="/budgets/%s/reports">
-            <span class="text-xl">📊</span>
-            <span class="dock-label">Reports</span>
-        </a>
-        <a href="/budgets/%s/parties" class="dock-active">
-            <span class="text-xl">🏢</span>
-            <span class="dock-label">Parties</span>
-        </a>
-        <a href="/budgets/%s/members">
-            <span class="text-xl">👥</span>
-            <span class="dock-label">Members</span>
-        </a>
-    </div>
+    %s
 
     <!-- New Counterparty Modal -->
     <dialog id="new_party_modal" class="modal modal-bottom sm:modal-middle">
@@ -220,9 +188,9 @@ func (h *PartiesHandler) PartiesView(c echo.Context) error {
     </dialog>
 </body>
 </html>`, csrfToken,
-		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
+		RenderSidebarNavigation(budgetID, "parties"),
 		partyRows.String(),
-		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
+		RenderBottomDock(budgetID, "parties"),
 		budgetID, csrfToken)
 
 	return c.HTML(http.StatusOK, html)

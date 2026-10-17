@@ -263,22 +263,212 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 	return c.HTML(http.StatusOK, htmlContent)
 }
 
-// UpdateBudget updates the budget name in main.db (requires OWNER).
+// SettingsView renders the budget settings page (general settings, name, timezone, and danger zone).
+func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	role := c.Get(ContextRoleKey).(string)
+
+	var name, defaultCurrency, timezone string
+	var createdAt, updatedAt int64
+	err := h.mainDB.QueryRowContext(c.Request().Context(), `
+		SELECT name, default_currency, timezone, created_at, updated_at
+		FROM budgets WHERE id = ?`, budgetID).Scan(&name, &defaultCurrency, &timezone, &createdAt, &updatedAt)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, "Budget not found")
+	}
+
+	csrfToken, _ := c.Get("csrfToken").(string)
+	sidebarHTML := RenderSidebarNavigation(budgetID, "settings")
+	bottomDockHTML := RenderBottomDock(budgetID, "settings")
+
+	var dangerZoneHTML string
+	if role == "OWNER" {
+		dangerZoneHTML = fmt.Sprintf(`
+			<div class="card card-border bg-base-100 border-error/30 shadow-md">
+				<div class="card-body p-6">
+					<h2 class="card-title text-error text-lg font-bold flex items-center gap-2">
+						<span>⚠️</span>
+						<span>Danger Zone</span>
+					</h2>
+					<p class="text-xs text-base-content/70">
+						Permanently delete this budget envelope, ledger records, transactions, and account history.
+						This action cannot be undone.
+					</p>
+					<div class="card-actions justify-end mt-4">
+						<form method="POST" action="/budgets/%s/delete" onsubmit="return confirm('Are you absolutely sure you want to delete this budget? All data will be permanently wiped.')">
+							<input type="hidden" name="csrf_token" value="%s" />
+							<button type="submit" class="btn btn-error btn-sm shadow font-semibold">
+								Delete Budget
+							</button>
+						</form>
+					</div>
+				</div>
+			</div>
+		`, budgetID, csrfToken)
+	} else {
+		dangerZoneHTML = `
+			<div class="card card-border bg-base-100 border-base-300 shadow-sm opacity-70">
+				<div class="card-body p-6">
+					<h2 class="card-title text-base font-bold text-base-content/70">Danger Zone</h2>
+					<p class="text-xs text-base-content/60">
+						Only the budget OWNER can delete or destroy this workspace.
+					</p>
+				</div>
+			</div>
+		`
+	}
+
+	var editFormHTML string
+	if role == "OWNER" {
+		editFormHTML = fmt.Sprintf(`
+			<form method="POST" action="/budgets/%s/settings" class="flex flex-col gap-4">
+				<input type="hidden" name="csrf_token" value="%s" />
+				<div class="form-control">
+					<label class="label pb-1"><span class="label-text font-medium text-xs">Budget Name</span></label>
+					<input type="text" name="name" value="%s" required class="input input-bordered w-full input-md focus:input-primary font-semibold" />
+				</div>
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+					<div class="form-control">
+						<label class="label pb-1"><span class="label-text font-medium text-xs">Default Currency</span></label>
+						<input type="text" value="%s" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed font-mono text-xs" />
+						<label class="label pt-1"><span class="label-text-alt text-base-content/50">Base currency is immutable once provisioned</span></label>
+					</div>
+					<div class="form-control">
+						<label class="label pb-1"><span class="label-text font-medium text-xs">IANA Timezone</span></label>
+						<input type="text" name="timezone" value="%s" class="input input-bordered w-full input-md focus:input-primary text-xs" />
+					</div>
+				</div>
+				<div class="card-actions justify-end mt-4">
+					<button type="submit" class="btn btn-primary btn-sm shadow font-semibold">Save Settings</button>
+				</div>
+			</form>
+		`, budgetID, csrfToken, html.EscapeString(name), html.EscapeString(defaultCurrency), html.EscapeString(timezone))
+	} else {
+		editFormHTML = fmt.Sprintf(`
+			<div class="flex flex-col gap-4">
+				<div class="form-control">
+					<label class="label pb-1"><span class="label-text font-medium text-xs">Budget Name</span></label>
+					<input type="text" value="%s" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed font-semibold" />
+				</div>
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+					<div class="form-control">
+						<label class="label pb-1"><span class="label-text font-medium text-xs">Default Currency</span></label>
+						<input type="text" value="%s" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed font-mono text-xs" />
+					</div>
+					<div class="form-control">
+						<label class="label pb-1"><span class="label-text font-medium text-xs">IANA Timezone</span></label>
+						<input type="text" value="%s" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed text-xs" />
+					</div>
+				</div>
+				<div class="alert alert-info alert-soft text-xs mt-2">
+					<span>ℹ️ You are viewing budget settings with <strong>%s</strong> permissions. Only the OWNER can update budget properties.</span>
+				</div>
+			</div>
+		`, html.EscapeString(name), html.EscapeString(defaultCurrency), html.EscapeString(timezone), html.EscapeString(role))
+	}
+
+	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Balance — %s Settings</title>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="manifest" href="/manifest.webmanifest">
+</head>
+<body class="bg-base-200 text-base-content min-h-screen flex flex-col">
+    <!-- Navbar -->
+    <header class="navbar bg-base-100 border-b border-base-300 px-6 sticky top-0 z-30 shadow-xs">
+        <div class="navbar-start gap-4 items-center">
+            <a href="/budgets" class="text-2xl font-black tracking-tight text-primary flex items-center gap-2">
+                <span>⚖️</span>
+                <span>Balance</span>
+            </a>
+            <div class="badge badge-neutral font-semibold gap-1.5 py-3">
+                <span class="w-2 h-2 rounded-full bg-success"></span>
+                <span>%s</span>
+            </div>
+            <span class="badge badge-soft badge-primary font-semibold text-xs">%s</span>
+        </div>
+        <div class="navbar-end gap-3">
+            <form method="POST" action="/logout">
+                <input type="hidden" name="csrf_token" value="%s" />
+                <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
+            </form>
+        </div>
+    </header>
+
+    <div class="flex-1 flex overflow-hidden">
+        <!-- Sidebar -->
+        <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
+            %s
+        </aside>
+
+        <!-- Main Content -->
+        <main class="flex-1 p-6 md:p-8 overflow-y-auto max-w-4xl">
+            <div class="mb-6">
+                <h1 class="text-2xl font-black tracking-tight">Budget Settings</h1>
+                <p class="text-xs text-base-content/60 mt-1">Configure workspace preferences, default timezones, and ledger parameters.</p>
+            </div>
+
+            <div class="space-y-6">
+                <div class="card card-border bg-base-100 border-base-300 shadow-md">
+                    <div class="card-body p-6">
+                        <h2 class="card-title text-lg font-bold mb-2">General Information</h2>
+                        %s
+                    </div>
+                </div>
+
+                %s
+            </div>
+        </main>
+    </div>
+
+    %s
+</body>
+</html>`,
+		html.EscapeString(name),
+		html.EscapeString(name),
+		html.EscapeString(role),
+		csrfToken,
+		sidebarHTML,
+		editFormHTML,
+		dangerZoneHTML,
+		bottomDockHTML,
+	)
+
+	return c.HTML(http.StatusOK, htmlContent)
+}
+
+// UpdateBudget updates the budget name and settings in main.db (requires OWNER).
 func (h *WorkspaceHandler) UpdateBudget(c echo.Context) error {
 	ctx := logger.WithComponent(c.Request().Context(), "biz:budget")
 	budgetID := c.Param("budgetId")
 	name := strings.TrimSpace(c.FormValue("name"))
+	tz := strings.TrimSpace(c.FormValue("timezone"))
 
 	if name == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "Budget name cannot be empty")
 	}
 
 	now := time.Now().UTC().UnixMicro()
-	res, err := h.mainDB.ExecContext(c.Request().Context(), `
-		UPDATE budgets SET name = ?, updated_at = ?
-		WHERE id = ?`, name, now, budgetID)
+	var res sql.Result
+	var err error
+	if tz != "" {
+		res, err = h.mainDB.ExecContext(c.Request().Context(), `
+			UPDATE budgets SET name = ?, timezone = ?, updated_at = ?
+			WHERE id = ?`, name, tz, now, budgetID)
+	} else {
+		res, err = h.mainDB.ExecContext(c.Request().Context(), `
+			UPDATE budgets SET name = ?, updated_at = ?
+			WHERE id = ?`, name, now, budgetID)
+	}
 	if err != nil {
-		logger.Error(ctx, "Failed to update budget name", "budget_id", budgetID, "error", err.Error())
+		logger.Error(ctx, "Failed to update budget settings", "budget_id", budgetID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Database error")
 	}
 
@@ -287,7 +477,10 @@ func (h *WorkspaceHandler) UpdateBudget(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusNotFound, "Budget not found")
 	}
 
-	logger.Info(ctx, "Budget renamed successfully", "budget_id", budgetID, "new_name", name)
+	logger.Info(ctx, "Budget updated successfully", "budget_id", budgetID, "new_name", name)
+	if strings.Contains(c.Request().URL.Path, "/settings") {
+		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/settings", budgetID))
+	}
 	return c.Redirect(http.StatusSeeOther, "/budgets")
 }
 
@@ -330,6 +523,7 @@ func (h *WorkspaceHandler) DeleteBudget(c echo.Context) error {
 	logger.Info(ctx, "Budget deleted successfully", "budget_id", budgetID)
 	return c.Redirect(http.StatusSeeOther, "/budgets")
 }
+
 
 // CreateBudget creates a new budget in main.db and provisions the tenant SQLite database.
 func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
@@ -790,14 +984,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
     <div class="flex-1 flex overflow-hidden">
         <!-- Left Sidebar Navigation -->
         <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
-            <ul class="menu menu-md w-full p-0 gap-1">
-                <li><a href="/budgets/%s/budget" class="active font-bold">📂 1. Budget (Buckets)</a></li>
-                <li><a href="/budgets/%s/accounts">💳 2. Accounts</a></li>
-                <li><a href="/budgets/%s/transactions">💸 3. Transactions</a></li>
-                <li><a href="/budgets/%s/reports">📊 4. Reports</a></li>
-                <li><a href="/budgets/%s/parties">🏢 5. External Parties</a></li>
-                <li><a href="/budgets/%s/members">👥 6. Members</a></li>
-            </ul>
+            %s
 
             <div class="divider my-0"></div>
 
@@ -879,33 +1066,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
         </main>
     </div>
 
-    <!-- Mobile Bottom Navigation Dock -->
-    <div class="dock md:hidden bg-base-100 border-t border-base-300">
-        <a href="/budgets/%s/budget" class="dock-active">
-            <span class="text-xl">📂</span>
-            <span class="dock-label">Budget</span>
-        </a>
-        <a href="/budgets/%s/accounts">
-            <span class="text-xl">💳</span>
-            <span class="dock-label">Accounts</span>
-        </a>
-        <a href="/budgets/%s/transactions">
-            <span class="text-xl">💸</span>
-            <span class="dock-label">Txns</span>
-        </a>
-        <a href="/budgets/%s/reports">
-            <span class="text-xl">📊</span>
-            <span class="dock-label">Reports</span>
-        </a>
-        <a href="/budgets/%s/parties">
-            <span class="text-xl">🏢</span>
-            <span class="dock-label">Parties</span>
-        </a>
-        <a href="/budgets/%s/members">
-            <span class="text-xl">👥</span>
-            <span class="dock-label">Members</span>
-        </a>
-    </div>
+    %s
 
     <!-- New Bucket Modal -->
     <dialog id="new_bucket_modal" class="modal modal-bottom sm:modal-middle">
@@ -1204,13 +1365,13 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 </body>
 </html>`,
 		budgetName, budgetName, role, aomHeadline, csrfToken,
-		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
+		RenderSidebarNavigation(budgetID, "budget"),
 		accountSummaryRows.String(),
 		float64(defaultRTA)/100.0, defaultCurr, rtaOtherBadges.String(),
 		budgetID, monthlyActive, budgetID, d30Active, budgetID, d90Active,
 		budgetID, csrfToken, defaultCurr, horizonParam,
 		bucketRows.String(),
-		budgetID, budgetID, budgetID, budgetID, budgetID, budgetID,
+		RenderBottomDock(budgetID, "budget"),
 		budgetID, csrfToken,
 		csrfToken,
 		csrfToken, defaultCurr, defaultCurr,

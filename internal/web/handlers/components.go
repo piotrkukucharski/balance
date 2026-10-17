@@ -63,3 +63,95 @@ func RenderPopoverActionMenu(prefix, id string, items []TableActionItem) string 
 		targetID, anchorName, targetID, anchorName, itemsHTML.String(),
 	)
 }
+
+// RenderSidebarNavigation renders the standard left sidebar menu with subelements.
+func RenderSidebarNavigation(budgetID string, activeItem string) string {
+	itemClass := func(item string) string {
+		if item == activeItem {
+			return ` class="active font-bold"`
+		}
+		return ""
+	}
+
+	settingsOpen := " open"
+	settingsSummaryClass := ""
+	if activeItem == "settings" || activeItem == "members" {
+		settingsSummaryClass = ` class="font-bold text-primary"`
+	}
+
+	return fmt.Sprintf(`
+            <ul class="menu menu-md w-full p-0 gap-1">
+                <li><a href="/budgets/%s/budget"%s>📂 1. Budget (Buckets)</a></li>
+                <li><a href="/budgets/%s/accounts"%s>💳 2. Accounts</a></li>
+                <li><a href="/budgets/%s/transactions"%s>💸 3. Transactions</a></li>
+                <li><a href="/budgets/%s/reports"%s>📊 4. Reports</a></li>
+                <li><a href="/budgets/%s/parties"%s>🏢 5. External Parties</a></li>
+                <li>
+                    <details%s>
+                        <summary%s>
+                            <a href="/budgets/%s/settings" class="grow">⚙️ 6. Settings</a>
+                        </summary>
+                        <ul class="before:hidden">
+                            <li><a href="/budgets/%s/settings"%s>General</a></li>
+                            <li><a href="/budgets/%s/settings/members"%s>👥 Members</a></li>
+                        </ul>
+                    </details>
+                </li>
+            </ul>`,
+		budgetID, itemClass("budget"),
+		budgetID, itemClass("accounts"),
+		budgetID, itemClass("transactions"),
+		budgetID, itemClass("reports"),
+		budgetID, itemClass("parties"),
+		settingsOpen, settingsSummaryClass,
+		budgetID,
+		budgetID, itemClass("settings"),
+		budgetID, itemClass("members"),
+	)
+}
+
+// RenderBottomDock renders the mobile responsive bottom navigation bar.
+func RenderBottomDock(budgetID string, activeItem string) string {
+	dockClass := func(item string) string {
+		if item == activeItem {
+			return ` class="dock-active"`
+		}
+		return ""
+	}
+
+	return fmt.Sprintf(`
+    <div class="dock md:hidden bg-base-100 border-t border-base-300">
+        <a href="/budgets/%s/budget"%s>
+            <span class="text-xl">📂</span>
+            <span class="dock-label">Budget</span>
+        </a>
+        <a href="/budgets/%s/accounts"%s>
+            <span class="text-xl">💳</span>
+            <span class="dock-label">Accounts</span>
+        </a>
+        <a href="/budgets/%s/transactions"%s>
+            <span class="text-xl">💸</span>
+            <span class="dock-label">Txns</span>
+        </a>
+        <a href="/budgets/%s/reports"%s>
+            <span class="text-xl">📊</span>
+            <span class="dock-label">Reports</span>
+        </a>
+        <a href="/budgets/%s/parties"%s>
+            <span class="text-xl">🏢</span>
+            <span class="dock-label">Parties</span>
+        </a>
+        <a href="/budgets/%s/settings"%s>
+            <span class="text-xl">⚙️</span>
+            <span class="dock-label">Settings</span>
+        </a>
+    </div>`,
+		budgetID, dockClass("budget"),
+		budgetID, dockClass("accounts"),
+		budgetID, dockClass("transactions"),
+		budgetID, dockClass("reports"),
+		budgetID, dockClass("parties"),
+		budgetID, dockClass("settings"),
+	)
+}
+

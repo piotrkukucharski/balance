@@ -175,7 +175,7 @@ func TestAuthAndWorkspaceFlow(t *testing.T) {
 		t.Fatalf("expected imported raw transactions from mock sync, got 0")
 	}
 
-	// 6. Test that all budget views render "💳 2. Accounts" in navigation menu
+	// 6. Test that all budget views render "💳 2. Accounts" and "⚙️ 6. Settings" in navigation menu
 	viewsToTest := []struct {
 		name    string
 		handler func(echo.Context) error
@@ -184,7 +184,8 @@ func TestAuthAndWorkspaceFlow(t *testing.T) {
 		{"Transactions", txHandler.TransactionsView, "/budgets/" + budgetID + "/transactions"},
 		{"Reports", reportsHandler.ReportsView, "/budgets/" + budgetID + "/reports"},
 		{"Parties", partiesHandler.PartiesView, "/budgets/" + budgetID + "/parties"},
-		{"Members", membersHandler.MembersView, "/budgets/" + budgetID + "/members"},
+		{"Settings", workspaceHandler.SettingsView, "/budgets/" + budgetID + "/settings"},
+		{"Members", membersHandler.MembersView, "/budgets/" + budgetID + "/settings/members"},
 		{"Accounts", accountsHandler.AccountsView, "/budgets/" + budgetID + "/accounts"},
 		{"Budget", workspaceHandler.BudgetView, "/budgets/" + budgetID + "/budget"},
 	}
@@ -214,6 +215,14 @@ func TestAuthAndWorkspaceFlow(t *testing.T) {
 			}
 			if !strings.Contains(body, "💳 2. Accounts") {
 				t.Fatalf("expected %s view to display '💳 2. Accounts'", vt.name)
+			}
+			expectedSettingsLink := fmt.Sprintf(`/budgets/%s/settings`, budgetID)
+			if !strings.Contains(body, expectedSettingsLink) {
+				t.Fatalf("expected %s view to contain Settings link %s", vt.name, expectedSettingsLink)
+			}
+			expectedMembersLink := fmt.Sprintf(`/budgets/%s/settings/members`, budgetID)
+			if !strings.Contains(body, expectedMembersLink) {
+				t.Fatalf("expected %s view to contain Members sublink %s", vt.name, expectedMembersLink)
 			}
 		})
 	}
@@ -508,6 +517,66 @@ func TestBudgetRenameAndDeleteFlow(t *testing.T) {
 		_ = mainDB.QueryRow("SELECT name FROM budgets WHERE id = ?", budgetID).Scan(&updatedName)
 		if updatedName != "Renamed Budget" {
 			t.Fatalf("expected Renamed Budget, got %s", updatedName)
+		}
+	})
+
+	// Test Budget Settings View and Update via /budgets/:id/settings
+	t.Run("Budget settings view and update", func(t *testing.T) {
+		tenantDB, err := tenantMgr.GetTenantDB(budgetID, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// View Settings
+		sReq := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/settings", nil)
+		sRec := httptest.NewRecorder()
+		sCtx := e.NewContext(sReq, sRec)
+		sCtx.SetParamNames("budgetId")
+		sCtx.SetParamValues(budgetID)
+		sCtx.Set(ContextUserIDKey, ownerID)
+		sCtx.Set(ContextRoleKey, "OWNER")
+		sCtx.Set(ContextBudgetDBKey, tenantDB)
+		sCtx.Set("csrfToken", "dummy_csrf")
+
+		if err := workspaceHandler.SettingsView(sCtx); err != nil {
+			t.Fatalf("SettingsView failed: %v", err)
+		}
+		if sRec.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d", sRec.Code)
+		}
+		body := sRec.Body.String()
+		if !strings.Contains(body, "Renamed Budget") {
+			t.Fatalf("expected budget name in settings view")
+		}
+		if !strings.Contains(body, "Danger Zone") {
+			t.Fatalf("expected Danger Zone in settings view for OWNER")
+		}
+
+		// Update Settings via /budgets/:id/settings
+		uForm := url.Values{}
+		uForm.Set("name", "Settings Renamed Budget")
+		uForm.Set("timezone", "UTC")
+		uReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/settings", strings.NewReader(uForm.Encode()))
+		uReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		uRec := httptest.NewRecorder()
+		uCtx := e.NewContext(uReq, uRec)
+		uCtx.SetParamNames("budgetId")
+		uCtx.SetParamValues(budgetID)
+
+		if err := workspaceHandler.UpdateBudget(uCtx); err != nil {
+			t.Fatalf("UpdateBudget failed: %v", err)
+		}
+		if uRec.Code != http.StatusSeeOther {
+			t.Fatalf("expected 303 redirect, got %d", uRec.Code)
+		}
+		if uRec.Header().Get("Location") != "/budgets/"+budgetID+"/settings" {
+			t.Fatalf("expected redirect to /budgets/%s/settings, got %s", budgetID, uRec.Header().Get("Location"))
+		}
+
+		var checkName string
+		_ = mainDB.QueryRow("SELECT name FROM budgets WHERE id = ?", budgetID).Scan(&checkName)
+		if checkName != "Settings Renamed Budget" {
+			t.Fatalf("expected Settings Renamed Budget, got %s", checkName)
 		}
 	})
 

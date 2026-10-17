@@ -16,8 +16,22 @@ Feature: Multi-Tenant Budget Provisioning and Workspace Navigation
     When I request the budget view "/budgets/:budgetId/budget"
     Then the response status should be 200 OK
     And the view should display the Top Horizon and Ready to Assign pool banner
-    And the navigation should contain "Budget", "Accounts", "Transactions", "Reports", "Parties", and "Members"
+    And the navigation should contain "Budget", "Accounts", "Transactions", "Reports", "Parties", and "Settings"
     And the mobile bottom dock should be rendered for responsive viewports
+
+  Scenario: Navigating and updating budget settings and members subview
+    Given an authenticated user "jan@example.com" who owns the budget "Family Home"
+    When I request the budget settings view "/budgets/:budgetId/settings"
+    Then the response status should be 200 OK
+    And the view should display the budget settings form with current name "Family Home"
+    And the navigation should contain "Settings" with subelement "Members" linking to "/budgets/:budgetId/settings/members"
+    When I submit a request to update the budget name to "Family Home Updated" via "/budgets/:budgetId/settings"
+    Then the budget name in "main.db" should be updated to "Family Home Updated"
+    And the response should redirect to "/budgets/:budgetId/settings"
+    When I request the budget members view "/budgets/:budgetId/settings/members"
+    Then the response status should be 200 OK
+    And the view should display the members and access control table
+
 
   Scenario: Viewing Accounts Summary in budget sidebar for empty budget
     Given an authenticated user "jan@example.com" who owns the budget "Family Home"
