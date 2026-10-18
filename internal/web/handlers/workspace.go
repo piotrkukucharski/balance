@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/logger"
+	"github.com/balance/balance/internal/service"
 	"github.com/labstack/echo/v4"
 )
 
@@ -21,6 +23,7 @@ type WorkspaceHandler struct {
 	mainDB         *sql.DB
 	tenantMgr      *db.TenantDBManager
 	reportsHandler *ReportsHandler
+	appService     *service.AppService
 }
 
 func NewWorkspaceHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager, reportsHandler *ReportsHandler) *WorkspaceHandler {
@@ -29,6 +32,10 @@ func NewWorkspaceHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager, reportsH
 		tenantMgr:      tenantMgr,
 		reportsHandler: reportsHandler,
 	}
+}
+
+func (h *WorkspaceHandler) SetService(svc *service.AppService) {
+	h.appService = svc
 }
 
 // BudgetsList renders the post-login budget selection dashboard with DaisyUI 5.
@@ -489,6 +496,18 @@ func (h *WorkspaceHandler) DeleteBudget(c echo.Context) error {
 	ctx := logger.WithComponent(c.Request().Context(), "biz:budget")
 	budgetID := c.Param("budgetId")
 
+	if h.appService != nil {
+		if err := h.appService.RemoveBudget(c.Request().Context(), budgetID); err != nil {
+			if errors.Is(err, service.ErrBudgetNotFound) {
+				return echo.NewHTTPError(http.StatusNotFound, "Budget not found")
+			}
+			logger.Error(ctx, "Failed deleting budget via service", "budget_id", budgetID, "error", err.Error())
+			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to delete budget")
+		}
+		logger.Info(ctx, "Budget deleted successfully", "budget_id", budgetID)
+		return c.Redirect(http.StatusSeeOther, "/budgets")
+	}
+
 	tx, err := h.mainDB.BeginTx(c.Request().Context(), nil)
 	if err != nil {
 		logger.Error(ctx, "Failed to begin transaction for budget deletion", "budget_id", budgetID, "error", err.Error())
@@ -543,6 +562,23 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 	}
 
 	budgetID := domain.NewUUIDv7()
+
+	if h.appService != nil {
+		id, err := h.appService.CreateBudget(c.Request().Context(), service.CreateBudgetInput{
+			ID:              budgetID,
+			Name:            name,
+			OwnerUserID:     userID,
+			DefaultCurrency: curr,
+			Timezone:        tz,
+		})
+		if err != nil {
+			logger.Error(ctx, "Failed creating budget via service", "error", err.Error())
+			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create budget")
+		}
+		logger.Info(ctx, "New budget provisioned successfully", "budget_id", id, "name", name, "currency", curr, "timezone", tz, "owner_id", userID)
+		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", id))
+	}
+
 	now := time.Now().UTC().UnixMicro()
 
 	tx, err := h.mainDB.BeginTx(c.Request().Context(), nil)
@@ -789,15 +825,19 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 				} else if t.Priority == 2 {
 					priorityLabel = "Recommended"
 				}
+				goalText := ""
+				if t.CeilingAmountMinor != nil {
+					goalText = fmt.Sprintf(` <span class="text-primary font-semibold">(Goal: %.2f %s)</span>`, float64(*t.CeilingAmountMinor)/100.0, t.Currency)
+				}
 				targetsSublist.WriteString(fmt.Sprintf(`
 					<div class="flex items-center justify-between text-base-content/70 py-0.5">
-						<span class="font-medium">• %s <span class="opacity-50 text-[10px]">(%s, %s)</span></span>
+						<span class="font-medium">• %s <span class="opacity-50 text-[10px]">(%s, %s)%s</span></span>
 						<div class="flex items-center gap-2">
 							<span class="badge %s badge-xs">%s</span>
 							<span class="font-mono">%.2f / %.2f %s</span>
 						</div>
 					</div>`,
-					html.EscapeString(t.Name), priorityLabel, t.RecurrenceCadence,
+					html.EscapeString(t.Name), priorityLabel, t.RecurrenceCadence, goalText,
 					t.HealthBadgeClass, t.HealthBadge,
 					float64(t.CurrentFundedMinor)/100.0, float64(t.RequiredMinor)/100.0, t.Currency))
 			}
@@ -1240,6 +1280,14 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
                 <div class="grid grid-cols-2 gap-4">
                     <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Target Type</span></label>
+                        <select id="target_type" name="target_type" class="select select-bordered w-full select-md focus:select-primary">
+                            <option value="EXPENSE" selected>Expense</option>
+                            <option value="SAVINGS">Savings</option>
+                            <option value="DEBT_PAYMENT">Debt Payment</option>
+                        </select>
+                    </div>
+                    <div class="form-control">
                         <label class="label pb-1"><span class="label-text font-medium text-xs">Priority</span></label>
                         <select id="target_priority" name="priority" class="select select-bordered w-full select-md focus:select-primary">
                             <option value="3" selected>Mandatory (3)</option>
@@ -1247,6 +1295,9 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                             <option value="1">Optional (1)</option>
                         </select>
                     </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
                     <div class="form-control">
                         <label class="label pb-1"><span class="label-text font-medium text-xs">Cadence</span></label>
                         <select id="target_cadence" name="recurrence_cadence" class="select select-bordered w-full select-md focus:select-primary">
@@ -1257,13 +1308,6 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                             <option value="CUSTOM_DAYS">Custom Days</option>
                         </select>
                     </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Required Amount</span></label>
-                        <input type="number" step="0.01" min="0" id="target_amount" name="amount" required placeholder="2000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
-                    </div>
                     <div class="form-control">
                         <label class="label pb-1"><span class="label-text font-medium text-xs">Non-Spending Strategy</span></label>
                         <select id="target_strategy" name="non_spending_strategy" class="select select-bordered w-full select-md focus:select-primary">
@@ -1273,6 +1317,17 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                             <option value="CAP_AND_HOLD">Cap and Hold</option>
                             <option value="PRORATE_FUTURE">Prorate Future</option>
                         </select>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Monthly / Period Amount</span></label>
+                        <input type="number" step="0.01" min="0" id="target_amount" name="amount" required placeholder="1000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
+                    </div>
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Target Ceiling / Goal (Optional)</span></label>
+                        <input type="number" step="0.01" min="0" id="target_ceiling" name="ceiling_amount" placeholder="20000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
                     </div>
                 </div>
 
@@ -1330,11 +1385,12 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                     const card = document.createElement('div');
                     card.className = 'card card-border bg-base-100 border-base-300 shadow-xs p-4 flex flex-col gap-2';
                     const priorityText = t.Priority === 3 ? 'Mandatory' : (t.Priority === 2 ? 'Recommended' : 'Optional');
+                    const ceilingHtml = t.CeilingAmountMinor ? ' • <span class="font-semibold text-primary">Goal: ' + (t.CeilingAmountMinor/100).toFixed(2) + ' ' + t.Currency + '</span>' : '';
                     card.innerHTML = 
                         '<div class="flex justify-between items-start">' +
                             '<div>' +
                                 '<div class="font-bold text-sm tracking-tight">' + t.Name + '</div>' +
-                                '<div class="text-[11px] text-base-content/60">Priority: ' + priorityText + ' • Cadence: ' + t.RecurrenceCadence + ' • Strategy: ' + t.NonSpendingStrategy + '</div>' +
+                                '<div class="text-[11px] text-base-content/60">Priority: ' + priorityText + ' • Cadence: ' + t.RecurrenceCadence + ' • Strategy: ' + t.NonSpendingStrategy + ceilingHtml + '</div>' +
                             '</div>' +
                             '<span class="badge ' + t.HealthBadgeClass + ' badge-sm font-semibold">' + t.HealthBadge + '</span>' +
                         '</div>' +
@@ -1359,6 +1415,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             document.getElementById('target_bucket_id').value = activeDrawerBucketID;
             document.getElementById('target_name').value = '';
             document.getElementById('target_amount').value = '';
+            document.getElementById('target_ceiling').value = '';
             target_modal.showModal();
         }
     </script>
@@ -1645,6 +1702,15 @@ func (h *WorkspaceHandler) CreateTarget(c echo.Context) error {
 	fmt.Sscanf(amtStr, "%f", &amtFloat)
 	amtMinor := int64(amtFloat * 100)
 
+	var ceilingMinor *int64
+	if ceilingStr := strings.TrimSpace(c.FormValue("ceiling_amount")); ceilingStr != "" {
+		var ceilFloat float64
+		if _, err := fmt.Sscanf(ceilingStr, "%f", &ceilFloat); err == nil && ceilFloat > 0 {
+			cMinor := int64(ceilFloat * 100)
+			ceilingMinor = &cMinor
+		}
+	}
+
 	_, err := budget.CreateTarget(c.Request().Context(), tenantDB, budget.CreateTargetInput{
 		BucketID:            bucketID,
 		Name:                name,
@@ -1654,6 +1720,7 @@ func (h *WorkspaceHandler) CreateTarget(c echo.Context) error {
 		Currency:            currency,
 		RecurrenceCadence:   cadence,
 		NonSpendingStrategy: strategy,
+		CeilingAmountMinor:  ceilingMinor,
 		AgentID:             userID,
 		CorrelationID:       corrID,
 	})

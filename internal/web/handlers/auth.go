@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -11,12 +12,14 @@ import (
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/logger"
+	"github.com/balance/balance/internal/service"
 	"github.com/labstack/echo/v4"
 )
 
 type AuthHandler struct {
-	mainDB    *sql.DB
-	tenantMgr *db.TenantDBManager
+	mainDB     *sql.DB
+	tenantMgr  *db.TenantDBManager
+	appService *service.AppService
 }
 
 func NewAuthHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *AuthHandler {
@@ -24,6 +27,10 @@ func NewAuthHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *AuthHandler 
 		mainDB:    mainDB,
 		tenantMgr: tenantMgr,
 	}
+}
+
+func (h *AuthHandler) SetService(svc *service.AppService) {
+	h.appService = svc
 }
 
 // RegisterPage renders the registration HTML page with DaisyUI 5 styling.
@@ -100,23 +107,41 @@ func (h *AuthHandler) HandleRegister(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "Invalid registration input (password min 8 characters)")
 	}
 
-	hash, err := auth.HashPassword(password)
-	if err != nil {
-		logger.Error(ctx, "Registration failed: password hashing error", "email", email, "error", err.Error())
-		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to hash password")
-	}
+	var userID string
+	if h.appService != nil {
+		id, err := h.appService.CreateUser(c.Request().Context(), service.CreateUserInput{
+			Email:       email,
+			Password:    password,
+			DisplayName: displayName,
+		})
+		if err != nil {
+			if errors.Is(err, service.ErrUserAlreadyExists) {
+				logger.Warn(ctx, "Registration conflict: email already registered", "email", email)
+				return echo.NewHTTPError(http.StatusConflict, "Email already in use")
+			}
+			logger.Warn(ctx, "Registration failed: "+err.Error(), "email", email)
+			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		}
+		userID = id
+	} else {
+		hash, err := auth.HashPassword(password)
+		if err != nil {
+			logger.Error(ctx, "Registration failed: password hashing error", "email", email, "error", err.Error())
+			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to hash password")
+		}
 
-	now := time.Now().UTC().UnixMicro()
-	userID := domain.NewUUIDv7()
+		now := time.Now().UTC().UnixMicro()
+		userID = domain.NewUUIDv7()
 
-	_, err = h.mainDB.ExecContext(c.Request().Context(), `
-		INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		userID, email, hash, displayName, now, now,
-	)
-	if err != nil {
-		logger.Warn(ctx, "Registration conflict: email already registered", "email", email)
-		return echo.NewHTTPError(http.StatusConflict, "Email already in use")
+		_, err = h.mainDB.ExecContext(c.Request().Context(), `
+			INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			userID, email, hash, displayName, now, now,
+		)
+		if err != nil {
+			logger.Warn(ctx, "Registration conflict: email already registered", "email", email)
+			return echo.NewHTTPError(http.StatusConflict, "Email already in use")
+		}
 	}
 
 	logger.Info(ctx, "User account registered successfully", "user_id", userID, "email", email, "display_name", displayName)

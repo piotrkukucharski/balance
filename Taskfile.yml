@@ -124,3 +124,52 @@ tasks:
     desc: "agy"
     cmds:
       - agy --dangerously-skip-permissions
+
+  # Fixtures management tasks
+  fixtures:create-user:
+    desc: "Create a user account (e.g. task fixtures:create-user -- --login=... --password=... --user-id=... --first-action-at=...)"
+    cmds:
+      - DATA_DIR={{.DATA_DIR}} go run ./cmd/fixtures create-user {{.CLI_ARGS}}
+
+  fixtures:create-bucket:
+    desc: "Create a budget bucket tenant (e.g. task fixtures:create-bucket -- --bucket-id=... --name=... --owner-user-id=... --timezone=... --first-action-at=...)"
+    cmds:
+      - DATA_DIR={{.DATA_DIR}} go run ./cmd/fixtures create-bucket {{.CLI_ARGS}}
+
+  fixtures:load:
+    desc: "Load rich multi-currency fixtures into budget (e.g. task fixtures:load -- --bucket-id=... --user-id=... --first-action-at=... --last-transaction=...)"
+    cmds:
+      - DATA_DIR={{.DATA_DIR}} go run ./cmd/fixtures load {{.CLI_ARGS}}
+
+  fixtures:remove-bucket:
+    desc: "Remove a budget bucket and its tenant SQLite database (e.g. task fixtures:remove-bucket -- --bucket-id=...)"
+    cmds:
+      - DATA_DIR={{.DATA_DIR}} go run ./cmd/fixtures remove-bucket {{.CLI_ARGS}}
+
+  fixtures:remove-user:
+    desc: "Remove a user account (e.g. task fixtures:remove-user -- --user-id=...)"
+    cmds:
+      - DATA_DIR={{.DATA_DIR}} go run ./cmd/fixtures remove-user {{.CLI_ARGS}}
+
+  fixtures:all:
+    desc: "Run entire fixtures pipeline with unified correlationId and progress bars (e.g. task fixtures:all -- --login=... --password=... --user-id=... --name=... --bucket-id=... --timezone=... --first-action-at=... --last-transaction=... [--clean])"
+    cmds:
+      - DATA_DIR={{.DATA_DIR}} go run ./cmd/fixtures all {{.CLI_ARGS}}
+
+  fixtures:demo:
+    desc: "Provision ready-to-use demo fixtures environment with credentials from .env (FIXTURES_DEMO_LOGIN, FIXTURES_DEMO_PASSWORD)"
+    cmds:
+      - >-
+        DATA_DIR={{.DATA_DIR}} go run ./cmd/fixtures all
+        --login="{{.FIXTURES_DEMO_LOGIN}}"
+        --password="{{.FIXTURES_DEMO_PASSWORD}}"
+        --user-id="01a14f48-0f1c-778d-9768-d9fb92f6675c"
+        --name="Home Budget"
+        --bucket-id="01a14f5b-8b70-702c-b4da-3b10e2bd6b1b"
+        --timezone="Europe/Warsaw"
+        --first-action-at="2026-01-01"
+        --last-transaction="2026-05-01"
+        --clean
+        {{.CLI_ARGS}}
+
+

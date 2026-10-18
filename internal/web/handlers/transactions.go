@@ -16,6 +16,7 @@ import (
 	"github.com/balance/balance/internal/integration/mock"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/rule"
+	"github.com/balance/balance/internal/service"
 	"github.com/balance/balance/internal/transaction"
 	"github.com/labstack/echo/v4"
 )
@@ -27,6 +28,7 @@ type TransactionsHandler struct {
 	syncMu        sync.Mutex
 	activeSyncs   map[string]bool
 	syncListeners map[string][]chan string
+	appService    *service.AppService
 }
 
 func NewTransactionsHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *TransactionsHandler {
@@ -37,6 +39,10 @@ func NewTransactionsHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *Tran
 		activeSyncs:   make(map[string]bool),
 		syncListeners: make(map[string][]chan string),
 	}
+}
+
+func (h *TransactionsHandler) SetService(svc *service.AppService) {
+	h.appService = svc
 }
 
 // TransactionsView renders the unified transactions ledger, triage workbench, and rapid entry toolbar.
@@ -1829,6 +1835,49 @@ func (h *TransactionsHandler) AddManualTransaction(c echo.Context) error {
 	txType := strings.ToUpper(strings.TrimSpace(c.FormValue("tx_type")))
 	if txType == "" {
 		txType = "EXPENSE"
+	}
+
+	if h.appService != nil {
+		tType := service.TxExpense
+		switch txType {
+		case "INCOME":
+			tType = service.TxIncome
+		case "TRANSFER":
+			tType = service.TxTransfer
+		}
+
+		var bIDPtr *string
+		bVal := c.FormValue("bucket_id")
+		if bVal != "" {
+			bIDPtr = &bVal
+		}
+
+		var dMinor int64
+		if dAmt := c.FormValue("dest_amount"); dAmt != "" {
+			if parsedDAmt, err := parseFlexibleAmount(dAmt); err == nil && parsedDAmt > 0 {
+				dMinor = parsedDAmt
+			}
+		}
+
+		opID, err := h.appService.AddTransaction(c.Request().Context(), service.AddTransactionInput{
+			BudgetID:          budgetID,
+			UserID:            userID,
+			CorrelationID:     corrID,
+			TxType:            tType,
+			SourceAccountID:   c.FormValue("account_id"),
+			DestinationAcctID: c.FormValue("dest_account_id"),
+			AmountMinor:       amountMinor,
+			DestAmountMinor:   dMinor,
+			BucketID:          bIDPtr,
+			Notes:             strings.TrimSpace(c.FormValue("notes")),
+			TransactionDate:   time.UnixMicro(txDate),
+		})
+		if err != nil {
+			logger.Error(ctx, "Failed adding transaction via service", "error", err.Error())
+			return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+		}
+		logger.Info(ctx, "Manual transaction recorded successfully", "budget_id", budgetID, "operation_id", opID)
+		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
 	}
 
 	userAcctID := c.FormValue("account_id")

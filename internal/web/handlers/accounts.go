@@ -15,6 +15,7 @@ import (
 	"github.com/balance/balance/internal/integration/gocardless"
 	"github.com/balance/balance/internal/integration/mock"
 	"github.com/balance/balance/internal/logger"
+	"github.com/balance/balance/internal/service"
 	"github.com/labstack/echo/v4"
 )
 
@@ -23,6 +24,7 @@ type AccountsHandler struct {
 	tenantMgr        *db.TenantDBManager
 	mockAdapter      *mock.MockAdapter
 	gocardlessClient *gocardless.Client
+	appService       *service.AppService
 }
 
 func NewAccountsHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *AccountsHandler {
@@ -40,6 +42,10 @@ func NewAccountsHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *Accounts
 		mockAdapter:      mock.NewMockAdapter(),
 		gocardlessClient: gcClient,
 	}
+}
+
+func (h *AccountsHandler) SetService(svc *service.AppService) {
+	h.appService = svc
 }
 
 // isDevMode checks whether the application is running in development mode.
@@ -1106,6 +1112,40 @@ func (h *AccountsHandler) CreateAccount(c echo.Context) error {
 			"currency", curr,
 		)
 		return echo.NewHTTPError(http.StatusBadRequest, "Name, type, and currency are required")
+	}
+
+	if h.appService != nil {
+		var initMinor int64
+		if initBalStr != "" {
+			var initFloat float64
+			fmt.Sscanf(initBalStr, "%f", &initFloat)
+			initMinor = int64(initFloat * 100)
+		}
+		acctID, err := h.appService.CreateFinancialAccount(c.Request().Context(), service.CreateAccountInput{
+			BudgetID:            budgetID,
+			UserID:              userID,
+			CorrelationID:       corrID,
+			Name:                name,
+			AccountType:         aType,
+			PrimaryCurrency:     curr,
+			IBAN:                iban,
+			FaviconType:         favType,
+			FaviconValue:        favVal,
+			InitialBalanceMinor: initMinor,
+		})
+		if err != nil {
+			logger.Error(ctx, "Failed creating account via service", "error", err.Error())
+			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create account")
+		}
+		logger.Info(ctx, "Manual financial account created successfully",
+			"budget_id", budgetID,
+			"account_id", acctID,
+			"name", name,
+			"account_type", aType,
+			"currency", curr,
+			"initial_balance_minor", initMinor,
+		)
+		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/accounts", budgetID))
 	}
 
 	now := time.Now().UTC().UnixMicro()

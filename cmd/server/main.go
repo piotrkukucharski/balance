@@ -6,9 +6,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/balance/balance/internal/clock"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/logger"
+	"github.com/balance/balance/internal/service"
 	webassets "github.com/balance/balance/internal/web/assets"
 	"github.com/balance/balance/internal/web/handlers"
 	"github.com/labstack/echo/v4"
@@ -55,13 +58,24 @@ func main() {
 	e.Use(handlers.CorrelationIDMiddleware())
 	e.Use(handlers.StructuredRequestLoggerMiddleware())
 
+	systemClock := clock.NewSystemClock(time.UTC)
+	appService := service.NewAppService(mainDB, tenantMgr, systemClock)
+
 	authHandler := handlers.NewAuthHandler(mainDB, tenantMgr)
+	authHandler.SetService(appService)
+
 	reportsHandler := handlers.NewReportsHandler(mainDB, tenantMgr)
 	workspaceHandler := handlers.NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+	workspaceHandler.SetService(appService)
+
 	txHandler := handlers.NewTransactionsHandler(mainDB, tenantMgr)
+	txHandler.SetService(appService)
+
 	partiesHandler := handlers.NewPartiesHandler(mainDB, tenantMgr)
 	membersHandler := handlers.NewMembersHandler(mainDB, tenantMgr)
 	accountsHandler := handlers.NewAccountsHandler(mainDB, tenantMgr)
+	accountsHandler.SetService(appService)
+
 	pwaHandler := handlers.NewPWAHandler()
 
 	// PWA routes
