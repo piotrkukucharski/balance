@@ -812,6 +812,22 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
                     </select>
                     <p class="text-xs text-base-content/60 mt-1">For first-time syncs, transactions are fetched back to this date and starting balance is aligned automatically.</p>
                 </fieldset>
+                <div class="divider my-1 text-xs text-base-content/50">OR</div>
+
+                <div class="bg-base-200/50 p-3 rounded-lg border border-base-300 flex items-center justify-between gap-3">
+                    <div class="flex items-center gap-2">
+                        <span class="text-xl">📄</span>
+                        <div>
+                            <div class="font-bold text-xs">Import from CSV File</div>
+                            <div class="text-xs text-base-content/60">Upload historical bank statement exports</div>
+                        </div>
+                    </div>
+                    <a href="/budgets/%s/transactions/import-csv" class="btn btn-outline btn-xs gap-1 font-semibold">
+                        <span>Upload CSV</span>
+                        <span>→</span>
+                    </a>
+                </div>
+
                 <div class="modal-action mt-6 gap-2">
                     <button type="button" class="btn btn-ghost" onclick="bank_sync_modal.close()">Cancel</button>
                     <button type="submit" class="btn btn-primary font-semibold shadow-md gap-1.5">
@@ -1289,7 +1305,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		RenderBottomDock(budgetID, "transactions"),
 		budgetID, csrfToken, acctOptions.String(), bucketOptions.String(),
 		budgetID, csrfToken,
-		budgetID, budgetID, csrfToken, acctCheckboxes.String(),
+		budgetID, budgetID, csrfToken, acctCheckboxes.String(), budgetID,
 		csrfToken, editAcctOptions.String(), editBucketOptions.String(),
 		csrfToken, bucketOptions.String(),
 		bucketOptions.String(), budgetID)

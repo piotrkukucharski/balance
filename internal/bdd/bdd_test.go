@@ -1,9 +1,13 @@
 package bdd
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -2489,6 +2493,319 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 			if _, ok := swagger.Paths.Map()[p]; !ok {
 				return fmt.Errorf("missing path %s in OpenAPI contract", p)
 			}
+		}
+		return nil
+	})
+
+	// 11_bank_csv_import.feature Step Definitions
+	var parsedCsvPreview map[string]any
+
+	ctx.Step(`^a budget named "([^"]*)" exists$`, func(budgetName string) error {
+		now := time.Now().UTC().UnixMicro()
+		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+		tc.activeUserID = "user_1"
+
+		_, err := tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, created_at, updated_at)
+			VALUES (?, ?, 'PLN', ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name`, tc.activeBudgetID, budgetName, now, now)
+		if err != nil {
+			return err
+		}
+
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+
+		// Ensure default user party exists
+		pID := domain.NewUUIDv7()
+		_, err = bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, ?, ?)
+			ON CONFLICT(id) DO NOTHING`, pID, tc.activeUserID, now)
+		return err
+	})
+
+	ctx.Step(`^an active checking account "([^"]*)" in budget "([^"]*)"$`, func(acctName, budgetName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		var pID string
+		err = bDB.QueryRow(`SELECT id FROM parties_current WHERE is_user_owned = 1 LIMIT 1`).Scan(&pID)
+		if err != nil {
+			pID = domain.NewUUIDv7()
+			bDB.Exec(`
+				INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+				VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, ?, ?)`, pID, tc.activeUserID, now)
+		}
+
+		userAcctID := domain.NewUUIDv7()
+		_, err = bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, ?, ?)`, userAcctID, pID, acctName, tc.activeUserID, now)
+		return err
+	})
+
+	ctx.Step(`^I request the bank statement CSV import page for budget "([^"]*)"$`, func(budgetName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/budgets/%s/transactions/import-csv", tc.activeBudgetID), nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextRoleKey, "OWNER")
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+		c.Set("csrf_token", "test_csrf_token_12345678901234567890")
+
+		err = tc.txHandler.CSVImportPage(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the page should contain "([^"]*)"$`, func(expectedText string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, expectedText) {
+			return fmt.Errorf("expected page body to contain %q, got body length %d", expectedText, len(body))
+		}
+		return nil
+	})
+
+	ctx.Step(`^the page should list account "([^"]*)"$`, func(acctName string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, acctName) {
+			return fmt.Errorf("expected page body to list account %q", acctName)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I submit a CSV preview request for account "([^"]*)" with bank profile "([^"]*)" and file content:$`, func(acctName, profile string, csvDoc *godog.DocString) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+
+		var acctID string
+		err = bDB.QueryRow(`SELECT id FROM accounts_current WHERE name = ?`, acctName).Scan(&acctID)
+		if err != nil {
+			return fmt.Errorf("account not found: %s", acctName)
+		}
+
+		bodyBuf := &bytes.Buffer{}
+		writer := multipart.NewWriter(bodyBuf)
+		writer.WriteField("account_id", acctID)
+		writer.WriteField("bank_profile", profile)
+		part, err := writer.CreateFormFile("csv_file", "statement.csv")
+		if err != nil {
+			return err
+		}
+		part.Write([]byte(csvDoc.Content))
+		writer.Close()
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/transactions/preview-csv", tc.activeBudgetID), bodyBuf)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		req.Header.Set("Accept", "application/json")
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.PreviewCSV(c)
+		tc.lastResponse = rec
+		if err != nil {
+			return err
+		}
+
+		parsedCsvPreview = make(map[string]any)
+		return json.Unmarshal(rec.Body.Bytes(), &parsedCsvPreview)
+	})
+
+	ctx.Step(`^the CSV preview response should contain (\d+) rows$`, func(expectedRows int) error {
+		if parsedCsvPreview == nil {
+			return errors.New("no preview response recorded")
+		}
+		txs, ok := parsedCsvPreview["transactions"].([]any)
+		if !ok || len(txs) != expectedRows {
+			return fmt.Errorf("expected %d rows in preview, got %v", expectedRows, parsedCsvPreview["rows_count"])
+		}
+		return nil
+	})
+
+	ctx.Step(`^row (\d+) should have date "([^"]*)", amount "([^"]*)", and payee "([^"]*)"$`, func(rowIdx int, expectedDate, expectedAmt, expectedPayee string) error {
+		txs, ok := parsedCsvPreview["transactions"].([]any)
+		if !ok || len(txs) < rowIdx {
+			return fmt.Errorf("row %d out of bounds", rowIdx)
+		}
+		rowMap, ok := txs[rowIdx-1].(map[string]any)
+		if !ok {
+			return fmt.Errorf("invalid row %d format", rowIdx)
+		}
+		if rowMap["date"] != expectedDate {
+			return fmt.Errorf("expected date %s, got %v", expectedDate, rowMap["date"])
+		}
+		if rowMap["amount_str"] != expectedAmt {
+			return fmt.Errorf("expected amount %s, got %v", expectedAmt, rowMap["amount_str"])
+		}
+		if rowMap["payee"] != expectedPayee {
+			return fmt.Errorf("expected payee %s, got %v", expectedPayee, rowMap["payee"])
+		}
+		return nil
+	})
+
+	ctx.Step(`^an active merchant counterparty "([^"]*)" with an auto-matching rule for "([^"]*)" to bucket "([^"]*)"$`, func(merchantName, pattern, bucketName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+
+		// 1. Create merchant counterparty
+		partyID := domain.NewUUIDv7()
+		_, err = bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, ?, 'MERCHANT', 0, ?, ?)`, partyID, merchantName, tc.activeUserID, now)
+		if err != nil {
+			return err
+		}
+
+		merchantAcctID := domain.NewUUIDv7()
+		_, err = bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'EXPENSE', 'PLN', 0, ?, ?)`, merchantAcctID, partyID, merchantName, tc.activeUserID, now)
+		if err != nil {
+			return err
+		}
+
+		// 2. Create envelope bucket
+		bucketID := domain.NewUUIDv7()
+		_, err = bDB.Exec(`
+			INSERT INTO buckets_current (id, version, name, category, agent_id, updated_at)
+			VALUES (?, 1, ?, 'Living', ?, ?)`, bucketID, bucketName, tc.activeUserID, now)
+		if err != nil {
+			return err
+		}
+		_, err = bDB.Exec(`
+			INSERT INTO buckets_projection (id, name, category, is_archived, sort_order)
+			VALUES (?, ?, 'Living', 0, 1)`, bucketID, bucketName)
+		if err != nil {
+			return err
+		}
+
+		// 3. Create matching rule
+		ruleID := domain.NewUUIDv7()
+		ruleJSON := fmt.Sprintf(`{"pattern": "%s", "case_sensitive": false}`, pattern)
+		_, err = bDB.Exec(`
+			INSERT INTO matching_rules_current (
+				id, version, priority, rule_type, rule_payload, target_party_id,
+				target_counterparty_account_id, default_bucket_id, is_active, agent_id, updated_at
+			) VALUES (?, 1, 10, 'PAYEE_CONTAINS', ?, ?, ?, ?, 1, ?, ?)`,
+			ruleID, ruleJSON, partyID, merchantAcctID, bucketID, tc.activeUserID, now,
+		)
+		return err
+	})
+
+	ctx.Step(`^I submit a CSV import request for account "([^"]*)" with auto-match enabled and file content:$`, func(acctName string, csvDoc *godog.DocString) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+
+		var acctID string
+		err = bDB.QueryRow(`SELECT id FROM accounts_current WHERE name = ?`, acctName).Scan(&acctID)
+		if err != nil {
+			return fmt.Errorf("account not found: %s", acctName)
+		}
+
+		bodyBuf := &bytes.Buffer{}
+		writer := multipart.NewWriter(bodyBuf)
+		writer.WriteField("account_id", acctID)
+		writer.WriteField("bank_profile", "GENERIC")
+		writer.WriteField("auto_match", "1")
+		part, err := writer.CreateFormFile("csv_file", "statement.csv")
+		if err != nil {
+			return err
+		}
+		part.Write([]byte(csvDoc.Content))
+		writer.Close()
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/transactions/import-csv", tc.activeBudgetID), bodyBuf)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.ImportCSV(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the response status should be (\d+) Redirect to "/budgets/\{budgetId\}/transactions"$`, func(code int) error {
+		expectedLoc := fmt.Sprintf("/budgets/%s/transactions", tc.activeBudgetID)
+		if tc.lastResponse.Code != code {
+			return fmt.Errorf("expected %d redirect, got %d (body: %s)", code, tc.lastResponse.Code, tc.lastResponse.Body.String())
+		}
+		if tc.lastResponse.Header().Get("Location") != expectedLoc {
+			return fmt.Errorf("expected location %s, got %s", expectedLoc, tc.lastResponse.Header().Get("Location"))
+		}
+		return nil
+	})
+
+	ctx.Step(`^(\d+) raw transactions should be persisted in "raw_transactions_current"$`, func(expectedCount int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var count int
+		err = bDB.QueryRow(`SELECT count(*) FROM raw_transactions_current`).Scan(&count)
+		if err != nil {
+			return err
+		}
+		if count != expectedCount {
+			return fmt.Errorf("expected %d raw transactions, got %d", expectedCount, count)
+		}
+		return nil
+	})
+
+	ctx.Step(`^(\d+) raw transaction should be automatically matched and resolved into "budget_transactions"$`, func(expectedCount int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var count int
+		err = bDB.QueryRow(`SELECT count(*) FROM budget_transactions_current`).Scan(&count)
+		if err != nil {
+			return err
+		}
+		if count != expectedCount {
+			return fmt.Errorf("expected %d budget transactions resolved, got %d", expectedCount, count)
+		}
+		return nil
+	})
+
+	ctx.Step(`^(\d+) raw transaction should remain in "raw_transactions_current" with status "PENDING"$`, func(expectedCount int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var count int
+		err = bDB.QueryRow(`SELECT count(*) FROM raw_transactions_current WHERE status = 'PENDING'`).Scan(&count)
+		if err != nil {
+			return err
+		}
+		if count != expectedCount {
+			return fmt.Errorf("expected %d pending raw transactions, got %d", expectedCount, count)
 		}
 		return nil
 	})
