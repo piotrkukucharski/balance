@@ -267,3 +267,32 @@ func TestPartyCashflowAggregation(t *testing.T) {
 		t.Errorf("expected total outflow 420000, got %d", res.TotalOutflowMinor)
 	}
 }
+
+func TestBudgetAnalysisAggregation(t *testing.T) {
+	logger.BindTestLogger(t)
+	mainDB, tenantDB := setupTestDatabases(t)
+	defer mainDB.Close()
+	defer tenantDB.Close()
+
+	seedTestData(t, tenantDB)
+	ctx := context.Background()
+
+	// Assign funds to bucket b1
+	now := time.Now().UTC().UnixMicro()
+	_, err := tenantDB.Exec(`
+		INSERT INTO bucket_events (event_id, aggregate_id, version, event_type, payload, agent_id, correlation_id, occurred_at)
+		VALUES ('ev1', 'b1', 1, 'FUNDS_ASSIGNED', '{"amount_minor": 500000, "currency": "PLN"}', 'user1', 'c1', ?)`,
+		now)
+	if err != nil {
+		t.Fatalf("failed to insert bucket event: %v", err)
+	}
+
+	res, err := report.CalculateBudgetAnalysis(ctx, tenantDB, mainDB, report.ReportFilter{})
+	if err != nil {
+		t.Fatalf("CalculateBudgetAnalysis failed: %v", err)
+	}
+
+	if len(res.Points) == 0 {
+		t.Fatalf("expected at least 1 point in budget analysis, got 0")
+	}
+}
