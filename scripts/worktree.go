@@ -2,16 +2,20 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 func runCmd(name string, args ...string) error {
@@ -159,6 +163,9 @@ func backupSQLiteDBs(srcDataDir, dstDataDir string) error {
 
 	return filepath.Walk(srcDataDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
 		if info.IsDir() {
@@ -201,15 +208,158 @@ func backupSQLiteDBs(srcDataDir, dstDataDir string) error {
 	})
 }
 
+// transliteratePolish converts common Polish diacritics to ASCII equivalents.
+func transliteratePolish(s string) string {
+	replacer := strings.NewReplacer(
+		"ą", "a", "ć", "c", "ę", "e", "ł", "l", "ń", "n", "ó", "o", "ś", "s", "ź", "z", "ż", "z",
+		"Ą", "a", "Ć", "c", "Ę", "e", "Ł", "l", "Ń", "n", "Ó", "o", "Ś", "s", "Ź", "z", "Ż", "z",
+	)
+	return replacer.Replace(s)
+}
+
+// slugify converts a human-readable title into a URL/git-friendly slug.
+func slugify(s string) string {
+	s = transliteratePolish(s)
+	s = strings.ToLower(s)
+
+	var sb strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			sb.WriteRune(r)
+		} else if r == ' ' || r == '-' || r == '_' || r == '/' || r == '.' {
+			sb.WriteRune('-')
+		}
+	}
+	res := sb.String()
+	// Collapse multiple hyphens
+	re := regexp.MustCompile(`-+`)
+	res = re.ReplaceAllString(res, "-")
+	res = strings.Trim(res, "-")
+	if len(res) > 50 {
+		res = res[:50]
+		res = strings.TrimRight(res, "-")
+	}
+	return res
+}
+
+type vikunjaTaskResponse struct {
+	ID         int64  `json:"id"`
+	Index      int64  `json:"index"`
+	Identifier string `json:"identifier"`
+	Title      string `json:"title"`
+}
+
+func readEnvVarFromFiles(topLevel, key string) string {
+	// First check process environment
+	if val := os.Getenv(key); strings.TrimSpace(val) != "" {
+		return strings.TrimSpace(val)
+	}
+
+	for _, name := range []string{".env", ".env.local"} {
+		p := filepath.Join(topLevel, name)
+		if content, err := os.ReadFile(p); err == nil {
+			for _, line := range strings.Split(string(content), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, key+"=") {
+					val := strings.TrimPrefix(line, key+"=")
+					val = strings.Trim(val, `"' `)
+					if val != "" {
+						return val
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// resolveWorktreeName attempts to resolve input (e.g. BALANCE-2, 80, 2) to a task title via Vikunja API,
+// returning formatted "balance-2--slug-title". If not a task ID or resolution fails, returns original input.
+func resolveWorktreeName(topLevel, input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return input
+	}
+
+	apiURL := readEnvVarFromFiles(topLevel, "VIKUNJA_API_URL")
+	apiToken := readEnvVarFromFiles(topLevel, "VIKUNJA_API_TOKEN")
+	projectIDStr := readEnvVarFromFiles(topLevel, "VIKUNJA_PROJECT_ID")
+	if projectIDStr == "" {
+		projectIDStr = "29"
+	}
+
+	if apiURL == "" || apiToken == "" {
+		return input
+	}
+	apiURL = strings.TrimRight(apiURL, "/")
+
+	// Check if input matches task patterns like "BALANCE-2", "balance-2", "2", or numeric ID
+	taskRe := regexp.MustCompile(`(?i)^(?:BALANCE-)?(\d+)$`)
+	matches := taskRe.FindStringSubmatch(input)
+	if len(matches) < 2 {
+		return input
+	}
+	indexOrID := matches[1]
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// 1. Try by-index in project: /projects/{projectID}/tasks/by-index/{index}
+	byIndexURL := fmt.Sprintf("%s/projects/%s/tasks/by-index/%s", apiURL, projectIDStr, indexOrID)
+	req, err := http.NewRequest(http.MethodGet, byIndexURL, nil)
+	if err == nil {
+		req.Header.Set("Authorization", "Bearer "+apiToken)
+		req.Header.Set("Accept", "application/json")
+		if resp, err := client.Do(req); err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				var task vikunjaTaskResponse
+				if err := json.NewDecoder(resp.Body).Decode(&task); err == nil && task.Title != "" {
+					slug := slugify(task.Title)
+					return fmt.Sprintf("balance-%s--%s", indexOrID, slug)
+				}
+			}
+		}
+	}
+
+	// 2. Try direct task ID: /tasks/{id}
+	byTaskIDURL := fmt.Sprintf("%s/tasks/%s", apiURL, indexOrID)
+	req, err = http.NewRequest(http.MethodGet, byTaskIDURL, nil)
+	if err == nil {
+		req.Header.Set("Authorization", "Bearer "+apiToken)
+		req.Header.Set("Accept", "application/json")
+		if resp, err := client.Do(req); err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				var task vikunjaTaskResponse
+				if err := json.NewDecoder(resp.Body).Decode(&task); err == nil && task.Title != "" {
+					slug := slugify(task.Title)
+					taskIdx := fmt.Sprintf("%d", task.Index)
+					if task.Index == 0 {
+						taskIdx = indexOrID
+					}
+					return fmt.Sprintf("balance-%s--%s", taskIdx, slug)
+				}
+			}
+		}
+	}
+
+	return input
+}
+
 func cmdCreate(args []string) error {
 	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
-		return fmt.Errorf("worktree name is required. Usage: task dev:worktree:create -- <name>")
+		return fmt.Errorf("worktree name or task ID is required. Usage: task dev:worktree:create -- <task-id-or-name>")
 	}
-	name := strings.TrimSpace(args[0])
+	input := strings.TrimSpace(args[0])
 
 	topLevel, err := getTopLevel()
 	if err != nil {
 		return fmt.Errorf("failed to get repository root: %w", err)
+	}
+
+	name := resolveWorktreeName(topLevel, input)
+	if name != input {
+		fmt.Printf("Resolved task %s -> worktree name '%s'\n", input, name)
 	}
 
 	targetDir := filepath.Clean(filepath.Join(topLevel, "..", "development", name))

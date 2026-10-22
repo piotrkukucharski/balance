@@ -45,7 +45,7 @@ tasks:
 
   # Worktree management tasks
   dev:worktree:create:
-    desc: "Create an isolated git worktree with dedicated port and data directory in ../development/<name>"
+    desc: "Create an isolated git worktree with dedicated port and data directory in ../development/<name> (accepts task ID e.g. BALANCE-2)"
     cmds:
       - go run ./scripts/worktree.go create {{.CLI_ARGS}}
 
