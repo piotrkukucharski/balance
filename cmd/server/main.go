@@ -12,6 +12,7 @@ import (
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/service"
+	openapi "github.com/balance/balance/internal/api"
 	webassets "github.com/balance/balance/internal/web/assets"
 	"github.com/balance/balance/internal/web/handlers"
 	"github.com/labstack/echo/v4"
@@ -180,6 +181,21 @@ func main() {
 	tenantOwner.POST("/settings", workspaceHandler.UpdateBudget)
 	tenantOwner.POST("/update", workspaceHandler.UpdateBudget)
 	tenantOwner.POST("/delete", workspaceHandler.DeleteBudget)
+
+	// REST API v1 (OpenAPI 3.1)
+	apiServer := openapi.NewServer(mainDB, tenantMgr, appService)
+	apiGroup := e.Group("/api/v1", func(next echo.HandlerFunc) echo.HandlerFunc {
+		authMiddleware := handlers.SessionOrBearerAuthMiddleware(mainDB)
+		return func(c echo.Context) error {
+			path := c.Request().URL.Path
+			// Skip authentication for public auth endpoints
+			if path == "/api/v1/auth/login" || path == "/api/v1/auth/register" {
+				return next(c)
+			}
+			return authMiddleware(next)(c)
+		}
+	})
+	openapi.RegisterHandlersWithBaseURL(apiGroup, apiServer, "")
 
 
 

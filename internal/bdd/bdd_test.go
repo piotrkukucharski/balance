@@ -25,6 +25,7 @@ import (
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/lua"
 	"github.com/balance/balance/internal/report"
+	"github.com/balance/balance/internal/service"
 	"github.com/balance/balance/internal/transaction"
 	"github.com/balance/balance/internal/web/handlers"
 	"github.com/cucumber/godog"
@@ -88,6 +89,21 @@ func (tc *bddTestContext) setup() error {
 	tc.partiesHandler = handlers.NewPartiesHandler(mainDB, tenantMgr)
 	tc.membersHandler = handlers.NewMembersHandler(mainDB, tenantMgr)
 	tc.pwaHandler = handlers.NewPWAHandler()
+
+	// Register REST API v1
+	appSvc := service.NewAppService(mainDB, tenantMgr, nil)
+	apiServer := openapi.NewServer(mainDB, tenantMgr, appSvc)
+	apiGroup := tc.echoEngine.Group("/api/v1", func(next echo.HandlerFunc) echo.HandlerFunc {
+		authMiddleware := handlers.SessionOrBearerAuthMiddleware(mainDB)
+		return func(c echo.Context) error {
+			path := c.Request().URL.Path
+			if path == "/api/v1/auth/login" || path == "/api/v1/auth/register" {
+				return next(c)
+			}
+			return authMiddleware(next)(c)
+		}
+	})
+	openapi.RegisterHandlersWithBaseURL(apiGroup, apiServer, "")
 
 	return nil
 }
@@ -3025,6 +3041,102 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		err = bDB.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE name = 'My Custom Spending'", table)).Scan(&count)
 		if err != nil || count != 0 {
 			return fmt.Errorf("expected report removed from %s, got count %d, err %v", table, count, err)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I submit a REST registration request to "([^"]*)" for "([^"]*)"$`, func(path, email string) error {
+		body, _ := json.Marshal(map[string]interface{}{
+			"email":        email,
+			"password":     "SecretPass123!",
+			"display_name": "API BDD User",
+		})
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		tc.lastResponse = httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
+		return nil
+	})
+
+	ctx.Step(`^the REST response status code should be (\d+)$`, func(expectedCode int) error {
+		if tc.lastResponse == nil {
+			return fmt.Errorf("no response recorded")
+		}
+		if tc.lastResponse.Code != expectedCode {
+			return fmt.Errorf("expected status %d, got %d: %s", expectedCode, tc.lastResponse.Code, tc.lastResponse.Body.String())
+		}
+		return nil
+	})
+
+	ctx.Step(`^I submit a REST login request to "([^"]*)" for "([^"]*)"$`, func(path, email string) error {
+		body, _ := json.Marshal(map[string]interface{}{
+			"email":    email,
+			"password": "SecretPass123!",
+		})
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		tc.lastResponse = httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
+
+		for _, c := range tc.lastResponse.Result().Cookies() {
+			if c.Name == "balance_session" {
+				tc.sessionCookie = c
+				break
+			}
+		}
+		return nil
+	})
+
+	ctx.Step(`^I create a personal access token via REST API$`, func() error {
+		var csrf string
+		if tc.sessionCookie != nil {
+			hash := auth.HashToken(tc.sessionCookie.Value)
+			tc.mainDB.QueryRowContext(context.Background(), `SELECT csrf_token FROM sessions WHERE token_hash = ?`, hash).Scan(&csrf)
+		}
+
+		body, _ := json.Marshal(map[string]interface{}{
+			"name":            "BDD PAT Token",
+			"expires_in_days": 30,
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/tokens", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if tc.sessionCookie != nil {
+			req.AddCookie(tc.sessionCookie)
+		}
+		if csrf != "" {
+			req.Header.Set("X-CSRF-Token", csrf)
+		}
+		tc.lastResponse = httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
+
+		var resp openapi.CreateTokenResponse
+		if err := json.Unmarshal(tc.lastResponse.Body.Bytes(), &resp); err == nil {
+			tc.activeBearer = resp.Token
+		}
+		return nil
+	})
+
+	ctx.Step(`^I create a budget "([^"]*)" using the Bearer token$`, func(budgetName string) error {
+		body, _ := json.Marshal(map[string]interface{}{
+			"name":             budgetName,
+			"default_currency": "PLN",
+			"timezone":         "UTC",
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/budgets", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+tc.activeBearer)
+		tc.lastResponse = httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
+		return nil
+	})
+
+	ctx.Step(`^the returned budget name should be "([^"]*)"$`, func(expectedName string) error {
+		var resp openapi.BudgetSummary
+		if err := json.Unmarshal(tc.lastResponse.Body.Bytes(), &resp); err != nil {
+			return fmt.Errorf("failed to parse budget summary response: %w", err)
+		}
+		if resp.Name != expectedName {
+			return fmt.Errorf("expected budget name %q, got %q", expectedName, resp.Name)
 		}
 		return nil
 	})
