@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"strings"
@@ -108,6 +109,13 @@ func SessionOrBearerAuthMiddleware(mainDB *sql.DB) echo.MiddlewareFunc {
 				if err != nil || (revokedAt.Valid && revokedAt.Int64 > 0) || (expiresAt > 0 && expiresAt < now) {
 					return echo.NewHTTPError(http.StatusUnauthorized, "Invalid or expired Bearer token")
 				}
+
+				// Asynchronously update last_used_at in the background to avoid blocking request
+				go func(db *sql.DB, hash string, usedAt int64) {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_, _ = db.ExecContext(ctx, `UPDATE api_tokens SET last_used_at = ? WHERE token_hash = ?`, usedAt, hash)
+				}(mainDB, tokenHash, now)
 
 				c.Set(ContextUserIDKey, userID)
 				return next(c)

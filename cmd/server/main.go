@@ -73,6 +73,7 @@ func main() {
 
 	partiesHandler := handlers.NewPartiesHandler(mainDB, tenantMgr)
 	membersHandler := handlers.NewMembersHandler(mainDB, tenantMgr)
+	tokensHandler := handlers.NewTokensHandler(mainDB)
 	accountsHandler := handlers.NewAccountsHandler(mainDB, tenantMgr)
 	accountsHandler.SetService(appService)
 
@@ -118,6 +119,9 @@ func main() {
 	tenantViewer.GET("/parties", partiesHandler.PartiesView)
 	tenantViewer.GET("/settings", workspaceHandler.SettingsView)
 	tenantViewer.GET("/settings/members", membersHandler.MembersView)
+	tenantViewer.GET("/settings/tokens", tokensHandler.TokensView)
+	tenantViewer.POST("/settings/tokens", tokensHandler.CreateToken)
+	tenantViewer.POST("/settings/tokens/:tokenId/revoke", tokensHandler.RevokeToken)
 	tenantViewer.GET("/members", membersHandler.MembersView)
 
 	tenantEditor := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "EDITOR"))

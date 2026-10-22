@@ -75,7 +75,7 @@ func RenderSidebarNavigation(budgetID string, activeItem string) string {
 
 	settingsOpen := " open"
 	settingsSummaryClass := ""
-	if activeItem == "settings" || activeItem == "members" {
+	if activeItem == "settings" || activeItem == "members" || activeItem == "tokens" {
 		settingsSummaryClass = ` class="font-bold text-primary"`
 	}
 
@@ -94,6 +94,7 @@ func RenderSidebarNavigation(budgetID string, activeItem string) string {
                         <ul class="before:hidden">
                             <li><a href="/budgets/%s/settings"%s>General</a></li>
                             <li><a href="/budgets/%s/settings/members"%s>👥 Members</a></li>
+                            <li><a href="/budgets/%s/settings/tokens"%s>🔑 API Tokens</a></li>
                         </ul>
                     </details>
                 </li>
@@ -107,6 +108,7 @@ func RenderSidebarNavigation(budgetID string, activeItem string) string {
 		budgetID,
 		budgetID, itemClass("settings"),
 		budgetID, itemClass("members"),
+		budgetID, itemClass("tokens"),
 	)
 }
 

@@ -37,6 +37,7 @@ type bddTestContext struct {
 	activeUserID   string
 	activeBudgetID string
 	activeCSRF     string
+	activeBearer   string
 
 	authHandler      *handlers.AuthHandler
 	workspaceHandler *handlers.WorkspaceHandler
@@ -223,6 +224,98 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 			return fmt.Errorf("expected error alert on login page, got: %s", body)
 		}
 		return nil
+	})
+
+	ctx.Step(`^an active Personal Access Token named "([^"]*)" for user "([^"]*)"$`, func(tokenName, email string) error {
+		var userID string
+		err := tc.mainDB.QueryRow("SELECT id FROM users WHERE email = ?", email).Scan(&userID)
+		if err != nil {
+			return err
+		}
+		fullPAT, hash, err := auth.GeneratePAT()
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		expiresAt := now + 30*24*3600*1000000 // 30 days
+		tokenID := domain.NewUUIDv7()
+		_, err = tc.mainDB.Exec(`
+			INSERT INTO api_tokens (id, user_id, name, token_hash, expires_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)`, tokenID, userID, tokenName, hash, expiresAt, now)
+		if err != nil {
+			return err
+		}
+		tc.activeBearer = fullPAT
+		return nil
+	})
+
+	ctx.Step(`^a revoked Personal Access Token named "([^"]*)" for user "([^"]*)"$`, func(tokenName, email string) error {
+		var userID string
+		err := tc.mainDB.QueryRow("SELECT id FROM users WHERE email = ?", email).Scan(&userID)
+		if err != nil {
+			return err
+		}
+		fullPAT, hash, err := auth.GeneratePAT()
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		tokenID := domain.NewUUIDv7()
+		_, err = tc.mainDB.Exec(`
+			INSERT INTO api_tokens (id, user_id, name, token_hash, expires_at, revoked_at, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, tokenID, userID, tokenName, hash, now+1000000, now, now)
+		if err != nil {
+			return err
+		}
+		tc.activeBearer = fullPAT
+		return nil
+	})
+
+	ctx.Step(`^I request a protected API endpoint "([^"]*)" with the Bearer token and JSON accept header$`, func(endpoint string) error {
+		req := httptest.NewRequest(http.MethodGet, endpoint, nil)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Authorization", "Bearer "+tc.activeBearer)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+
+		mw := handlers.SessionOrBearerAuthMiddleware(tc.mainDB)
+		handler := mw(func(c echo.Context) error {
+			return tc.workspaceHandler.BudgetsList(c)
+		})
+
+		err := handler(c)
+		if err != nil {
+			if httpErr, ok := err.(*echo.HTTPError); ok {
+				rec.Code = httpErr.Code
+				rec.Body.WriteString(fmt.Sprintf("%v", httpErr.Message))
+			} else {
+				return err
+			}
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^the response status should be (\d+) OK$`, func(code int) error {
+		if tc.lastResponse.Code != code {
+			return fmt.Errorf("expected %d OK, got %d", code, tc.lastResponse.Code)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the token last_used_at in "([^"]*)" should be updated asynchronously$`, func(tableName string) error {
+		tokenHash := auth.HashToken(tc.activeBearer)
+		// Poll briefly to ensure background goroutine completes
+		deadline := time.Now().Add(500 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			var lastUsed sql.NullInt64
+			err := tc.mainDB.QueryRow("SELECT last_used_at FROM api_tokens WHERE token_hash = ?", tokenHash).Scan(&lastUsed)
+			if err == nil && lastUsed.Valid && lastUsed.Int64 > 0 {
+				return nil
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		return fmt.Errorf("expected last_used_at to be updated in %s", tableName)
 	})
 
 	// 08_lua_formula_and_ai.feature steps

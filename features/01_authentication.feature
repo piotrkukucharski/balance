@@ -40,4 +40,18 @@ Feature: User Authentication and Stateful Browser Sessions
     When I submit a login request with email "nonexistent@example.com" and password "WrongPassword123!"
     Then the login page should be rendered with an error message to try again
 
+  Scenario: Authenticating via valid Bearer Personal Access Token (bal_pat_...)
+    Given an existing registered user with email "bearer_user@example.com" and password "Pass12345!"
+    And an active Personal Access Token named "CLI Token" for user "bearer_user@example.com"
+    When I request a protected API endpoint "/budgets" with the Bearer token and JSON accept header
+    Then the response status should be 200 OK
+    And the token last_used_at in "api_tokens" should be updated asynchronously
+
+  Scenario: Rejecting revoked or expired Bearer Personal Access Token
+    Given an existing registered user with email "revoked_user@example.com" and password "Pass12345!"
+    And a revoked Personal Access Token named "Old Token" for user "revoked_user@example.com"
+    When I request a protected API endpoint "/budgets" with the Bearer token and JSON accept header
+    Then the response status should be 401 Unauthorized
+
+
 
