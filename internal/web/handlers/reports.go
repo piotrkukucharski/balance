@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/balance/balance/internal/db"
+	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/report"
 	"github.com/labstack/echo/v4"
 )
@@ -81,6 +84,8 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                 <h1 class="text-3xl font-black tracking-tight">Reports & Analytics</h1>
                 <p class="text-sm text-base-content/60 mt-1">10 interactive financial insights, forecasting models, and Monte Carlo longevity simulations.</p>
             </div>
+
+            %s
 
             <!-- Reports Grid -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -566,6 +571,7 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
 </body>
 </html>`, csrfToken,
 		RenderSidebarNavigation(budgetID, "reports"),
+		h.renderSavedReportsSection(c.Request().Context(), tenantDB, budgetID, csrfToken),
 		budgetID,
 		aomHeadline,
 		budgetID,
@@ -1026,8 +1032,51 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
                             <input type="checkbox" name="exclude_internal" value="true" class="checkbox checkbox-sm checkbox-primary" %s onchange="this.form.submit()" />
                         </label>
                     </div>
+
+                    <!-- Save Report Modal Trigger -->
+                    <div class="form-control self-end">
+                        <button type="button" class="btn btn-primary btn-sm gap-1" onclick="document.getElementById('save_report_modal').showModal()">
+                            <span>💾</span>
+                            <span>Save Configuration</span>
+                        </button>
+                    </div>
                 </form>
             </div>
+
+            <!-- Save Report Modal -->
+            <dialog id="save_report_modal" class="modal">
+                <div class="modal-box">
+                    <form method="dialog">
+                        <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2">✕</button>
+                    </form>
+                    <h3 class="font-bold text-lg mb-4">Save Report Configuration</h3>
+                    <form method="POST" action="/budgets/%s/reports/saved" class="flex flex-col gap-4">
+                        <input type="hidden" name="csrf_token" value="%s" />
+                        <input type="hidden" name="report_type" value="%s" />
+                        <input type="hidden" name="config_json" value='{"range":"%s","currency":"%s","exclude_internal":%t}' />
+                        
+                        <div class="form-control">
+                            <label class="label"><span class="label-text font-semibold">Report Name</span></label>
+                            <input type="text" name="name" class="input input-bordered w-full" placeholder="e.g. Monthly Operations" required />
+                        </div>
+
+                        <div class="form-control">
+                            <label class="label cursor-pointer justify-start gap-3">
+                                <input type="checkbox" name="is_pinned_widget" value="true" class="checkbox checkbox-primary" />
+                                <span class="label-text">Pin as favorite widget on Reports Dashboard</span>
+                            </label>
+                        </div>
+
+                        <div class="modal-action">
+                            <button type="button" class="btn btn-ghost" onclick="document.getElementById('save_report_modal').close()">Cancel</button>
+                            <button type="submit" class="btn btn-primary">Save Widget</button>
+                        </div>
+                    </form>
+                </div>
+                <form method="dialog" class="modal-backdrop">
+                    <button>close</button>
+                </form>
+            </dialog>
 
             <!-- Full-Screen Interactive Chart Container -->
             <div class="card card-border bg-base-100 border-base-300 shadow-md flex-1 min-h-[500px]">
@@ -1308,6 +1357,12 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
 		selectedAttr(selectedCurrency == "USD"),
 		selectedAttr(selectedCurrency == "GBP"),
 		checkedAttr(excludeInternal),
+		budgetID,
+		csrfToken,
+		strings.ToUpper(strings.ReplaceAll(meta.Type, "-", "_")),
+		selectedRange,
+		selectedCurrency,
+		excludeInternal,
 		meta.ChartID,
 		RenderBottomDock(budgetID, "reports"),
 		budgetID,
@@ -1332,4 +1387,316 @@ func checkedAttr(b bool) string {
 		return "checked"
 	}
 	return ""
+}
+
+// SavedReportItem represents a stored report configuration.
+type SavedReportItem struct {
+	ID             string `json:"id"`
+	Version        int    `json:"version"`
+	Name           string `json:"name"`
+	ReportType     string `json:"report_type"`
+	ConfigJSON     string `json:"config_json"`
+	IsPinnedWidget bool   `json:"is_pinned_widget"`
+	AgentID        string `json:"agent_id"`
+	UpdatedAt      int64  `json:"updated_at"`
+}
+
+// ListSavedReportsJSON returns the active saved reports for the budget.
+func (h *ReportsHandler) ListSavedReportsJSON(c echo.Context) error {
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	rows, err := tenantDB.QueryContext(c.Request().Context(), `
+		SELECT id, version, name, report_type, config_json, is_pinned_widget, agent_id, updated_at
+		FROM saved_reports_current
+		ORDER BY is_pinned_widget DESC, updated_at DESC`)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	defer rows.Close()
+
+	var items []SavedReportItem
+	for rows.Next() {
+		var it SavedReportItem
+		var isPinned int
+		if err := rows.Scan(&it.ID, &it.Version, &it.Name, &it.ReportType, &it.ConfigJSON, &isPinned, &it.AgentID, &it.UpdatedAt); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+		it.IsPinnedWidget = isPinned == 1
+		items = append(items, it)
+	}
+	if items == nil {
+		items = []SavedReportItem{}
+	}
+	return c.JSON(http.StatusOK, items)
+}
+
+// SaveReportConfig handles creating or updating a saved report.
+func (h *ReportsHandler) SaveReportConfig(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID, _ := c.Get(ContextUserIDKey).(string)
+	if userID == "" {
+		userID = "anonymous"
+	}
+
+	name := c.FormValue("name")
+	reportType := c.FormValue("report_type")
+	configJSON := c.FormValue("config_json")
+	if configJSON == "" {
+		configJSON = "{}"
+	}
+	isPinned := 0
+	if c.FormValue("is_pinned_widget") == "true" || c.FormValue("is_pinned_widget") == "1" || c.FormValue("is_pinned_widget") == "on" {
+		isPinned = 1
+	}
+
+	reportID := c.FormValue("id")
+	action := "CREATE"
+	version := 1
+	now := time.Now().UTC().UnixMicro()
+	corrID := domain.NewUUIDv7()
+
+	tx, err := tenantDB.BeginTx(c.Request().Context(), nil)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to start transaction")
+	}
+	defer tx.Rollback()
+
+	if reportID == "" {
+		reportID = domain.NewUUIDv7()
+	} else {
+		action = "UPDATE"
+		_ = tx.QueryRowContext(c.Request().Context(), `SELECT version FROM saved_reports_current WHERE id = ?`, reportID).Scan(&version)
+		version++
+	}
+
+	// 1. Insert into append-only saved_reports audit log
+	_, err = tx.ExecContext(c.Request().Context(), `
+		INSERT INTO saved_reports (id, version, name, report_type, config_json, is_pinned_widget, action, agent_id, correlation_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		reportID, version, name, reportType, configJSON, isPinned, action, userID, corrID, now)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Failed to save report audit log: %v", err))
+	}
+
+	// 2. Upsert into saved_reports_current
+	_, err = tx.ExecContext(c.Request().Context(), `
+		INSERT INTO saved_reports_current (id, version, name, report_type, config_json, is_pinned_widget, agent_id, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			version = excluded.version,
+			name = excluded.name,
+			report_type = excluded.report_type,
+			config_json = excluded.config_json,
+			is_pinned_widget = excluded.is_pinned_widget,
+			agent_id = excluded.agent_id,
+			updated_at = excluded.updated_at`,
+		reportID, version, name, reportType, configJSON, isPinned, userID, now)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to upsert saved report projection: %v", err))
+	}
+
+	if err := tx.Commit(); err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to commit saved report")
+	}
+
+	if c.Request().Header.Get("Accept") == "application/json" {
+		return c.JSON(http.StatusOK, map[string]any{"id": reportID, "status": "saved"})
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/reports", budgetID))
+}
+
+// TogglePinReport toggles the is_pinned_widget state.
+func (h *ReportsHandler) TogglePinReport(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	reportID := c.Param("reportId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID, _ := c.Get(ContextUserIDKey).(string)
+	if userID == "" {
+		userID = "anonymous"
+	}
+
+	tx, err := tenantDB.BeginTx(c.Request().Context(), nil)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to start transaction")
+	}
+	defer tx.Rollback()
+
+	var version, isPinned int
+	var name, reportType, configJSON string
+	err = tx.QueryRowContext(c.Request().Context(), `
+		SELECT version, name, report_type, config_json, is_pinned_widget
+		FROM saved_reports_current WHERE id = ?`, reportID).Scan(&version, &name, &reportType, &configJSON, &isPinned)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, "Saved report not found")
+	}
+
+	newPinned := 1
+	if isPinned == 1 {
+		newPinned = 0
+	}
+	newVersion := version + 1
+	now := time.Now().UTC().UnixMicro()
+	corrID := domain.NewUUIDv7()
+
+	_, err = tx.ExecContext(c.Request().Context(), `
+		INSERT INTO saved_reports (id, version, name, report_type, config_json, is_pinned_widget, action, agent_id, correlation_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, 'UPDATE', ?, ?, ?)`,
+		reportID, newVersion, name, reportType, configJSON, newPinned, userID, corrID, now)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to log pin update")
+	}
+
+	_, err = tx.ExecContext(c.Request().Context(), `
+		UPDATE saved_reports_current
+		SET version = ?, is_pinned_widget = ?, agent_id = ?, updated_at = ?
+		WHERE id = ?`, newVersion, newPinned, userID, now, reportID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to update pin status")
+	}
+
+	if err := tx.Commit(); err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to commit pin toggle")
+	}
+
+	if c.Request().Header.Get("Accept") == "application/json" {
+		return c.JSON(http.StatusOK, map[string]any{"id": reportID, "is_pinned_widget": newPinned == 1})
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/reports", budgetID))
+}
+
+// DeleteSavedReport soft deletes the saved report and removes it from projection.
+func (h *ReportsHandler) DeleteSavedReport(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	reportID := c.Param("reportId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID, _ := c.Get(ContextUserIDKey).(string)
+	if userID == "" {
+		userID = "anonymous"
+	}
+
+	tx, err := tenantDB.BeginTx(c.Request().Context(), nil)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to start transaction")
+	}
+	defer tx.Rollback()
+
+	var version, isPinned int
+	var name, reportType, configJSON string
+	err = tx.QueryRowContext(c.Request().Context(), `
+		SELECT version, name, report_type, config_json, is_pinned_widget
+		FROM saved_reports_current WHERE id = ?`, reportID).Scan(&version, &name, &reportType, &configJSON, &isPinned)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, "Saved report not found")
+	}
+
+	newVersion := version + 1
+	now := time.Now().UTC().UnixMicro()
+	corrID := domain.NewUUIDv7()
+
+	// Append SOFT_DELETE action
+	_, err = tx.ExecContext(c.Request().Context(), `
+		INSERT INTO saved_reports (id, version, name, report_type, config_json, is_pinned_widget, action, agent_id, correlation_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, 'SOFT_DELETE', ?, ?, ?)`,
+		reportID, newVersion, name, reportType, configJSON, isPinned, userID, corrID, now)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to record soft delete")
+	}
+
+	// Remove from current projection
+	_, err = tx.ExecContext(c.Request().Context(), `DELETE FROM saved_reports_current WHERE id = ?`, reportID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to delete from projection")
+	}
+
+	if err := tx.Commit(); err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to commit deletion")
+	}
+
+	if c.Request().Header.Get("Accept") == "application/json" {
+		return c.JSON(http.StatusOK, map[string]any{"id": reportID, "status": "deleted"})
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/reports", budgetID))
+}
+
+func (h *ReportsHandler) renderSavedReportsSection(ctx context.Context, tenantDB *sql.DB, budgetID string, csrfToken string) string {
+	rows, err := tenantDB.QueryContext(ctx, `
+		SELECT id, name, report_type, is_pinned_widget, updated_at
+		FROM saved_reports_current
+		ORDER BY is_pinned_widget DESC, updated_at DESC`)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+
+	var cardsHTML string
+	count := 0
+	for rows.Next() {
+		count++
+		var id, name, reportType string
+		var isPinned int
+		var updatedAt int64
+		if err := rows.Scan(&id, &name, &reportType, &isPinned, &updatedAt); err != nil {
+			continue
+		}
+
+		pinBadge := ""
+		pinText := "Pin"
+		if isPinned == 1 {
+			pinBadge = `<span class="badge badge-primary badge-sm">Pinned</span>`
+			pinText = "Unpin"
+		}
+
+		cardsHTML += fmt.Sprintf(`
+			<div class="card bg-base-100 border border-base-300 shadow-sm p-4 flex flex-row items-center justify-between gap-4">
+				<div class="flex items-center gap-3">
+					<div class="text-xl">📊</div>
+					<div>
+						<div class="flex items-center gap-2">
+							<span class="font-bold text-sm">%s</span>
+							%s
+						</div>
+						<span class="text-xs text-base-content/60 font-mono">%s</span>
+					</div>
+				</div>
+				<div class="flex items-center gap-2">
+					<form method="POST" action="/budgets/%s/reports/saved/%s/toggle-pin">
+						<input type="hidden" name="csrf_token" value="%s" />
+						<button type="submit" class="btn btn-ghost btn-xs">%s</button>
+					</form>
+					<form method="POST" action="/budgets/%s/reports/saved/%s/delete" onsubmit="return confirm('Delete this saved report?')">
+						<input type="hidden" name="csrf_token" value="%s" />
+						<button type="submit" class="btn btn-ghost btn-xs text-error">Delete</button>
+					</form>
+				</div>
+			</div>`, name, pinBadge, reportType, budgetID, id, csrfToken, pinText, budgetID, id, csrfToken)
+	}
+
+	if count == 0 {
+		return `
+			<div class="mb-8 p-6 bg-base-100 rounded-2xl border border-base-300">
+				<div class="flex items-center justify-between">
+					<div>
+						<h2 class="text-lg font-bold">Saved Report Configurations</h2>
+						<p class="text-xs text-base-content/60">No saved reports yet. Customize any report and click Save Configuration.</p>
+					</div>
+				</div>
+			</div>`
+	}
+
+	return fmt.Sprintf(`
+		<div class="mb-8 p-6 bg-base-100 rounded-2xl border border-base-300">
+			<div class="flex items-center justify-between mb-4">
+				<div>
+					<h2 class="text-lg font-bold">Saved Report Configurations</h2>
+					<p class="text-xs text-base-content/60">Active saved reports and pinned dashboard widgets.</p>
+				</div>
+				<span class="badge badge-neutral font-mono">%d saved</span>
+			</div>
+			<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+				%s
+			</div>
+		</div>`, count, cardsHTML)
 }

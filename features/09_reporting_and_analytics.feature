@@ -45,3 +45,13 @@ Feature: Comprehensive Reporting, Age of Money and Monte Carlo Simulation
     Then the detailed report page should display title "Income vs. Expense"
     And the page should render filter controls for date range, currency, and internal transfers
     And the full-screen report chart container should be present
+
+  Scenario: Saving and managing custom report configurations
+    Given an authenticated user on budget "Family Home"
+    When I save a report configuration named "My Custom Spending" for report "SPENDING_BREAKDOWN" with pinned status
+    Then the saved report should be persisted in "saved_reports_current"
+    And the saved report configuration should be listed in the reports dashboard
+    When I toggle the pinned widget status of "My Custom Spending"
+    Then the saved report widget should be updated with pinned status "0"
+    When I delete the saved report "My Custom Spending"
+    Then the saved report should be removed from "saved_reports_current"

@@ -2885,6 +2885,149 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		return nil
 	})
+
+	// 09_reporting_and_analytics.feature: Saved reports management
+	ctx.Step(`^I save a report configuration named "([^"]*)" for report "([^"]*)" with pinned status$`, func(name, reportType string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		form := url.Values{}
+		form.Set("name", name)
+		form.Set("report_type", reportType)
+		form.Set("config_json", `{"range":"30d","currency":"PLN","exclude_internal":true}`)
+		form.Set("is_pinned_widget", "true")
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/reports/saved", tc.activeBudgetID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		req.Header.Set("Accept", "application/json")
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.reportsHandler.SaveReportConfig(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the saved report should be persisted in "([^"]*)"$`, func(table string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var count int
+		err = bDB.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE name = 'My Custom Spending'", table)).Scan(&count)
+		if err != nil || count == 0 {
+			return fmt.Errorf("expected report in %s, got count %d, err %v", table, count, err)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the saved report configuration should be listed in the reports dashboard$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/budgets/%s/reports", tc.activeBudgetID), nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("csrfToken", "dummy_csrf_token")
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		if err := tc.reportsHandler.ReportsView(c); err != nil {
+			return err
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "My Custom Spending") {
+			return fmt.Errorf("expected My Custom Spending in reports dashboard")
+		}
+		return nil
+	})
+
+	ctx.Step(`^I toggle the pinned widget status of "([^"]*)"$`, func(name string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var repID string
+		err = bDB.QueryRow(`SELECT id FROM saved_reports_current WHERE name = ?`, name).Scan(&repID)
+		if err != nil {
+			return err
+		}
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/reports/saved/%s/toggle-pin", tc.activeBudgetID, repID), nil)
+		req.Header.Set("Accept", "application/json")
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "reportId")
+		c.SetParamValues(tc.activeBudgetID, repID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.reportsHandler.TogglePinReport(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the saved report widget should be updated with pinned status "([^"]*)"$`, func(expectedStatus string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var isPinned int
+		err = bDB.QueryRow(`SELECT is_pinned_widget FROM saved_reports_current WHERE name = 'My Custom Spending'`).Scan(&isPinned)
+		if err != nil {
+			return err
+		}
+		if fmt.Sprintf("%d", isPinned) != expectedStatus {
+			return fmt.Errorf("expected pinned status %s, got %d", expectedStatus, isPinned)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I delete the saved report "([^"]*)"$`, func(name string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var repID string
+		err = bDB.QueryRow(`SELECT id FROM saved_reports_current WHERE name = ?`, name).Scan(&repID)
+		if err != nil {
+			return err
+		}
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/reports/saved/%s/delete", tc.activeBudgetID, repID), nil)
+		req.Header.Set("Accept", "application/json")
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "reportId")
+		c.SetParamValues(tc.activeBudgetID, repID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.reportsHandler.DeleteSavedReport(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the saved report should be removed from "([^"]*)"$`, func(table string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var count int
+		err = bDB.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE name = 'My Custom Spending'", table)).Scan(&count)
+		if err != nil || count != 0 {
+			return fmt.Errorf("expected report removed from %s, got count %d, err %v", table, count, err)
+		}
+		return nil
+	})
 }
 
 func TestFeatures(t *testing.T) {
