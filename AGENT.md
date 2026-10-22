@@ -21,7 +21,16 @@ Every new feature, change request, or task **MUST** strictly follow a two-step *
    - Corresponding Godog step definitions and assertions in `internal/bdd/bdd_test.go`.
    - Unit/integration tests where applicable.
 2. Run verification via `task test:bdd` and `task test:all`.
-3. **Commit after every completed stage** (`git commit`) with a clear, descriptive English commit message.
+3. **Commit after every completed stage** (`git commit`) with a clear, descriptive English commit message adhering to the mandatory commit message format.
+
+### Commit Message Structure & Task Binding
+Git commits must strictly follow the Conventional Commits format with a single task binding:
+```text
+<type>(<scope>): <summary in imperative present tense> [<TASK_IDENTIFIER>]
+```
+- Example: `feat(reports): aggregate monthly income vs expense from tenant ledger [BALANCE-2]`
+- All commit rules, 1-commit-1-task binding policies, and the unmapped work protocol are defined in the dedicated **`balance-commits`** skill:
+  📖 [`.agents/skills/balance-commits/SKILL.md`](.agents/skills/balance-commits/SKILL.md)
 
 ---
 
@@ -127,15 +136,20 @@ All changes must preserve these non-negotiable invariants from [`docs/architectu
 
 Always use `task` (defined in [`Taskfile.yml`](Taskfile.yml)) to run development workflows and test suites:
 
-### Development (`dev:*`)
+### Development & Worktree Commands (`dev:*`)
 - `task dev:init` — Initialize local directories (`./data/budgets`), `.env`, install agent skills via `npx skills experimental_install`, and download/tidy Go dependencies.
 - `task dev:up` — Start the Balance HTTP server in development mode (`http://localhost:8080`).
 - `task dev:stop` — Stop any running local Balance development server process.
 - `task dev:build` — Compile the production binary to `./bin/balance`.
 - `task dev:worktree:create -- <name>` — Create an isolated git worktree in `../development/<name>` with a dedicated port (10000..11000), copy of `.env`, `.agents/`, and copy of data.
 - `task dev:worktree:clear -- <name> [--delete-branch]` — Remove worktree (preserves branch by default, pass `--delete-branch` to delete branch).
+- `task dev:worktree:finish` — Interactively rebase worktree branch onto main, fast-forward main, and clean up worktree.
 - `task dev:worktree:update:maintree -- <name>` — Fast-forward maintree branch from specified worktree branch (only runs on maintree).
 - `task dev:worktree:update:branch` — Rebase current worktree branch onto main (only runs inside secondary worktree).
+
+> [!NOTE]
+> Detailed guidelines, isolation architecture, and worktree lifecycle best practices are documented in the **`balance-worktree`** skill:
+> 📖 [`.agents/skills/balance-worktree/SKILL.md`](.agents/skills/balance-worktree/SKILL.md)
 
 ---
 
@@ -156,6 +170,20 @@ Always use `task` (defined in [`Taskfile.yml`](Taskfile.yml)) to run development
   - `DATA_DIR`: Base directory for SQLite databases (`./data`).
   - `GEMINI_API_KEY` & `GEMINI_MODEL`: Google Gemini API configuration for AI formula assistance (default model: `gemini-3.8-flash`).
   - `GOCARDLESS_SECRET_ID`, `GOCARDLESS_SECRET_KEY`, `GOCARDLESS_ENVIRONMENT`: Open Banking integration credentials (default environment: `sandbox`).
+
+---
+
+## 9. Task Tracking & todo (Vikunja MCP)
+
+All project tasks, epics, relationships, and progress tracking are managed in the external **todo** (Vikunja) system via MCP.
+
+> [!IMPORTANT]
+> The mandatory workflow rules, project isolation (Project `29` only), task hierarchy, blocking relations, commit binding policies, and new task creation protocols are defined in the **`balance-todo`** skill:
+>
+> 📖 [`.agents/skills/balance-todo/SKILL.md`](.agents/skills/balance-todo/SKILL.md)
+>
+> Agents **MUST** read and follow the instructions in the `balance-todo` skill whenever interacting with tasks, creating commits, or updating task statuses.
+
 
 ### Testing (`test:*`)
 - `task test:bdd` — Run all Gherkin BDD scenarios (`features/*.feature`) via Godog (`internal/bdd`).
