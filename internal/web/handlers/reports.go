@@ -88,7 +88,10 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                 <div class="card card-border bg-base-100 border-base-300 shadow-md">
                     <div class="card-body p-6">
                         <div class="flex justify-between items-center mb-2">
-                            <h3 class="card-title text-base font-bold">1. Age of Money</h3>
+                            <a href="/budgets/%s/reports/age-of-money" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>1. Age of Money</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
                             <span id="badge_aom" class="badge badge-accent badge-soft font-bold">%d days</span>
                         </div>
                         <p class="text-xs text-base-content/60 mb-4">Weighted average age of money spent across liquid outflows.</p>
@@ -100,7 +103,10 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                 <div class="card card-border bg-base-100 border-base-300 shadow-md">
                     <div class="card-body p-6">
                         <div class="flex justify-between items-center mb-2">
-                            <h3 class="card-title text-base font-bold">2. Income v. Expense</h3>
+                            <a href="/budgets/%s/reports/income-expense" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>2. Income v. Expense</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
                             <span id="badge_ive" class="badge badge-success badge-soft font-bold">--</span>
                         </div>
                         <p class="text-xs text-base-content/60 mb-4">Monthly cashflow P&L comparison.</p>
@@ -111,7 +117,12 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                 <!-- 3. Spending Trends -->
                 <div class="card card-border bg-base-100 border-base-300 shadow-md">
                     <div class="card-body p-6">
-                        <h3 class="card-title text-base font-bold mb-1">3. Spending Trends</h3>
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/%s/reports/spending-trends" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>3. Spending Trends</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                        </div>
                         <p class="text-xs text-base-content/60 mb-4">Category drift and monthly moving average.</p>
                         <div id="chart_trends" style="height: 200px; width: 100%%;"></div>
                     </div>
@@ -120,7 +131,12 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                 <!-- 4. Spending Breakdown -->
                 <div class="card card-border bg-base-100 border-base-300 shadow-md">
                     <div class="card-body p-6">
-                        <h3 class="card-title text-base font-bold mb-1">4. Spending Breakdown</h3>
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/%s/reports/spending-breakdown" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>4. Spending Breakdown</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                        </div>
                         <p class="text-xs text-base-content/60 mb-4">Proportional category composition.</p>
                         <div id="chart_breakdown" style="height: 200px; width: 100%%;"></div>
                     </div>
@@ -129,7 +145,12 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                 <!-- 5. Net Worth -->
                 <div class="card card-border bg-base-100 border-base-300 shadow-md">
                     <div class="card-body p-6">
-                        <h3 class="card-title text-base font-bold mb-1">5. Net Worth</h3>
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/%s/reports/net-worth" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>5. Net Worth</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                        </div>
                         <p class="text-xs text-base-content/60 mb-4">Assets minus liabilities trajectory over time.</p>
                         <div id="chart_networth" style="height: 200px; width: 100%%;"></div>
                     </div>
@@ -138,7 +159,12 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                 <!-- 6. Sankey Diagram -->
                 <div class="card card-border bg-base-100 border-base-300 shadow-md">
                     <div class="card-body p-6">
-                        <h3 class="card-title text-base font-bold mb-1">6. Sankey Flow</h3>
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/%s/reports/sankey" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>6. Sankey Flow</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                        </div>
                         <p class="text-xs text-base-content/60 mb-4">Visual multi-layer cash movement from income to envelopes.</p>
                         <div id="chart_sankey" style="height: 200px; width: 100%%;"></div>
                     </div>
@@ -147,7 +173,12 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                 <!-- 7. Balance Forecast -->
                 <div class="card card-border bg-base-100 border-base-300 shadow-md">
                     <div class="card-body p-6">
-                        <h3 class="card-title text-base font-bold mb-1">7. Balance Forecast</h3>
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/%s/reports/forecast" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>7. Balance Forecast</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                        </div>
                         <p class="text-xs text-base-content/60 mb-4">365-day cashflow runway with scheduled recurrences.</p>
                         <div id="chart_forecast" style="height: 200px; width: 100%%;"></div>
                     </div>
@@ -156,7 +187,12 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                 <!-- 8. Budget Analysis -->
                 <div class="card card-border bg-base-100 border-base-300 shadow-md">
                     <div class="card-body p-6">
-                        <h3 class="card-title text-base font-bold mb-1">8. Budget Analysis</h3>
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/%s/reports/budget-analysis" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>8. Budget Analysis</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                        </div>
                         <p class="text-xs text-base-content/60 mb-4">Envelope rollover mechanics and strategy tracking.</p>
                         <div id="chart_analysis" style="height: 200px; width: 100%%;"></div>
                     </div>
@@ -167,7 +203,10 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                     <div class="card-body p-6">
                         <div class="flex justify-between items-center mb-2">
                             <div>
-                                <h3 class="card-title text-lg font-bold">9. Monte Carlo Longevity Simulator</h3>
+                                <a href="/budgets/%s/reports/monte-carlo" class="card-title text-lg font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                    <span>9. Monte Carlo Simulator</span>
+                                    <span class="text-xs text-base-content/40">↗</span>
+                                </a>
                                 <p class="text-xs text-base-content/60">5,000 multi-pot stochastic runs with Guyton-Klinger dynamic withdrawal rules.</p>
                             </div>
                             <span id="badge_mc" class="badge badge-success badge-soft font-bold text-sm py-3 px-4">--%% Success Rate</span>
@@ -179,10 +218,16 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                 <!-- 10. Party Cashflow -->
                 <div class="card card-border bg-base-100 border-base-300 shadow-md col-span-1 md:col-span-2">
                     <div class="card-body p-6">
-                        <h3 class="card-title text-lg font-bold mb-1">10. Counterparty Cashflow</h3>
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/%s/reports/party-cashflow" class="card-title text-lg font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>10. Counterparty Cashflow</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                        </div>
                         <p class="text-xs text-base-content/60 mb-4">Net cashflow and volume aggregated per merchant (Żabka, Employer, Landlord).</p>
                         <div id="chart_party" style="height: 220px; width: 100%%;"></div>
                     </div>
+                </div>
                 </div>
             </div>
         </main>
@@ -521,7 +566,17 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
 </body>
 </html>`, csrfToken,
 		RenderSidebarNavigation(budgetID, "reports"),
+		budgetID,
 		aomHeadline,
+		budgetID,
+		budgetID,
+		budgetID,
+		budgetID,
+		budgetID,
+		budgetID,
+		budgetID,
+		budgetID,
+		budgetID,
 		RenderBottomDock(budgetID, "reports"),
 		budgetID)
 
@@ -777,4 +832,504 @@ func (h *ReportsHandler) CalculateAgeOfMoneyForBudget(ctx context.Context, tenan
 	}
 
 	return report.CalculateAgeOfMoney(inflows, outflows)
+}
+
+// ReportDetailMeta holds presentation info for dedicated report views.
+type ReportDetailMeta struct {
+	Type        string
+	Title       string
+	Description string
+	Endpoint    string
+	ChartID     string
+}
+
+var reportMetaMap = map[string]ReportDetailMeta{
+	"age-of-money": {
+		Type:        "age-of-money",
+		Title:       "Age of Money",
+		Description: "Chronological FIFO tracking of liquid inflows and outflow depletion points.",
+		Endpoint:    "age-of-money/data",
+		ChartID:     "detail_chart_aom",
+	},
+	"income-expense": {
+		Type:        "income-expense",
+		Title:       "Income vs. Expense",
+		Description: "Detailed monthly cashflow matrix and savings trajectory.",
+		Endpoint:    "income-expense/data",
+		ChartID:     "detail_chart_ive",
+	},
+	"spending-trends": {
+		Type:        "spending-trends",
+		Title:       "Spending Trends",
+		Description: "Category drift and 3-month moving average across envelope buckets.",
+		Endpoint:    "spending-trends/data",
+		ChartID:     "detail_chart_trends",
+	},
+	"spending-breakdown": {
+		Type:        "spending-breakdown",
+		Title:       "Spending Breakdown",
+		Description: "Proportional envelope expenditure distribution and category shares.",
+		Endpoint:    "spending-breakdown/data",
+		ChartID:     "detail_chart_breakdown",
+	},
+	"net-worth": {
+		Type:        "net-worth",
+		Title:       "Net Worth",
+		Description: "Historical assets minus liabilities trajectory over time.",
+		Endpoint:    "net-worth/data",
+		ChartID:     "detail_chart_networth",
+	},
+	"sankey": {
+		Type:        "sankey",
+		Title:       "Sankey Cashflow",
+		Description: "Visual multi-layer cash movement from incoming income to envelopes.",
+		Endpoint:    "sankey/data",
+		ChartID:     "detail_chart_sankey",
+	},
+	"forecast": {
+		Type:        "forecast",
+		Title:       "Balance Forecast",
+		Description: "365-day forward cashflow runway with scheduled recurrence projection.",
+		Endpoint:    "forecast/data",
+		ChartID:     "detail_chart_forecast",
+	},
+	"budget-analysis": {
+		Type:        "budget-analysis",
+		Title:       "Budget Analysis",
+		Description: "Envelope rollover mechanics, strategy tracking, and cumulative balance.",
+		Endpoint:    "budget-analysis/data",
+		ChartID:     "detail_chart_analysis",
+	},
+	"monte-carlo": {
+		Type:        "monte-carlo",
+		Title:       "Monte Carlo Longevity Simulator",
+		Description: "Stochastic multi-pot retirement longevity simulations with dynamic withdrawal rules.",
+		Endpoint:    "monte-carlo/data",
+		ChartID:     "detail_chart_mc",
+	},
+	"party-cashflow": {
+		Type:        "party-cashflow",
+		Title:       "Counterparty Cashflow",
+		Description: "Aggregated transaction volume and net cashflow per counterparty merchant.",
+		Endpoint:    "party-cashflow/data",
+		ChartID:     "detail_chart_party",
+	},
+}
+
+// ReportDetailView renders the dedicated full-screen interactive view for a single report.
+func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	reportType := c.Param("reportType")
+
+	meta, ok := reportMetaMap[reportType]
+	if !ok {
+		return c.Redirect(http.StatusSeeOther, "/budgets/"+budgetID+"/reports")
+	}
+
+	csrfToken, _ := c.Get("csrfToken").(string)
+	currency := h.getBudgetCurrency(c.Request().Context(), budgetID)
+
+	selectedRange := c.QueryParam("range")
+	if selectedRange == "" {
+		selectedRange = "30d"
+	}
+	selectedCurrency := c.QueryParam("currency")
+	if selectedCurrency == "" {
+		selectedCurrency = currency
+	}
+	excludeInternal := c.QueryParam("exclude_internal") != "false"
+
+	html := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Balance — %s</title>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="manifest" href="/manifest.webmanifest">
+</head>
+<body class="bg-base-200 text-base-content min-h-screen flex flex-col">
+    <header class="navbar bg-base-100 border-b border-base-300 px-6 sticky top-0 z-30 shadow-xs">
+        <div class="navbar-start gap-4 items-center">
+            <a href="/budgets" class="text-2xl font-black tracking-tight text-primary flex items-center gap-2">
+                <span>⚖️</span>
+                <span>Balance</span>
+            </a>
+            <div class="breadcrumbs text-sm font-medium">
+                <ul>
+                    <li><a href="/budgets/%s/reports" class="text-base-content/70 hover:text-primary">Reports</a></li>
+                    <li class="font-bold text-primary">%s</li>
+                </ul>
+            </div>
+        </div>
+        <div class="navbar-end gap-3">
+            <a href="/budgets/%s/reports" class="btn btn-ghost btn-sm gap-1">
+                <span>←</span>
+                <span>Back to Dashboard</span>
+            </a>
+            <form method="POST" action="/logout">
+                <input type="hidden" name="csrf_token" value="%s" />
+                <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
+            </form>
+        </div>
+    </header>
+
+    <div class="flex-1 flex overflow-hidden">
+        <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
+            %s
+        </aside>
+
+        <main class="flex-1 p-6 md:p-8 overflow-y-auto flex flex-col gap-6">
+            <!-- Header & Filter Controls Bar -->
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-base-100 p-6 rounded-2xl border border-base-300 shadow-sm">
+                <div>
+                    <h1 class="text-2xl md:text-3xl font-black tracking-tight">%s</h1>
+                    <p class="text-sm text-base-content/60 mt-1">%s</p>
+                </div>
+
+                <!-- Filters Form -->
+                <form id="report-filters-form" method="GET" class="flex flex-wrap items-center gap-3">
+                    <!-- Date Range Selector -->
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs font-semibold">Range</span></label>
+                        <select name="range" class="select select-bordered select-sm font-medium" onchange="this.form.submit()">
+                            <option value="30d" %s>Last 30 Days</option>
+                            <option value="90d" %s>Last 90 Days</option>
+                            <option value="180d" %s>Last 180 Days</option>
+                            <option value="YTD" %s>Year to Date (YTD)</option>
+                            <option value="1y" %s>Last 1 Year</option>
+                            <option value="all" %s>All Time</option>
+                        </select>
+                    </div>
+
+                    <!-- Display Currency Selector -->
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs font-semibold">Currency</span></label>
+                        <select name="currency" class="select select-bordered select-sm font-medium" onchange="this.form.submit()">
+                            <option value="PLN" %s>PLN</option>
+                            <option value="EUR" %s>EUR</option>
+                            <option value="USD" %s>USD</option>
+                            <option value="GBP" %s>GBP</option>
+                        </select>
+                    </div>
+
+                    <!-- Exclude Internal Transfers Toggle -->
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs font-semibold">Transfers</span></label>
+                        <label class="label cursor-pointer gap-2 border border-base-300 px-3 py-1.5 rounded-lg bg-base-200">
+                            <span class="label-text text-xs">Exclude Internal</span>
+                            <input type="checkbox" name="exclude_internal" value="true" class="checkbox checkbox-sm checkbox-primary" %s onchange="this.form.submit()" />
+                        </label>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Full-Screen Interactive Chart Container -->
+            <div class="card card-border bg-base-100 border-base-300 shadow-md flex-1 min-h-[500px]">
+                <div class="card-body p-6 flex flex-col">
+                    <div id="%s" class="w-full flex-1 min-h-[460px]"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    %s
+
+    <script>
+        const chartBg = 'transparent';
+        const textStyle = { color: 'rgba(255, 255, 255, 0.7)', fontSize: 12 };
+        const budgetId = '%s';
+        const endpoint = '%s';
+        const chartId = '%s';
+        const curr = '%s';
+        const excludeInternal = %t;
+
+        function formatMoney(minor) {
+            return (minor / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + curr;
+        }
+
+        async function fetchJSON(url) {
+            try {
+                const res = await fetch(url);
+                if (!res.ok) return null;
+                return await res.json();
+            } catch (e) {
+                console.error("fetch error:", url, e);
+                return null;
+            }
+        }
+
+        (async () => {
+            const chartDom = document.getElementById(chartId);
+            if (!chartDom) return;
+            const chart = echarts.init(chartDom);
+            chart.showLoading({ color: '#3b82f6' });
+
+            const dataUrl = '/budgets/' + budgetId + '/reports/' + endpoint + '?currency=' + curr + '&exclude_internal=' + excludeInternal;
+            const data = await fetchJSON(dataUrl);
+            chart.hideLoading();
+
+            const type = '%s';
+            if (type === 'age-of-money') {
+                const history = (data && data.history && data.history.length > 0) ? data.history : [];
+                const xData = history.map((h, i) => 'P' + (i + 1));
+                const yData = history.map(h => h.age_days);
+
+                chart.setOption({
+                    backgroundColor: chartBg,
+                    textStyle: textStyle,
+                    tooltip: { trigger: 'axis', formatter: '{b}: {c} days' },
+                    grid: { top: 40, right: 30, bottom: 40, left: 50 },
+                    xAxis: { type: 'category', data: xData.length ? xData : ['Start'], axisLine: { lineStyle: { color: 'rgba(255,255,255,0.2)' } } },
+                    yAxis: { type: 'value', name: 'Days', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
+                    series: [{ data: yData.length ? yData : [0], type: 'line', smooth: true, color: '#06b6d4', areaStyle: { opacity: 0.15 } }]
+                });
+            } else if (type === 'income-expense') {
+                const months = (data && data.months) ? data.months : [];
+                const xData = months.map(m => m.month_key);
+                const incomeData = months.map(m => m.income_minor / 100);
+                const expenseData = months.map(m => m.expense_minor / 100);
+                const savingsData = months.map(m => m.net_savings_minor / 100);
+
+                chart.setOption({
+                    backgroundColor: chartBg,
+                    textStyle: textStyle,
+                    tooltip: { trigger: 'axis' },
+                    legend: { textStyle: textStyle, top: 0, data: ['Income', 'Expense', 'Net Savings'] },
+                    grid: { top: 50, right: 30, bottom: 40, left: 60 },
+                    xAxis: { type: 'category', data: xData.length ? xData : ['No Data'], axisLine: { lineStyle: { color: 'rgba(255,255,255,0.2)' } } },
+                    yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
+                    series: [
+                        { name: 'Income', type: 'bar', data: incomeData, color: '#22c55e', borderRadius: [6, 6, 0, 0] },
+                        { name: 'Expense', type: 'bar', data: expenseData, color: '#ef4444', borderRadius: [6, 6, 0, 0] },
+                        { name: 'Net Savings', type: 'line', smooth: true, data: savingsData, color: '#3b82f6', lineStyle: { width: 3 } }
+                    ]
+                });
+            } else if (type === 'spending-trends') {
+                const pts = (data && data.points) ? data.points : [];
+                const xData = pts.map(p => p.month_key);
+                const totalData = pts.map(p => p.total_spent_minor / 100);
+                const avgData = pts.map(p => p.moving_avg_minor / 100);
+
+                chart.setOption({
+                    backgroundColor: chartBg,
+                    textStyle: textStyle,
+                    tooltip: { trigger: 'axis' },
+                    legend: { textStyle: textStyle, data: ['Total Spent', '3-Month Moving Average'], top: 0 },
+                    grid: { top: 50, right: 30, bottom: 40, left: 60 },
+                    xAxis: { type: 'category', data: xData.length ? xData : ['No Data'], axisLine: { lineStyle: { color: 'rgba(255,255,255,0.2)' } } },
+                    yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
+                    series: [
+                        { name: 'Total Spent', type: 'bar', data: totalData, color: '#ec4899', borderRadius: [6, 6, 0, 0] },
+                        { name: '3-Month Moving Average', type: 'line', smooth: true, data: avgData, color: '#eab308', lineStyle: { width: 3 } }
+                    ]
+                });
+            } else if (type === 'spending-breakdown') {
+                const items = (data && data.items) ? data.items : [];
+                const pieData = items.map(it => ({
+                    name: it.bucket_name || 'Unassigned',
+                    value: it.total_spent_minor / 100
+                }));
+
+                chart.setOption({
+                    backgroundColor: chartBg,
+                    textStyle: textStyle,
+                    tooltip: { trigger: 'item', formatter: '{b}: {c} ' + curr + ' ({d}%%)' },
+                    legend: { type: 'scroll', orient: 'vertical', right: 20, top: 40, bottom: 20, textStyle: textStyle },
+                    series: [{
+                        type: 'pie',
+                        radius: ['45%%', '75%%'],
+                        center: ['40%%', '50%%'],
+                        avoidLabelOverlap: false,
+                        itemStyle: { borderRadius: 8, borderColor: '#1f2937', borderWidth: 2 },
+                        label: { show: false },
+                        emphasis: { label: { show: true, fontSize: 14, fontWeight: 'bold' } },
+                        data: pieData.length ? pieData : [{ name: 'No Spending', value: 0 }]
+                    }]
+                });
+            } else if (type === 'net-worth') {
+                const pts = (data && data.points) ? data.points : [];
+                const xData = pts.map(p => p.month_key);
+                const netData = pts.map(p => p.net_worth_minor / 100);
+                const assetData = pts.map(p => p.assets_minor / 100);
+                const liabData = pts.map(p => p.liabilities_minor / 100);
+
+                chart.setOption({
+                    backgroundColor: chartBg,
+                    textStyle: textStyle,
+                    tooltip: { trigger: 'axis' },
+                    legend: { textStyle: textStyle, data: ['Net Worth', 'Assets', 'Liabilities'], top: 0 },
+                    grid: { top: 50, right: 30, bottom: 40, left: 70 },
+                    xAxis: { type: 'category', data: xData.length ? xData : ['No Data'], axisLine: { lineStyle: { color: 'rgba(255,255,255,0.2)' } } },
+                    yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
+                    series: [
+                        { name: 'Net Worth', type: 'line', smooth: true, data: netData, color: '#3b82f6', areaStyle: { opacity: 0.2 }, lineStyle: { width: 3 } },
+                        { name: 'Assets', type: 'line', smooth: true, data: assetData, color: '#22c55e', lineStyle: { type: 'dashed' } },
+                        { name: 'Liabilities', type: 'line', smooth: true, data: liabData, color: '#ef4444', lineStyle: { type: 'dashed' } }
+                    ]
+                });
+            } else if (type === 'sankey') {
+                const nodes = (data && data.nodes) ? data.nodes.map(n => ({ name: n.name })) : [];
+                const links = (data && data.links) ? data.links.map(l => ({
+                    source: l.source,
+                    target: l.target,
+                    value: l.value_minor / 100
+                })) : [];
+
+                if (nodes.length === 0) {
+                    nodes.push({ name: 'Income' }, { name: 'Envelopes' });
+                    links.push({ source: 'Income', target: 'Envelopes', value: 0 });
+                }
+
+                chart.setOption({
+                    backgroundColor: chartBg,
+                    textStyle: textStyle,
+                    tooltip: { trigger: 'item', triggerOn: 'mousemove' },
+                    series: [{
+                        type: 'sankey',
+                        layout: 'none',
+                        top: 40,
+                        bottom: 40,
+                        left: 50,
+                        right: 50,
+                        emphasis: { focus: 'adjacency' },
+                        lineStyle: { color: 'gradient', curveness: 0.5 },
+                        data: nodes,
+                        links: links
+                    }]
+                });
+            } else if (type === 'forecast') {
+                const pts = (data && data.points) ? data.points : [];
+                const xData = pts.map(p => p.date);
+                const yData = pts.map(p => p.projected_balance_minor / 100);
+
+                chart.setOption({
+                    backgroundColor: chartBg,
+                    textStyle: textStyle,
+                    tooltip: { trigger: 'axis' },
+                    grid: { top: 40, right: 30, bottom: 40, left: 70 },
+                    xAxis: { type: 'category', data: xData.length ? xData : ['Today'], axisLine: { lineStyle: { color: 'rgba(255,255,255,0.2)' } } },
+                    yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
+                    series: [{ name: 'Projected Balance', data: yData.length ? yData : [0], type: 'line', smooth: true, color: '#6366f1', areaStyle: { opacity: 0.15 } }]
+                });
+            } else if (type === 'budget-analysis') {
+                const pts = (data && data.points) ? data.points : [];
+                const xData = pts.map(p => p.period_key);
+                const budgetedData = pts.map(p => p.budgeted_minor / 100);
+                const spentData = pts.map(p => p.spent_minor / 100);
+                const cumData = pts.map(p => p.cumulative_balance_minor / 100);
+
+                chart.setOption({
+                    backgroundColor: chartBg,
+                    textStyle: textStyle,
+                    tooltip: { trigger: 'axis' },
+                    legend: { textStyle: textStyle, data: ['Budgeted', 'Spent', 'Cumulative Balance'], top: 0 },
+                    grid: { top: 50, right: 30, bottom: 40, left: 60 },
+                    xAxis: { type: 'category', data: xData.length ? xData : ['No Data'], axisLine: { lineStyle: { color: 'rgba(255,255,255,0.2)' } } },
+                    yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
+                    series: [
+                        { name: 'Budgeted', type: 'bar', data: budgetedData, color: '#38bdf8', borderRadius: [6, 6, 0, 0] },
+                        { name: 'Spent', type: 'bar', data: spentData, color: '#f87171', borderRadius: [6, 6, 0, 0] },
+                        { name: 'Cumulative Balance', type: 'line', smooth: true, data: cumData, color: '#10b981', lineStyle: { width: 3 } }
+                    ]
+                });
+            } else if (type === 'monte-carlo') {
+                const p10 = (data && data.p10_trajectory) ? data.p10_trajectory.map(v => v / 100) : [];
+                const p50 = (data && data.p50_trajectory) ? data.p50_trajectory.map(v => v / 100) : [];
+                const p90 = (data && data.p90_trajectory) ? data.p90_trajectory.map(v => v / 100) : [];
+                const xData = p50.map((_, i) => 'Age ' + (40 + i));
+
+                chart.setOption({
+                    backgroundColor: chartBg,
+                    textStyle: textStyle,
+                    tooltip: { trigger: 'axis' },
+                    legend: { textStyle: textStyle, data: ['P90 Optimistic', 'P50 Median', 'P10 Conservative'], top: 0 },
+                    grid: { top: 50, right: 40, bottom: 40, left: 70 },
+                    xAxis: { type: 'category', data: xData.length ? xData : ['Age 40', 'Age 65'], axisLine: { lineStyle: { color: 'rgba(255,255,255,0.2)' } } },
+                    yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
+                    series: [
+                        { name: 'P90 Optimistic', type: 'line', data: p90, color: '#22c55e', smooth: true },
+                        { name: 'P50 Median', type: 'line', data: p50, color: '#3b82f6', smooth: true },
+                        { name: 'P10 Conservative', type: 'line', data: p10, color: '#f59e0b', smooth: true }
+                    ]
+                });
+            } else if (type === 'party-cashflow') {
+                const parties = (data && data.parties) ? data.parties.slice(0, 15) : [];
+                const yAxisData = parties.map(p => p.party_name);
+                const netData = parties.map(p => p.net_flow_minor / 100);
+
+                chart.setOption({
+                    backgroundColor: chartBg,
+                    textStyle: textStyle,
+                    tooltip: { trigger: 'axis' },
+                    grid: { top: 30, right: 40, bottom: 40, left: 140 },
+                    xAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
+                    yAxis: { type: 'category', data: yAxisData.length ? yAxisData : ['No Counterparties'], axisLine: { lineStyle: { color: 'rgba(255,255,255,0.2)' } } },
+                    series: [{
+                        name: 'Net Cashflow',
+                        type: 'bar',
+                        data: netData,
+                        itemStyle: {
+                            color: function(params) {
+                                return params.value >= 0 ? '#22c55e' : '#ef4444';
+                            },
+                            borderRadius: [0, 6, 6, 0]
+                        }
+                    }]
+                });
+            }
+
+            window.addEventListener('resize', () => chart.resize());
+        })();
+    </script>
+</body>
+</html>`,
+		meta.Title,
+		budgetID,
+		meta.Title,
+		budgetID,
+		csrfToken,
+		RenderSidebarNavigation(budgetID, "reports"),
+		meta.Title,
+		meta.Description,
+		selectedAttr(selectedRange == "30d"),
+		selectedAttr(selectedRange == "90d"),
+		selectedAttr(selectedRange == "180d"),
+		selectedAttr(selectedRange == "YTD"),
+		selectedAttr(selectedRange == "1y"),
+		selectedAttr(selectedRange == "all"),
+		selectedAttr(selectedCurrency == "PLN"),
+		selectedAttr(selectedCurrency == "EUR"),
+		selectedAttr(selectedCurrency == "USD"),
+		selectedAttr(selectedCurrency == "GBP"),
+		checkedAttr(excludeInternal),
+		meta.ChartID,
+		RenderBottomDock(budgetID, "reports"),
+		budgetID,
+		meta.Endpoint,
+		meta.ChartID,
+		selectedCurrency,
+		excludeInternal,
+		meta.Type)
+
+	return c.HTML(http.StatusOK, html)
+}
+
+func selectedAttr(b bool) string {
+	if b {
+		return "selected"
+	}
+	return ""
+}
+
+func checkedAttr(b bool) string {
+	if b {
+		return "checked"
+	}
+	return ""
 }

@@ -38,3 +38,10 @@ Feature: Comprehensive Reporting, Age of Money and Monte Carlo Simulation
       | Budget Analysis        |
       | Monte Carlo Simulator  |
       | Counterparty Cashflow  |
+
+  Scenario: Viewing dedicated full-page detailed report
+    Given an authenticated user on budget "Family Home"
+    When I navigate to "/budgets/:budgetId/reports/income-expense"
+    Then the detailed report page should display title "Income vs. Expense"
+    And the page should render filter controls for date range, currency, and internal transfers
+    And the full-screen report chart container should be present

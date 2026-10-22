@@ -2809,6 +2809,82 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		return nil
 	})
+
+	// 09_reporting_and_analytics.feature: Dedicated detailed report
+	ctx.Step(`^an authenticated user on budget "([^"]*)"$`, func(budgetName string) error {
+		// Provision budget and user if not already set
+		if tc.activeBudgetID == "" {
+			tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+			tc.activeUserID = "user_1"
+			now := time.Now().UTC().UnixMicro()
+			_, _ = tc.mainDB.Exec(`INSERT OR IGNORE INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES ('user_1', 'user1@example.com', 'h', 'User One', ?, ?)`, now, now)
+			_, _ = tc.mainDB.Exec(`INSERT OR IGNORE INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at) VALUES ('01900000-0000-7000-8000-000000000001', ?, 'PLN', 'UTC', 'user_1', ?, ?)`, budgetName, now, now)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I navigate to "([^"]*)"$`, func(path string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		actualPath := strings.ReplaceAll(path, ":budgetId", tc.activeBudgetID)
+
+		req := httptest.NewRequest(http.MethodGet, actualPath, nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("csrfToken", "dummy_csrf_token")
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		if strings.HasSuffix(actualPath, "/reports") {
+			err = tc.reportsHandler.ReportsView(c)
+		} else if strings.Contains(actualPath, "/reports/") {
+			parts := strings.Split(actualPath, "/reports/")
+			c.SetParamNames("budgetId", "reportType")
+			c.SetParamValues(tc.activeBudgetID, parts[1])
+			err = tc.reportsHandler.ReportDetailView(c)
+		}
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the reports dashboard should render (\d+) report cards:$`, func(count int, table *godog.Table) error {
+		body := tc.lastResponse.Body.String()
+		for _, row := range table.Rows[1:] {
+			cardName := row.Cells[0].Value
+			if !strings.Contains(body, cardName) {
+				return fmt.Errorf("expected report card %q in dashboard body", cardName)
+			}
+		}
+		return nil
+	})
+
+	ctx.Step(`^the detailed report page should display title "([^"]*)"$`, func(expectedTitle string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, expectedTitle) {
+			return fmt.Errorf("expected title %q in response body", expectedTitle)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the page should render filter controls for date range, currency, and internal transfers$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "name=\"range\"") || !strings.Contains(body, "name=\"currency\"") || !strings.Contains(body, "name=\"exclude_internal\"") {
+			return fmt.Errorf("expected filter controls in response body")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the full-screen report chart container should be present$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "detail_chart_") {
+			return fmt.Errorf("expected detail_chart_ container in response body")
+		}
+		return nil
+	})
 }
 
 func TestFeatures(t *testing.T) {

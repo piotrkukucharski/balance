@@ -117,6 +117,7 @@ func main() {
 	tenantViewer.GET("/transactions/import-csv", txHandler.CSVImportPage)
 	tenantViewer.GET("/transactions/sync/events", txHandler.SyncBankEvents)
 	tenantViewer.GET("/reports", reportsHandler.ReportsView)
+	tenantViewer.GET("/reports/:reportType", reportsHandler.ReportDetailView)
 	tenantViewer.GET("/reports/age-of-money/data", reportsHandler.GetAgeOfMoneyData)
 	tenantViewer.GET("/reports/income-expense/data", reportsHandler.GetIncomeExpenseData)
 	tenantViewer.GET("/reports/spending-trends/data", reportsHandler.GetSpendingTrendsData)
