@@ -1,0 +1,2774 @@
+openapi: 3.1.0
+info:
+  title: Balance Personal Finance REST API
+  version: 1.0.0
+  description: >
+    OpenAPI 3.1 Contract for Balance Personal Finance application.
+    Implements multi-tenant budgeting, double-entry financial ledger,
+    currency exchange rates, automated matching rules, and advanced YNAB/Actual-inspired analytics.
+servers:
+  - url: /api/v1
+    description: Current API v1 endpoint
+paths:
+  /auth/register:
+    post:
+      summary: Register a new user account
+      operationId: registerUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+
+  /auth/login:
+    post:
+      summary: User login
+      operationId: loginUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Logged in successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /auth/logout:
+    post:
+      summary: User logout
+      operationId: logoutUser
+      responses:
+        '204':
+          description: Logged out successfully
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /auth/tokens:
+    get:
+      summary: List personal access tokens
+      operationId: listTokens
+      responses:
+        '200':
+          description: List of active and historical tokens
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ApiTokenItem'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+    post:
+      summary: Create a personal access token
+      operationId: createToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTokenRequest'
+      responses:
+        '201':
+          description: Personal access token created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateTokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /auth/tokens/{id}:
+    delete:
+      summary: Revoke a personal access token
+      operationId: revokeToken
+      parameters:
+        - $ref: '#/components/parameters/IdPathParam'
+      responses:
+        '204':
+          description: Token revoked successfully
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /users/me:
+    get:
+      summary: Get current user profile
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: User profile details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+    put:
+      summary: Update current user profile
+      operationId: updateCurrentUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+      responses:
+        '200':
+          description: Updated user profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /exchange-rates:
+    get:
+      summary: Query historical exchange rates
+      operationId: getExchangeRates
+      parameters:
+        - name: base
+          in: query
+          required: true
+          schema:
+            type: string
+            example: EUR
+        - name: target
+          in: query
+          required: true
+          schema:
+            type: string
+            example: PLN
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            description: UTC microseconds timestamp
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            description: UTC microseconds timestamp
+      responses:
+        '200':
+          description: Exchange rate time-series
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ExchangeRateItem'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /exchange-rates/sync:
+    post:
+      summary: Trigger synchronization of central bank exchange rates
+      operationId: syncExchangeRates
+      responses:
+        '200':
+          description: Rates synchronized successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncRatesResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  /budgets:
+    get:
+      summary: List user budgets
+      operationId: listBudgets
+      responses:
+        '200':
+          description: Budgets the user is a member of
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BudgetSummary'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+    post:
+      summary: Create a new budget
+      operationId: createBudget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBudgetRequest'
+      responses:
+        '201':
+          description: Budget created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetSummary'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /budgets/{budgetId}:
+    patch:
+      summary: Update budget settings (OWNER required)
+      operationId: updateBudget
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBudgetRequest'
+      responses:
+        '200':
+          description: Budget updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetSummary'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /budgets/{budgetId}/invitations:
+    post:
+      summary: Invite a user to the budget (ADMIN+ required)
+      operationId: inviteBudgetMember
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInvitationRequest'
+      responses:
+        '201':
+          description: Invitation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvitationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /invitations/{token}/accept:
+    post:
+      summary: Accept a budget invitation
+      operationId: acceptInvitation
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Invitation accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcceptInvitationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /integrations/providers:
+    get:
+      summary: List supported bank integration providers
+      operationId: listIntegrationProviders
+      responses:
+        '200':
+          description: Supported integration providers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/IntegrationProvider'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /integrations/{provider}/connect:
+    post:
+      summary: Generate OAuth authorization URL and state token
+      operationId: connectProvider
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [GOCARDLESS, MOCK, CSV]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectProviderRequest'
+      responses:
+        '200':
+          description: Authorization redirection details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectProviderResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /integrations/{provider}/callback:
+    get:
+      summary: OAuth callback handler
+      operationId: providerCallback
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: ref
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Provider connected successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderCallbackResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /budgets/{budgetId}/integrations/{integrationId}/link-account:
+    post:
+      summary: Link bank integration to a budget account (EDITOR+ required)
+      operationId: linkIntegrationAccount
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - name: integrationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LinkAccountRequest'
+      responses:
+        '200':
+          description: Account linked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountIntegrationLinkResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /budgets/{budgetId}/integrations/{integrationId}/sync:
+    post:
+      summary: Trigger bank integration sync (EDITOR+ required)
+      operationId: syncIntegration
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - name: integrationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Sync started or completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncIntegrationResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  /budgets/{budgetId}/accounts/{accountId}/import-csv:
+    post:
+      summary: Import CSV bank statement into account (EDITOR+ required)
+      operationId: importAccountCsv
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: CSV file (max 10 MiB / 50,000 rows)
+      responses:
+        '200':
+          description: CSV parsed and imported
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CsvImportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /budgets/{budgetId}/parties:
+    get:
+      summary: List parties in budget
+      operationId: listParties
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      responses:
+        '200':
+          description: List of parties
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Party'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+    post:
+      summary: Create a party
+      operationId: createParty
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePartyRequest'
+      responses:
+        '201':
+          description: Party created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Party'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /budgets/{budgetId}/parties/{id}:
+    put:
+      summary: Update a party
+      operationId: updateParty
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/IdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePartyRequest'
+      responses:
+        '200':
+          description: Party updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Party'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /budgets/{budgetId}/parties/{id}/cashflow:
+    get:
+      summary: Query party cashflow
+      operationId: getPartyCashflow
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/IdPathParam'
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: exclude_internal
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Party cashflow summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartyCashflowSummary'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /budgets/{budgetId}/accounts:
+    get:
+      summary: List budget accounts
+      operationId: listAccounts
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      responses:
+        '200':
+          description: List of accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Account'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+    post:
+      summary: Create a budget account
+      operationId: createAccount
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAccountRequest'
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /budgets/{budgetId}/matching-rules:
+    get:
+      summary: List matching rules
+      operationId: listMatchingRules
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      responses:
+        '200':
+          description: List of matching rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MatchingRule'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+    post:
+      summary: Create a matching rule
+      operationId: createMatchingRule
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMatchingRuleRequest'
+      responses:
+        '201':
+          description: Rule created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchingRule'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /budgets/{budgetId}/{entityType}/{id}/history:
+    get:
+      summary: Get entity version history (ADMIN+ required)
+      operationId: getEntityHistory
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - name: entityType
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [parties, accounts, matching-rules, raw-transactions, budget-transactions, saved-reports]
+        - $ref: '#/components/parameters/IdPathParam'
+      responses:
+        '200':
+          description: Entity historical versions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EntityVersionItem'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /budgets/{budgetId}/{entityType}/{id}/restore:
+    post:
+      summary: Restore entity to a previous version (ADMIN+ required)
+      operationId: restoreEntityVersion
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - name: entityType
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [parties, accounts, matching-rules, raw-transactions, budget-transactions, saved-reports]
+        - $ref: '#/components/parameters/IdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RestoreVersionRequest'
+      responses:
+        '200':
+          description: Entity restored successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestoreVersionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /budgets/{budgetId}/raw-transactions:
+    get:
+      summary: List raw transactions
+      operationId: listRawTransactions
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [PENDING, PROCESSED, IGNORED]
+        - name: account_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of raw transactions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RawTransaction'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /budgets/{budgetId}/transactions:
+    get:
+      summary: List budget transactions
+      operationId: listBudgetTransactions
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: bucket_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of budget transactions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BudgetTransaction'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+    post:
+      summary: Create a direct budget transaction (Cash / non-integrated)
+      operationId: createBudgetTransaction
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBudgetTransactionRequest'
+      responses:
+        '201':
+          description: Budget transaction created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetTransaction'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /budgets/{budgetId}/transactions/resolve:
+    post:
+      summary: Resolve raw transactions into budget transactions (Move, Merge, Split)
+      operationId: resolveTransactions
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveTransactionsRequest'
+      responses:
+        '200':
+          description: Transactions resolved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResolveTransactionsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /budgets/{budgetId}/buckets:
+    get:
+      summary: List buckets with balances
+      operationId: listBuckets
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      responses:
+        '200':
+          description: List of buckets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Bucket'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+    post:
+      summary: Create a bucket
+      operationId: createBucket
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBucketRequest'
+      responses:
+        '201':
+          description: Bucket created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bucket'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /budgets/{budgetId}/buckets/{id}/targets:
+    post:
+      summary: Create a target in a bucket
+      operationId: createTarget
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/IdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTargetRequest'
+      responses:
+        '201':
+          description: Target created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Target'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /budgets/{budgetId}/targets/generate-formula:
+    post:
+      summary: Generate Lua formula with AI assistant (EDITOR+ required)
+      operationId: generateFormula
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateFormulaRequest'
+      responses:
+        '200':
+          description: Formula generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerateFormulaResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  /budgets/{budgetId}/targets/validate-formula:
+    post:
+      summary: Validate Lua formula AST and sandbox dry-run (EDITOR+ required)
+      operationId: validateFormula
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateFormulaRequest'
+      responses:
+        '200':
+          description: Formula validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidateFormulaResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /budgets/{budgetId}/targets/{id}/fund:
+    post:
+      summary: Manually fund a target from Ready to Assign
+      operationId: fundTarget
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/IdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FundTargetRequest'
+      responses:
+        '200':
+          description: Target funded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Target'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /budgets/{budgetId}/view/horizon:
+    get:
+      summary: Get rolling horizon envelope funding view
+      operationId: getHorizonView
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - name: days
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 90
+            example: 90
+      responses:
+        '200':
+          description: Horizon envelope requirements and funding status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HorizonViewResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /budgets/{budgetId}/reports/saved:
+    get:
+      summary: List saved report widgets
+      operationId: listSavedReports
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      responses:
+        '200':
+          description: Saved reports
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SavedReport'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+    post:
+      summary: Save a report widget
+      operationId: createSavedReport
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSavedReportRequest'
+      responses:
+        '201':
+          description: Saved report created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedReport'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /budgets/{budgetId}/reports/saved/{id}:
+    put:
+      summary: Update a saved report widget
+      operationId: updateSavedReport
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/IdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSavedReportRequest'
+      responses:
+        '200':
+          description: Saved report updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedReport'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /budgets/{budgetId}/reports/age-of-money:
+    get:
+      summary: Calculate Age of Money report
+      operationId: getAgeOfMoneyReport
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      responses:
+        '200':
+          description: Age of Money headline and historical timeline
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgeOfMoneyReport'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /budgets/{budgetId}/reports/income-vs-expense:
+    get:
+      summary: Calculate Income vs Expense report
+      operationId: getIncomeVsExpenseReport
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/ReportCommonQueryParams'
+      responses:
+        '200':
+          description: Income vs Expense matrix
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncomeVsExpenseReport'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /budgets/{budgetId}/reports/spending-trends:
+    get:
+      summary: Calculate Spending Trends report
+      operationId: getSpendingTrendsReport
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/ReportCommonQueryParams'
+      responses:
+        '200':
+          description: Spending trends over time intervals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpendingTrendsReport'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /budgets/{budgetId}/reports/spending-breakdown:
+    get:
+      summary: Calculate Spending Breakdown report
+      operationId: getSpendingBreakdownReport
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/ReportCommonQueryParams'
+      responses:
+        '200':
+          description: Categorical spending breakdown
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpendingBreakdownReport'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /budgets/{budgetId}/reports/net-worth:
+    get:
+      summary: Calculate Net Worth report
+      operationId: getNetWorthReport
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/ReportCommonQueryParams'
+      responses:
+        '200':
+          description: Net worth assets, debts, and totals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetWorthReport'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /budgets/{budgetId}/reports/sankey:
+    get:
+      summary: Calculate Sankey flow diagram data
+      operationId: getSankeyReport
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/ReportCommonQueryParams'
+      responses:
+        '200':
+          description: Sankey flow nodes and links
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SankeyReport'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /budgets/{budgetId}/reports/balance-forecast:
+    get:
+      summary: Calculate Balance Forecast report
+      operationId: getBalanceForecastReport
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - name: days
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 90
+            example: 90
+      responses:
+        '200':
+          description: Daily balance forecast and lowest projected balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BalanceForecastReport'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /budgets/{budgetId}/reports/budget-analysis:
+    get:
+      summary: Calculate Budget Analysis execution report
+      operationId: getBudgetAnalysisReport
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/ReportCommonQueryParams'
+      responses:
+        '200':
+          description: Envelope rollover and budget execution series
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetAnalysisReport'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /budgets/{budgetId}/reports/monte-carlo/simulate:
+    post:
+      summary: Run Monte Carlo probabilistic retirement simulation
+      operationId: simulateMonteCarlo
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MonteCarloRequest'
+      responses:
+        '200':
+          description: Simulation results and percentile trajectories
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MonteCarloResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  /budgets/{budgetId}/reports/party-cashflow:
+    get:
+      summary: Query aggregated party cashflow
+      operationId: getPartyCashflowReport
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/ReportCommonQueryParams'
+      responses:
+        '200':
+          description: Aggregated inflows and outflows per party
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartyCashflowReport'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Personal Access Token (bal_pat_...)
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: balance_session
+      description: Stateful browser session cookie
+
+  parameters:
+    BudgetIdPathParam:
+      name: budgetId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdPathParam:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ReportCommonQueryParams:
+      name: params
+      in: query
+      required: false
+      schema:
+        type: object
+        properties:
+          from:
+            type: integer
+            format: int64
+          to:
+            type: integer
+            format: int64
+          currency:
+            type: string
+          exclude_internal:
+            type: boolean
+
+  responses:
+    BadRequestError:
+      description: Invalid request parameters or body
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnauthorizedError:
+      description: Authentication required or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ForbiddenError:
+      description: Insufficient permissions for requested action
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFoundError:
+      description: Requested resource was not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ConflictError:
+      description: Conflict with existing state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    RateLimitError:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          example: Invalid input data
+        code:
+          type: string
+          example: INVALID_ARGUMENT
+        details:
+          type: string
+
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - password
+        - display_name
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+        display_name:
+          type: string
+          minLength: 1
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    LoginResponse:
+      type: object
+      required:
+        - user
+      properties:
+        user:
+          $ref: '#/components/schemas/UserResponse'
+
+    UserResponse:
+      type: object
+      required:
+        - id
+        - email
+        - display_name
+        - locale
+        - date_format
+        - number_format
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        locale:
+          type: string
+          example: en-US
+        date_format:
+          type: string
+          example: YYYY-MM-DD
+        number_format:
+          type: string
+          example: 1,234.56
+        created_at:
+          type: integer
+          format: int64
+
+    UpdateUserRequest:
+      type: object
+      properties:
+        display_name:
+          type: string
+        locale:
+          type: string
+        date_format:
+          type: string
+        number_format:
+          type: string
+
+    CreateTokenRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+        expires_in_days:
+          type: integer
+          default: 30
+
+    CreateTokenResponse:
+      type: object
+      required:
+        - id
+        - name
+        - token
+        - expires_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        token:
+          type: string
+          description: Cleartext Personal Access Token (only shown once)
+          example: bal_pat_a1b2c3d4e5f6...
+        expires_at:
+          type: integer
+          format: int64
+
+    ApiTokenItem:
+      type: object
+      required:
+        - id
+        - name
+        - created_at
+        - expires_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        created_at:
+          type: integer
+          format: int64
+        expires_at:
+          type: integer
+          format: int64
+        last_used_at:
+          type: integer
+          format: int64
+          nullable: true
+        revoked_at:
+          type: integer
+          format: int64
+          nullable: true
+
+    ExchangeRateItem:
+      type: object
+      required:
+        - base_currency
+        - target_currency
+        - rate_date
+        - rate_micros
+        - source
+      properties:
+        base_currency:
+          type: string
+        target_currency:
+          type: string
+        rate_date:
+          type: integer
+          format: int64
+        rate_micros:
+          type: integer
+          format: int64
+        source:
+          type: string
+
+    SyncRatesResponse:
+      type: object
+      required:
+        - synced_count
+      properties:
+        synced_count:
+          type: integer
+
+    BudgetSummary:
+      type: object
+      required:
+        - id
+        - name
+        - default_currency
+        - timezone
+        - role
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        default_currency:
+          type: string
+        timezone:
+          type: string
+        role:
+          type: string
+          enum: [OWNER, ADMIN, EDITOR, VIEWER]
+        created_at:
+          type: integer
+          format: int64
+
+    CreateBudgetRequest:
+      type: object
+      required:
+        - name
+        - default_currency
+        - timezone
+      properties:
+        name:
+          type: string
+          minLength: 1
+        default_currency:
+          type: string
+          example: PLN
+        timezone:
+          type: string
+          example: Europe/Warsaw
+
+    UpdateBudgetRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        timezone:
+          type: string
+
+    CreateInvitationRequest:
+      type: object
+      required:
+        - email
+        - role
+      properties:
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [ADMIN, EDITOR, VIEWER]
+
+    InvitationResponse:
+      type: object
+      required:
+        - id
+        - email
+        - role
+        - invite_token
+        - expires_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [ADMIN, EDITOR, VIEWER]
+        invite_token:
+          type: string
+        expires_at:
+          type: integer
+          format: int64
+
+    AcceptInvitationResponse:
+      type: object
+      required:
+        - budget_id
+        - role
+      properties:
+        budget_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+
+    IntegrationProvider:
+      type: object
+      required:
+        - provider
+        - display_name
+      properties:
+        provider:
+          type: string
+        display_name:
+          type: string
+
+    ConnectProviderRequest:
+      type: object
+      properties:
+        institution_id:
+          type: string
+        country:
+          type: string
+
+    ConnectProviderResponse:
+      type: object
+      required:
+        - redirect_url
+        - state
+      properties:
+        redirect_url:
+          type: string
+        state:
+          type: string
+
+    ProviderCallbackResponse:
+      type: object
+      required:
+        - integration_id
+        - provider
+        - status
+      properties:
+        integration_id:
+          type: string
+          format: uuid
+        provider:
+          type: string
+        status:
+          type: string
+
+    LinkAccountRequest:
+      type: object
+      required:
+        - account_id
+        - external_account_id
+      properties:
+        account_id:
+          type: string
+          format: uuid
+        external_account_id:
+          type: string
+
+    AccountIntegrationLinkResponse:
+      type: object
+      required:
+        - id
+        - account_id
+        - integration_id
+        - external_account_id
+      properties:
+        id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        integration_id:
+          type: string
+          format: uuid
+        external_account_id:
+          type: string
+
+    SyncIntegrationResponse:
+      type: object
+      required:
+        - imported_count
+      properties:
+        imported_count:
+          type: integer
+
+    CsvImportResponse:
+      type: object
+      required:
+        - rows_processed
+        - imported_count
+        - duplicate_count
+      properties:
+        rows_processed:
+          type: integer
+        imported_count:
+          type: integer
+        duplicate_count:
+          type: integer
+
+    Party:
+      type: object
+      required:
+        - id
+        - version
+        - name
+        - party_type
+        - is_user_owned
+      properties:
+        id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        name:
+          type: string
+        party_type:
+          type: string
+          enum: [INDIVIDUAL, ORGANIZATION]
+        is_user_owned:
+          type: boolean
+        notes:
+          type: string
+          nullable: true
+
+    CreatePartyRequest:
+      type: object
+      required:
+        - name
+        - party_type
+      properties:
+        name:
+          type: string
+        party_type:
+          type: string
+          enum: [INDIVIDUAL, ORGANIZATION]
+        is_user_owned:
+          type: boolean
+          default: false
+        notes:
+          type: string
+
+    UpdatePartyRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        party_type:
+          type: string
+          enum: [INDIVIDUAL, ORGANIZATION]
+        is_user_owned:
+          type: boolean
+        notes:
+          type: string
+
+    PartyCashflowSummary:
+      type: object
+      required:
+        - party_id
+        - total_inflow_minor
+        - total_outflow_minor
+        - net_flow_minor
+      properties:
+        party_id:
+          type: string
+          format: uuid
+        total_inflow_minor:
+          type: integer
+          format: int64
+        total_outflow_minor:
+          type: integer
+          format: int64
+        net_flow_minor:
+          type: integer
+          format: int64
+
+    Account:
+      type: object
+      required:
+        - id
+        - version
+        - party_id
+        - name
+        - account_type
+        - primary_currency
+        - is_closed
+      properties:
+        id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        party_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        account_type:
+          type: string
+          enum: [CHECKING, SAVINGS, CREDIT_CARD, CASH, INVESTMENT, EXTERNAL]
+        primary_currency:
+          type: string
+        iban:
+          type: string
+          nullable: true
+        favicon_type:
+          type: string
+          enum: [EMOJI, URL]
+        favicon_value:
+          type: string
+          nullable: true
+        is_closed:
+          type: boolean
+        balances:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+
+    CreateAccountRequest:
+      type: object
+      required:
+        - name
+        - account_type
+        - primary_currency
+      properties:
+        name:
+          type: string
+        account_type:
+          type: string
+          enum: [CHECKING, SAVINGS, CREDIT_CARD, CASH, INVESTMENT, EXTERNAL]
+        primary_currency:
+          type: string
+        party_id:
+          type: string
+          format: uuid
+        iban:
+          type: string
+        favicon_type:
+          type: string
+          enum: [EMOJI, URL]
+        favicon_value:
+          type: string
+        initial_balance_minor:
+          type: integer
+          format: int64
+
+    MatchingRule:
+      type: object
+      required:
+        - id
+        - version
+        - name
+        - priority
+        - match_field
+        - match_operator
+        - match_pattern
+        - target_counterparty_account_id
+      properties:
+        id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        name:
+          type: string
+        priority:
+          type: integer
+        match_field:
+          type: string
+          enum: [RAW_PAYEE, COUNTERPARTY_IBAN, REFERENCE, ANY]
+        match_operator:
+          type: string
+          enum: [CONTAINS, PREFIX, EXACT, REGEX]
+        match_pattern:
+          type: string
+        target_counterparty_account_id:
+          type: string
+          format: uuid
+        default_bucket_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    CreateMatchingRuleRequest:
+      type: object
+      required:
+        - name
+        - match_field
+        - match_operator
+        - match_pattern
+        - target_counterparty_account_id
+      properties:
+        name:
+          type: string
+        priority:
+          type: integer
+          default: 100
+        match_field:
+          type: string
+          enum: [RAW_PAYEE, COUNTERPARTY_IBAN, REFERENCE, ANY]
+        match_operator:
+          type: string
+          enum: [CONTAINS, PREFIX, EXACT, REGEX]
+        match_pattern:
+          type: string
+        target_counterparty_account_id:
+          type: string
+          format: uuid
+        default_bucket_id:
+          type: string
+          format: uuid
+
+    EntityVersionItem:
+      type: object
+      required:
+        - id
+        - version
+        - action
+        - agent_id
+        - correlation_id
+        - created_at
+      properties:
+        id:
+          type: string
+        version:
+          type: integer
+        action:
+          type: string
+        agent_id:
+          type: string
+        correlation_id:
+          type: string
+        created_at:
+          type: integer
+          format: int64
+        payload:
+          type: object
+
+    RestoreVersionRequest:
+      type: object
+      required:
+        - target_version
+      properties:
+        target_version:
+          type: integer
+
+    RestoreVersionResponse:
+      type: object
+      required:
+        - id
+        - new_version
+        - restored_from_version
+      properties:
+        id:
+          type: string
+        new_version:
+          type: integer
+        restored_from_version:
+          type: integer
+
+    RawTransaction:
+      type: object
+      required:
+        - id
+        - version
+        - account_id
+        - booking_date
+        - amount_minor
+        - currency
+        - raw_payee
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        account_id:
+          type: string
+          format: uuid
+        external_transaction_id:
+          type: string
+          nullable: true
+        booking_date:
+          type: integer
+          format: int64
+        value_date:
+          type: integer
+          format: int64
+          nullable: true
+        amount_minor:
+          type: integer
+          format: int64
+        currency:
+          type: string
+        raw_payee:
+          type: string
+        counterparty_iban:
+          type: string
+          nullable: true
+        reference:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [PENDING, PROCESSED, IGNORED]
+
+    BudgetTransaction:
+      type: object
+      required:
+        - id
+        - version
+        - source_account_id
+        - destination_account_id
+        - source_amount_minor
+        - source_currency
+        - destination_amount_minor
+        - destination_currency
+        - transaction_date
+      properties:
+        id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        source_account_id:
+          type: string
+          format: uuid
+        destination_account_id:
+          type: string
+          format: uuid
+        source_amount_minor:
+          type: integer
+          format: int64
+        source_currency:
+          type: string
+        destination_amount_minor:
+          type: integer
+          format: int64
+        destination_currency:
+          type: string
+        bucket_id:
+          type: string
+          format: uuid
+          nullable: true
+        target_id:
+          type: string
+          format: uuid
+          nullable: true
+        transaction_date:
+          type: integer
+          format: int64
+        notes:
+          type: string
+          nullable: true
+
+    CreateBudgetTransactionRequest:
+      type: object
+      required:
+        - source_account_id
+        - destination_account_id
+        - source_amount_minor
+        - source_currency
+        - destination_amount_minor
+        - destination_currency
+        - transaction_date
+      properties:
+        source_account_id:
+          type: string
+          format: uuid
+        destination_account_id:
+          type: string
+          format: uuid
+        source_amount_minor:
+          type: integer
+          format: int64
+        source_currency:
+          type: string
+        destination_amount_minor:
+          type: integer
+          format: int64
+        destination_currency:
+          type: string
+        bucket_id:
+          type: string
+          format: uuid
+        target_id:
+          type: string
+          format: uuid
+        transaction_date:
+          type: integer
+          format: int64
+        notes:
+          type: string
+
+    ResolveTransactionsRequest:
+      type: object
+      required:
+        - operation_type
+        - raw_transaction_ids
+        - budget_transactions
+      properties:
+        operation_type:
+          type: string
+          enum: [DIRECT_MOVE, MERGE, SPLIT, COMPOSITE]
+        raw_transaction_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        budget_transactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreateBudgetTransactionRequest'
+
+    ResolveTransactionsResponse:
+      type: object
+      required:
+        - operation_id
+        - created_transactions
+      properties:
+        operation_id:
+          type: string
+          format: uuid
+        created_transactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/BudgetTransaction'
+
+    Bucket:
+      type: object
+      required:
+        - id
+        - group_name
+        - name
+        - is_archived
+        - version
+      properties:
+        id:
+          type: string
+          format: uuid
+        group_name:
+          type: string
+        name:
+          type: string
+        is_archived:
+          type: boolean
+        version:
+          type: integer
+        balances:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+        targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Target'
+
+    CreateBucketRequest:
+      type: object
+      required:
+        - name
+      properties:
+        group_name:
+          type: string
+          default: Default
+        name:
+          type: string
+
+    Target:
+      type: object
+      required:
+        - id
+        - bucket_id
+        - name
+        - target_type
+        - priority
+        - amount_mode
+        - currency
+        - recurrence_cadence
+        - non_spending_strategy
+        - current_funded_minor
+        - is_archived
+      properties:
+        id:
+          type: string
+          format: uuid
+        bucket_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        target_type:
+          type: string
+          enum: [EXPENSE, SAVINGS, DEBT_PAYMENT]
+        priority:
+          type: integer
+        sort_order:
+          type: integer
+        amount_mode:
+          type: string
+          enum: [FIXED, LUA_FORMULA]
+        amount_minor:
+          type: integer
+          format: int64
+        lua_script:
+          type: string
+          nullable: true
+        last_formula_error:
+          type: string
+          nullable: true
+        currency:
+          type: string
+        recurrence_cadence:
+          type: string
+          enum: [ONE_OFF, WEEKLY, MONTHLY, ANNUAL, CUSTOM_DAYS]
+        recurrence_days:
+          type: integer
+          nullable: true
+        due_date:
+          type: integer
+          format: int64
+          nullable: true
+        non_spending_strategy:
+          type: string
+          enum: [ROLL_OVER, RETURN_TO_POOL, ARREARS_CUMULATIVE, CAP_AND_HOLD, PRORATE_FUTURE]
+        ceiling_amount_minor:
+          type: integer
+          format: int64
+          nullable: true
+        current_funded_minor:
+          type: integer
+          format: int64
+        is_archived:
+          type: boolean
+
+    CreateTargetRequest:
+      type: object
+      required:
+        - name
+        - target_type
+        - currency
+        - recurrence_cadence
+        - non_spending_strategy
+      properties:
+        name:
+          type: string
+        target_type:
+          type: string
+          enum: [EXPENSE, SAVINGS, DEBT_PAYMENT]
+        priority:
+          type: integer
+          default: 2
+        sort_order:
+          type: integer
+          default: 0
+        amount_mode:
+          type: string
+          enum: [FIXED, LUA_FORMULA]
+          default: FIXED
+        amount_minor:
+          type: integer
+          format: int64
+          default: 0
+        lua_script:
+          type: string
+        currency:
+          type: string
+        recurrence_cadence:
+          type: string
+          enum: [ONE_OFF, WEEKLY, MONTHLY, ANNUAL, CUSTOM_DAYS]
+        recurrence_days:
+          type: integer
+        due_date:
+          type: integer
+          format: int64
+        non_spending_strategy:
+          type: string
+          enum: [ROLL_OVER, RETURN_TO_POOL, ARREARS_CUMULATIVE, CAP_AND_HOLD, PRORATE_FUTURE]
+        ceiling_amount_minor:
+          type: integer
+          format: int64
+
+    GenerateFormulaRequest:
+      type: object
+      required:
+        - user_prompt
+        - current_bucket_name
+        - target_currency
+      properties:
+        user_prompt:
+          type: string
+        current_bucket_name:
+          type: string
+        target_currency:
+          type: string
+        window_days:
+          type: integer
+          default: 30
+        previous_attempt:
+          type: string
+        validation_error:
+          type: string
+
+    GenerateFormulaResponse:
+      type: object
+      required:
+        - lua_script
+        - explanation
+      properties:
+        lua_script:
+          type: string
+        explanation:
+          type: string
+
+    ValidateFormulaRequest:
+      type: object
+      required:
+        - lua_script
+      properties:
+        lua_script:
+          type: string
+        context_data:
+          type: object
+
+    ValidateFormulaResponse:
+      type: object
+      required:
+        - valid
+      properties:
+        valid:
+          type: boolean
+        error:
+          type: string
+        evaluated_minor:
+          type: integer
+          format: int64
+        dependencies:
+          type: array
+          items:
+            type: string
+
+    FundTargetRequest:
+      type: object
+      required:
+        - amount_minor
+      properties:
+        amount_minor:
+          type: integer
+          format: int64
+
+    HorizonViewResponse:
+      type: object
+      required:
+        - window_days
+        - total_required_minor
+        - total_funded_minor
+        - ready_to_assign_minor
+        - currency
+      properties:
+        window_days:
+          type: integer
+        total_required_minor:
+          type: integer
+          format: int64
+        total_funded_minor:
+          type: integer
+          format: int64
+        ready_to_assign_minor:
+          type: integer
+          format: int64
+        currency:
+          type: string
+        buckets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Bucket'
+
+    SavedReport:
+      type: object
+      required:
+        - id
+        - version
+        - name
+        - report_type
+        - config_json
+        - is_pinned_widget
+      properties:
+        id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        name:
+          type: string
+        report_type:
+          type: string
+        config_json:
+          type: string
+        is_pinned_widget:
+          type: boolean
+
+    CreateSavedReportRequest:
+      type: object
+      required:
+        - name
+        - report_type
+        - config_json
+      properties:
+        name:
+          type: string
+        report_type:
+          type: string
+          enum: [AGE_OF_MONEY, INCOME_VS_EXPENSE, SPENDING_TRENDS, SPENDING_BREAKDOWN, NET_WORTH, SANKEY, BALANCE_FORECAST, BUDGET_ANALYSIS, MONTE_CARLO, PARTY_CASHFLOW]
+        config_json:
+          type: string
+        is_pinned_widget:
+          type: boolean
+          default: false
+
+    UpdateSavedReportRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        config_json:
+          type: string
+        is_pinned_widget:
+          type: boolean
+
+    AgeOfMoneyReport:
+      type: object
+      required:
+        - headline_days
+        - data_points
+      properties:
+        headline_days:
+          type: integer
+        data_points:
+          type: array
+          items:
+            type: object
+            required:
+              - date
+              - age_days
+            properties:
+              date:
+                type: integer
+                format: int64
+              age_days:
+                type: integer
+
+    IncomeVsExpenseReport:
+      type: object
+      required:
+        - total_income_minor
+        - total_expense_minor
+        - net_income_minor
+        - intervals
+      properties:
+        total_income_minor:
+          type: integer
+          format: int64
+        total_expense_minor:
+          type: integer
+          format: int64
+        net_income_minor:
+          type: integer
+          format: int64
+        intervals:
+          type: array
+          items:
+            type: object
+
+    SpendingTrendsReport:
+      type: object
+      required:
+        - intervals
+        - average_spending_minor
+      properties:
+        average_spending_minor:
+          type: integer
+          format: int64
+        intervals:
+          type: array
+          items:
+            type: object
+
+    SpendingBreakdownReport:
+      type: object
+      required:
+        - total_spending_minor
+        - categories
+      properties:
+        total_spending_minor:
+          type: integer
+          format: int64
+        categories:
+          type: array
+          items:
+            type: object
+            required:
+              - name
+              - amount_minor
+              - percentage
+            properties:
+              name:
+                type: string
+              amount_minor:
+                type: integer
+                format: int64
+              percentage:
+                type: number
+                format: float
+
+    NetWorthReport:
+      type: object
+      required:
+        - current_net_worth_minor
+        - total_assets_minor
+        - total_debts_minor
+        - history
+      properties:
+        current_net_worth_minor:
+          type: integer
+          format: int64
+        total_assets_minor:
+          type: integer
+          format: int64
+        total_debts_minor:
+          type: integer
+          format: int64
+        history:
+          type: array
+          items:
+            type: object
+
+    SankeyReport:
+      type: object
+      required:
+        - nodes
+        - links
+      properties:
+        nodes:
+          type: array
+          items:
+            type: object
+            required:
+              - name
+            properties:
+              name:
+                type: string
+        links:
+          type: array
+          items:
+            type: object
+            required:
+              - source
+              - target
+              - value
+            properties:
+              source:
+                type: string
+              target:
+                type: string
+              value:
+                type: integer
+                format: int64
+
+    BalanceForecastReport:
+      type: object
+      required:
+        - lowest_projected_balance_minor
+        - daily_projections
+      properties:
+        lowest_projected_balance_minor:
+          type: integer
+          format: int64
+        lowest_balance_date:
+          type: integer
+          format: int64
+        daily_projections:
+          type: array
+          items:
+            type: object
+
+    BudgetAnalysisReport:
+      type: object
+      required:
+        - intervals
+      properties:
+        intervals:
+          type: array
+          items:
+            type: object
+
+    MonteCarloRequest:
+      type: object
+      required:
+        - current_age
+        - target_age
+        - simulations_count
+        - return_model
+        - pots
+        - spending_phases
+      properties:
+        current_age:
+          type: integer
+        target_age:
+          type: integer
+        simulations_count:
+          type: integer
+          default: 5000
+        return_model:
+          type: string
+          default: RANDOM_NORMAL
+        inflation_mean_pct:
+          type: number
+          format: float
+        inflation_std_dev:
+          type: number
+          format: float
+        pots:
+          type: array
+          items:
+            type: object
+            required:
+              - name
+              - starting_balance_minor
+            properties:
+              name:
+                type: string
+              starting_balance_minor:
+                type: integer
+                format: int64
+              expected_return_pct:
+                type: number
+                format: float
+              volatility_std_dev_pct:
+                type: number
+                format: float
+              accessible_from_age:
+                type: integer
+        spending_phases:
+          type: array
+          items:
+            type: object
+            required:
+              - from_age
+              - to_age
+              - annual_target_minor
+            properties:
+              from_age:
+                type: integer
+              to_age:
+                type: integer
+              annual_target_minor:
+                type: integer
+                format: int64
+
+    MonteCarloResponse:
+      type: object
+      required:
+        - success_rate_pct
+        - median_ending_balance
+        - chance_of_running_out
+      properties:
+        success_rate_pct:
+          type: number
+          format: float
+        median_ending_balance:
+          type: integer
+          format: int64
+        chance_of_running_out:
+          type: number
+          format: float
+        p10_trajectory:
+          type: array
+          items:
+            type: integer
+            format: int64
+        p50_trajectory:
+          type: array
+          items:
+            type: integer
+            format: int64
+        p90_trajectory:
+          type: array
+          items:
+            type: integer
+            format: int64
+
+    PartyCashflowReport:
+      type: object
+      required:
+        - parties
+      properties:
+        parties:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartyCashflowSummary'
+
+security:
+  - bearerAuth: []
+  - cookieAuth: []

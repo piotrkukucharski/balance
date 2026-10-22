@@ -25,6 +25,12 @@ tasks:
       - go mod tidy
       - echo "Development environment initialized at {{.DATA_DIR}}"
 
+  dev:generate:openapi:
+    desc: "Generate Go server interface and DTO types from OpenAPI contract using oapi-codegen"
+    cmds:
+      - go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.4.1 --config=api/oapi-codegen.yaml api/openapi.yaml
+      - echo "OpenAPI server interfaces and models generated at internal/api/openapi.gen.go"
+
   dev:build:
     desc: "Build the Balance server binary"
     cmds:

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/balance/balance/internal/auth"
+	openapi "github.com/balance/balance/internal/api"
 	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
@@ -2405,6 +2406,89 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		expectedMinor := parseAmountStr(expectedAmt)
 		if rtaMap["PLN"] != expectedMinor {
 			return fmt.Errorf("expected Ready to Assign %d, got %d", expectedMinor, rtaMap["PLN"])
+		}
+		return nil
+	})
+
+	ctx.Step(`^the OpenAPI specification is loaded$`, func() error {
+		swagger, err := openapi.GetSwagger()
+		if err != nil {
+			return fmt.Errorf("failed to load openapi spec: %w", err)
+		}
+		if swagger == nil {
+			return fmt.Errorf("swagger is nil")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the API title should be "([^"]*)"$`, func(expectedTitle string) error {
+		swagger, err := openapi.GetSwagger()
+		if err != nil {
+			return err
+		}
+		if swagger.Info == nil || swagger.Info.Title != expectedTitle {
+			return fmt.Errorf("expected title %q, got %q", expectedTitle, swagger.Info.Title)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the contract must declare all required endpoints from section 12.2 of the specification$`, func() error {
+		swagger, err := openapi.GetSwagger()
+		if err != nil {
+			return err
+		}
+		requiredPaths := []string{
+			"/auth/register",
+			"/auth/login",
+			"/auth/logout",
+			"/auth/tokens",
+			"/auth/tokens/{id}",
+			"/users/me",
+			"/exchange-rates",
+			"/exchange-rates/sync",
+			"/budgets",
+			"/budgets/{budgetId}",
+			"/budgets/{budgetId}/invitations",
+			"/invitations/{token}/accept",
+			"/integrations/providers",
+			"/integrations/{provider}/connect",
+			"/integrations/{provider}/callback",
+			"/budgets/{budgetId}/integrations/{integrationId}/link-account",
+			"/budgets/{budgetId}/integrations/{integrationId}/sync",
+			"/budgets/{budgetId}/accounts/{accountId}/import-csv",
+			"/budgets/{budgetId}/parties",
+			"/budgets/{budgetId}/parties/{id}",
+			"/budgets/{budgetId}/parties/{id}/cashflow",
+			"/budgets/{budgetId}/accounts",
+			"/budgets/{budgetId}/matching-rules",
+			"/budgets/{budgetId}/{entityType}/{id}/history",
+			"/budgets/{budgetId}/{entityType}/{id}/restore",
+			"/budgets/{budgetId}/raw-transactions",
+			"/budgets/{budgetId}/transactions",
+			"/budgets/{budgetId}/transactions/resolve",
+			"/budgets/{budgetId}/buckets",
+			"/budgets/{budgetId}/buckets/{id}/targets",
+			"/budgets/{budgetId}/targets/generate-formula",
+			"/budgets/{budgetId}/targets/validate-formula",
+			"/budgets/{budgetId}/targets/{id}/fund",
+			"/budgets/{budgetId}/view/horizon",
+			"/budgets/{budgetId}/reports/saved",
+			"/budgets/{budgetId}/reports/saved/{id}",
+			"/budgets/{budgetId}/reports/age-of-money",
+			"/budgets/{budgetId}/reports/income-vs-expense",
+			"/budgets/{budgetId}/reports/spending-trends",
+			"/budgets/{budgetId}/reports/spending-breakdown",
+			"/budgets/{budgetId}/reports/net-worth",
+			"/budgets/{budgetId}/reports/sankey",
+			"/budgets/{budgetId}/reports/balance-forecast",
+			"/budgets/{budgetId}/reports/budget-analysis",
+			"/budgets/{budgetId}/reports/monte-carlo/simulate",
+			"/budgets/{budgetId}/reports/party-cashflow",
+		}
+		for _, p := range requiredPaths {
+			if _, ok := swagger.Paths.Map()[p]; !ok {
+				return fmt.Errorf("missing path %s in OpenAPI contract", p)
+			}
 		}
 		return nil
 	})
