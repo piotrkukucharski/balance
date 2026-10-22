@@ -6,9 +6,21 @@ Always consult [`docs/architecture_and_domain_spec.md`](docs/architecture_and_do
 
 ---
 
-## 1. Mandatory Development Workflow (BDD Gherkin-First)
+## 1. Mandatory Development Workflow (End-to-End Flow & BDD)
 
-Every new feature, change request, or task **MUST** strictly follow a two-step **Behavior-Driven Development (BDD)** workflow:
+All engineering work in this repository follows the strict end-to-end lifecycle documented in the **`balance-flow`** skill:
+
+> [!IMPORTANT]
+> **Complete Lifecycle Runbook**:
+> 1. **Task in todo** (Project `29`): Verify or create task before starting.
+> 2. **Worktree & Branch**: Create isolated environment via `task dev:worktree:create -- BALANCE-X` (work on `main` is permitted only for minor documentation/meta changes).
+> 3. **Move to Doing**: Place task into Kanban `Doing` bucket (`ID: 94`, View: `120`).
+> 4. **BDD Gherkin-First & Implementation**: Write/update `features/*.feature`, obtain user approval, implement in `internal/`, verify with `task test:bdd` and `task test:all`.
+> 5. **Staged Commits**: 1 commit bound strictly to 1 task (`[BALANCE-X]`) per `balance-commits`.
+> 6. **Finish & Merge**: From repository root, run `task dev:worktree:finish` (rebase & fast-forward onto `main`).
+> 7. **Done**: Move task to Kanban `Finished` bucket (`ID: 95`) and mark `done: true`.
+>
+> 📖 Detailed runbook: [`.agents/skills/balance-flow/SKILL.md`](.agents/skills/balance-flow/SKILL.md)
 
 ### Step 1: Gherkin Specification & Approval (Before Writing Code)
 1. Write or update the relevant Gherkin scenario(s) in `features/*.feature` covering the happy path and key domain invariants for the task.
