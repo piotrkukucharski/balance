@@ -41,6 +41,7 @@ coverage.txt
 coverage.html
 *.prof
 *.pprof
+test-results/
 
 # Agent files
 .agents/

@@ -199,7 +199,9 @@ All project tasks, epics, relationships, and progress tracking are managed in th
 
 ### Testing (`test:*`)
 - `task test:bdd` — Run all Gherkin BDD scenarios (`features/*.feature`) via Godog (`internal/bdd`).
-- `task test:all` — Run all unit, integration, and BDD tests with the `-race` detector enabled.
+- `task test:e2e` — Run all headless Chromium browser E2E Happy Path scenarios (`features/e2e/*.feature`) via Godog + `go-rod` (`internal/e2e`).
+- `task test:e2e:headed` — Run browser E2E scenarios in a visible Chromium window with `E2E_SLOWMO=150ms`.
+- `task test:all` — Run all unit, integration, BDD, and browser E2E tests with the `-race` detector enabled.
 - `task test:unit` — Run fast domain, auth, Lua sandbox, budget, rule, and report unit tests.
 - `task test:db` — Run SQLite connection, PRAGMA, and multi-tenant LRU pool tests.
 - `task test:transaction` — Run transaction deduplication and atomic Move/Merge/Split tests.

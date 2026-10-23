@@ -116,6 +116,16 @@ tasks:
     cmds:
       - go test -v ./internal/bdd/...
 
+  test:e2e:
+    desc: "Run headless Chromium browser E2E Happy Path test suite (Godog + go-rod)"
+    cmds:
+      - go test -v ./internal/e2e/...
+
+  test:e2e:headed:
+    desc: "Run browser E2E test suite in visible Chromium window with slow motion"
+    cmds:
+      - E2E_HEADLESS=false E2E_SLOWMO=150ms go test -v ./internal/e2e/...
+
   test:heavy:
     desc: "Run 10-year multi-currency heavy load fixture test"
     cmds:

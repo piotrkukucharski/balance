@@ -15,6 +15,7 @@ import (
 	csvpkg "github.com/balance/balance/internal/integration/csv"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/rule"
+	"github.com/balance/balance/internal/transaction"
 	"github.com/labstack/echo/v4"
 )
 
@@ -34,13 +35,15 @@ func (h *TransactionsHandler) CSVImportPage(c echo.Context) error {
 	}
 
 	csrfToken := ""
-	if token, ok := c.Get("csrf_token").(string); ok {
+	if token, ok := c.Get("csrfToken").(string); ok && token != "" {
+		csrfToken = token
+	} else if token, ok := c.Get("csrf_token").(string); ok {
 		csrfToken = token
 	}
 
 	// Fetch active accounts for select dropdown
 	rows, err := tenantDB.QueryContext(c.Request().Context(), `
-		SELECT id, name, currency, account_type
+		SELECT id, name, primary_currency, account_type
 		FROM accounts_current
 		WHERE is_closed = 0
 		ORDER BY name ASC`)
@@ -255,15 +258,15 @@ func (h *TransactionsHandler) CSVImportPage(c echo.Context) error {
         const sample = rawCsvText.substring(0, 4096);
         const commaCount = (sample.match(/,/g) || []).length;
         const semiCount = (sample.match(/;/g) || []).length;
-        const tabCount = (sample.match(/\\t/g) || []).length;
+        const tabCount = (sample.match(/\t/g) || []).length;
 
         if (commaCount > semiCount && commaCount > tabCount) delimiter = ',';
-        else if (tabCount > semiCount && tabCount > commaCount) delimiter = '\\t';
+        else if (tabCount > semiCount && tabCount > commaCount) delimiter = '\t';
 
-        document.getElementById('delimiter-badge').textContent = 'Delimiter: ' + (delimiter === '\\t' ? 'TAB' : delimiter);
+        document.getElementById('delimiter-badge').textContent = 'Delimiter: ' + (delimiter === '\t' ? 'TAB' : delimiter);
 
         // Simple row parsing
-        const lines = rawCsvText.split(/\\r?\\n/).filter(line => line.trim().length > 0);
+        const lines = rawCsvText.split(/\r?\n/).filter(line => line.trim().length > 0);
         if (lines.length === 0) return;
 
         parsedRows = lines.slice(0, 15).map(line => {
@@ -391,10 +394,10 @@ func (h *TransactionsHandler) PreviewCSV(c echo.Context) error {
 
 	bankProfile := c.FormValue("bank_profile")
 	mapping, _ := csvpkg.GetBankProfile(bankProfile, "PLN")
-	if mapping.Delimiter == 0 {
+	if mapping.Delimiter == 0 || bankProfile == "" || strings.EqualFold(bankProfile, "GENERIC") {
 		mapping.Delimiter = sniff.Delimiter
 	}
-	if mapping.Encoding == "" {
+	if mapping.Encoding == "" || bankProfile == "" || strings.EqualFold(bankProfile, "GENERIC") {
 		mapping.Encoding = sniff.Encoding
 	}
 
@@ -468,10 +471,10 @@ func (h *TransactionsHandler) ImportCSV(c echo.Context) error {
 
 	bankProfile := c.FormValue("bank_profile")
 	mapping, _ := csvpkg.GetBankProfile(bankProfile, "PLN")
-	if mapping.Delimiter == 0 {
+	if mapping.Delimiter == 0 || bankProfile == "" || strings.EqualFold(bankProfile, "GENERIC") {
 		mapping.Delimiter = sniff.Delimiter
 	}
-	if mapping.Encoding == "" {
+	if mapping.Encoding == "" || bankProfile == "" || strings.EqualFold(bankProfile, "GENERIC") {
 		mapping.Encoding = sniff.Encoding
 	}
 
@@ -610,74 +613,34 @@ func (h *TransactionsHandler) runAutoMatchInternal(ctx context.Context, tenantDB
 			absAmountMinor = it.amountMinor
 		}
 
-		tx, err := tenantDB.BeginTx(ctx, nil)
-		if err != nil {
-			continue
+		notes := it.payee
+		if it.ref != "" {
+			notes = it.payee + " - " + it.ref
 		}
-
-		btID := domain.NewUUIDv7()
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO budget_transactions (
-				id, version, source_account_id, destination_account_id, bucket_id,
-				transaction_date, amount_minor, currency, notes, payee,
-				action, agent_id, correlation_id, created_at
-			) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'CREATE', ?, ?, ?)`,
-			btID, srcAcct, dstAcct, match.DefaultBucketID,
-			it.date, absAmountMinor, it.currency, it.ref, it.payee,
-			userID, corrID, now,
-		)
-		if err != nil {
-			tx.Rollback()
-			continue
-		}
-
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO budget_transactions_current (
-				id, version, source_account_id, destination_account_id, bucket_id,
-				transaction_date, amount_minor, currency, notes, payee, updated_at
-			) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			btID, srcAcct, dstAcct, match.DefaultBucketID,
-			it.date, absAmountMinor, it.currency, it.ref, it.payee, now,
-		)
-		if err != nil {
-			tx.Rollback()
-			continue
-		}
-
-		// Update raw_transactions_current status to PROCESSED
-		_, err = tx.ExecContext(ctx, `
-			UPDATE raw_transactions_current
-			SET status = 'PROCESSED', version = version + 1, updated_at = ?
-			WHERE id = ?`, now, it.id)
-		if err != nil {
-			tx.Rollback()
-			continue
-		}
-
-		// Append to raw_transactions ledger
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO raw_transactions (
-				id, version, account_id, external_transaction_id, dedup_hash,
-				booking_date, value_date, amount_minor, currency, raw_payee,
-				counterparty_iban, reference, status, action, agent_id,
-				correlation_id, created_at
-			)
-			SELECT id, version, account_id, external_transaction_id, dedup_hash,
-			       booking_date, value_date, amount_minor, currency, raw_payee,
-			       counterparty_iban, reference, 'PROCESSED', 'UPDATE', ?, ?, ?
-			FROM raw_transactions_current
-			WHERE id = ?`,
-			userID, corrID, now, it.id,
-		)
-		if err != nil {
-			tx.Rollback()
-			continue
-		}
-
-		if err := tx.Commit(); err == nil {
+		_, sErr := transaction.ExecuteResolution(ctx, tenantDB, transaction.ResolveResolutionInput{
+			OperationType:     transaction.OpDirectMove,
+			RawTransactionIDs: []string{it.id},
+			BudgetTransactions: []transaction.BudgetTxInput{
+				{
+					SourceAccountID:      srcAcct,
+					DestinationAccountID: dstAcct,
+					SourceAmountMinor:    absAmountMinor,
+					SourceCurrency:       it.currency,
+					DestAmountMinor:      absAmountMinor,
+					DestCurrency:         it.currency,
+					BucketID:             match.DefaultBucketID,
+					Notes:                &notes,
+					TransactionDate:      it.date,
+				},
+			},
+			AgentID:       userID,
+			CorrelationID: corrID,
+		})
+		if sErr == nil {
 			matchedCount++
 		}
 	}
 
+	_ = now
 	return matchedCount
 }
