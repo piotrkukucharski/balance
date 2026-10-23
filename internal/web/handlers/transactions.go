@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/integration/gocardless"
 	"github.com/balance/balance/internal/integration/mock"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/rule"
@@ -22,23 +25,37 @@ import (
 )
 
 type TransactionsHandler struct {
-	mainDB        *sql.DB
-	tenantMgr     *db.TenantDBManager
-	mockAdapter   *mock.MockAdapter
-	syncMu        sync.Mutex
-	activeSyncs   map[string]bool
-	syncListeners map[string][]chan string
-	appService    *service.AppService
+	mainDB           *sql.DB
+	tenantMgr        *db.TenantDBManager
+	mockAdapter      *mock.MockAdapter
+	gocardlessClient *gocardless.Client
+	syncMu           sync.Mutex
+	activeSyncs      map[string]bool
+	syncListeners    map[string][]chan string
+	appService       *service.AppService
 }
 
 func NewTransactionsHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *TransactionsHandler {
-	return &TransactionsHandler{
-		mainDB:        mainDB,
-		tenantMgr:     tenantMgr,
-		mockAdapter:   mock.NewMockAdapter(),
-		activeSyncs:   make(map[string]bool),
-		syncListeners: make(map[string][]chan string),
+	secretID := os.Getenv("GOCARDLESS_SECRET_ID")
+	secretKey := os.Getenv("GOCARDLESS_SECRET_KEY")
+	redirectURL := os.Getenv("GOCARDLESS_REDIRECT_URL")
+	var gcClient *gocardless.Client
+	if secretID != "" && secretKey != "" {
+		gcClient = gocardless.NewClient(secretID, secretKey, redirectURL)
 	}
+
+	return &TransactionsHandler{
+		mainDB:           mainDB,
+		tenantMgr:        tenantMgr,
+		mockAdapter:      mock.NewMockAdapter(),
+		gocardlessClient: gcClient,
+		activeSyncs:      make(map[string]bool),
+		syncListeners:    make(map[string][]chan string),
+	}
+}
+
+func (h *TransactionsHandler) SetGoCardlessClient(gc *gocardless.Client) {
+	h.gocardlessClient = gc
 }
 
 func (h *TransactionsHandler) SetService(svc *service.AppService) {
@@ -279,7 +296,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 	rawRows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT r.id, r.account_id, r.booking_date, r.amount_minor, r.currency,
 		       COALESCE(r.raw_payee, ''), COALESCE(r.counterparty_iban, ''), COALESCE(r.reference, ''),
-		       a.name
+		       a.name, COALESCE(r.booking_status, 'BOOKED')
 		FROM raw_transactions_current r
 		JOIN accounts_current a ON r.account_id = a.id
 		WHERE r.status = 'PENDING'
@@ -296,9 +313,9 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 
 		for rawRows.Next() {
 			pendingRawCount++
-			var rID, rAcctID, rCurrency, rPayee, rIBAN, rRef, rAcctName string
+			var rID, rAcctID, rCurrency, rPayee, rIBAN, rRef, rAcctName, rBookingStatus string
 			var rDate, rAmountMinor int64
-			rawRows.Scan(&rID, &rAcctID, &rDate, &rAmountMinor, &rCurrency, &rPayee, &rIBAN, &rRef, &rAcctName)
+			rawRows.Scan(&rID, &rAcctID, &rDate, &rAmountMinor, &rCurrency, &rPayee, &rIBAN, &rRef, &rAcctName, &rBookingStatus)
 
 			rDateStr := time.UnixMicro(rDate).Format("2006-01-02")
 			rAmountMajor := float64(rAmountMinor) / 100.0
@@ -313,7 +330,9 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 			// Suggest rule match if available
 			suggestedBucketID := ""
 			suggestedBadge := `<span class="badge badge-soft badge-ghost text-xs">Unmatched</span>`
-			if rulesEngine != nil {
+			if rBookingStatus == "PENDING" {
+				suggestedBadge = `<span class="badge badge-warning text-xs font-semibold gap-1"><span>⏳</span><span>Pending Hold</span></span>`
+			} else if rulesEngine != nil {
 				if match := rulesEngine.Match(rPayee, rIBAN, rRef); match != nil && match.DefaultBucketID != nil {
 					suggestedBucketID = *match.DefaultBucketID
 					suggestedBadge = `<span class="badge badge-soft badge-success text-xs font-semibold">Matched Rule</span>`
@@ -342,27 +361,66 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 				bRows2.Close()
 			}
 
-			rawActionMenu := RenderPopoverActionMenu("raw", rID, []TableActionItem{
-				{
-					Label:   "➡️ Detailed Resolve Modal",
-					OnClick: fmt.Sprintf("openResolveRawModal('%s', '%s', '%.2f', '%s', '%s', '%s')", rID, rAcctID, rAmountMajor, rCurrency, escapedPayee, suggestedBucketID),
-				},
-				{
-					Label:      "🚫 Ignore Feed",
-					FormAction: fmt.Sprintf("/budgets/%s/transactions/raw/%s/ignore", budgetID, rID),
-					CSRFToken:  csrfToken,
-					IsDanger:   true,
-					ConfirmMsg: "Ignore this bank transaction feed?",
-				},
-			})
+			var rawActionItems []TableActionItem
+			if rBookingStatus == "PENDING" {
+				rawActionItems = []TableActionItem{
+					{
+						Label:      "🚫 Ignore Feed",
+						FormAction: fmt.Sprintf("/budgets/%s/transactions/raw/%s/ignore", budgetID, rID),
+						CSRFToken:  csrfToken,
+						IsDanger:   true,
+						ConfirmMsg: "Ignore this bank transaction feed?",
+					},
+				}
+			} else {
+				rawActionItems = []TableActionItem{
+					{
+						Label:   "➡️ Detailed Resolve Modal",
+						OnClick: fmt.Sprintf("openResolveRawModal('%s', '%s', '%.2f', '%s', '%s', '%s')", rID, rAcctID, rAmountMajor, rCurrency, escapedPayee, suggestedBucketID),
+					},
+					{
+						Label:      "🚫 Ignore Feed",
+						FormAction: fmt.Sprintf("/budgets/%s/transactions/raw/%s/ignore", budgetID, rID),
+						CSRFToken:  csrfToken,
+						IsDanger:   true,
+						ConfirmMsg: "Ignore this bank transaction feed?",
+					},
+				}
+			}
+			rawActionMenu := RenderPopoverActionMenu("raw", rID, rawActionItems)
+
+			checkboxHTML := fmt.Sprintf(`
+				<input type="checkbox" name="selected_raw_ids" value="%s" 
+				       data-raw-id="%s" data-amount="%d" data-currency="%s" data-payee="%s"
+				       class="checkbox checkbox-primary checkbox-xs raw-select-cb" 
+				       onchange="updateFloatingActionBar()" />`,
+				rID, rID, rAmountMinor, rCurrency, escapedPayee,
+			)
+			approveActionHTML := fmt.Sprintf(`
+				<form method="POST" action="/budgets/%s/transactions/raw/%s/resolve" class="flex items-center gap-1.5 justify-end">
+					<input type="hidden" name="csrf_token" value="%s" />
+					<input type="hidden" name="party_name" value="%s" />
+					<input type="hidden" name="notes" value="%s" />
+					<select name="bucket_id" class="select select-xs select-bordered w-36 focus:select-primary text-xs font-medium">
+						%s
+					</select>
+					<button type="submit" class="btn btn-success btn-xs font-bold gap-1 shadow-xs" title="1-Click Approve (Direct Move)">
+						<span>✓</span>
+						<span>Approve</span>
+					</button>
+				</form>`,
+				budgetID, rID, csrfToken, escapedPayee, escapedPayee, inlineBucketOptions.String(),
+			)
+
+			if rBookingStatus == "PENDING" {
+				checkboxHTML = `<input type="checkbox" disabled class="checkbox checkbox-xs opacity-30 cursor-not-allowed" title="Pending bank holds cannot be reconciled until booked by bank" />`
+				approveActionHTML = `<div class="flex items-center gap-1.5 justify-end"><span class="badge badge-ghost text-xs text-base-content/60 gap-1" title="Waiting for bank to clear/book transaction"><span>⏳</span><span>Awaiting Booked</span></span></div>`
+			}
 
 			rawTxRows.WriteString(fmt.Sprintf(`
 				<tr class="hover group transition-colors">
 					<td class="w-10 text-center">
-						<input type="checkbox" name="selected_raw_ids" value="%s" 
-						       data-raw-id="%s" data-amount="%d" data-currency="%s" data-payee="%s"
-						       class="checkbox checkbox-primary checkbox-xs raw-select-cb" 
-						       onchange="updateFloatingActionBar()" />
+						%s
 					</td>
 					<td class="font-mono text-xs whitespace-nowrap">%s</td>
 					<td class="text-xs font-medium text-base-content/80 whitespace-nowrap">%s</td>
@@ -375,28 +433,16 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 						%s%.2f <span class="text-xs font-normal text-base-content/60">%s</span>
 					</td>
 					<td>
-						<form method="POST" action="/budgets/%s/transactions/raw/%s/resolve" class="flex items-center gap-1.5 justify-end">
-							<input type="hidden" name="csrf_token" value="%s" />
-							<input type="hidden" name="party_name" value="%s" />
-							<input type="hidden" name="notes" value="%s" />
-							<select name="bucket_id" class="select select-xs select-bordered w-36 focus:select-primary text-xs font-medium">
-								%s
-							</select>
-							<button type="submit" class="btn btn-success btn-xs font-bold gap-1 shadow-xs" title="1-Click Approve (Direct Move)">
-								<span>✓</span>
-								<span>Approve</span>
-							</button>
-						</form>
+						%s
 					</td>
 					<td class="text-right">
 						%s
 					</td>
 				</tr>`,
-				rID, rID, rAmountMinor, rCurrency, escapedPayee,
+				checkboxHTML,
 				rDateStr, rAcctName, rPayee, rPayee, rRef, rRef, suggestedBadge,
 				amountBadgeClass, amountPrefix, rAmountMajor, rCurrency,
-				budgetID, rID, csrfToken, escapedPayee, escapedPayee,
-				inlineBucketOptions.String(), rawActionMenu,
+				approveActionHTML, rawActionMenu,
 			))
 		}
 	}
@@ -805,6 +851,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
                 <fieldset class="fieldset">
                     <legend class="fieldset-legend font-semibold">Initial Sync History Window</legend>
                     <select name="days_window" class="select select-bordered w-full select-md focus:select-primary">
+                        <option value="90">Last 90 Days (3 Months - Maximum PSD2)</option>
                         <option value="30" selected>Last 30 Days (1 Month) - Recommended</option>
                         <option value="14">Last 14 Days (2 Weeks)</option>
                         <option value="7">Last 7 Days (1 Week)</option>
@@ -1421,26 +1468,25 @@ func (h *TransactionsHandler) executeAccountSync(ctx context.Context, tenantDB *
 		logger.Error(logCtx, "Failed to ensure sync logs table", "error", err.Error())
 	}
 
-	// Check if this account is explicitly linked to a mock or sandbox integration
-	var integrationID string
+	// Check if this account is linked to an integration
+	var integrationID, extAcctID string
 	_ = tenantDB.QueryRowContext(ctx, `
-		SELECT COALESCE(integration_id, '') FROM account_integration_links
-		WHERE account_id = ? LIMIT 1`, userAcctID).Scan(&integrationID)
+		SELECT COALESCE(integration_id, ''), COALESCE(external_account_id, '') FROM account_integration_links
+		WHERE account_id = ? LIMIT 1`, userAcctID).Scan(&integrationID, &extAcctID)
+
+	var provider, institutionID string
+	if integrationID != "" {
+		_ = h.mainDB.QueryRowContext(ctx, `
+			SELECT COALESCE(provider, ''), COALESCE(institution_id, '') FROM user_integrations
+			WHERE id = ?`, integrationID).Scan(&provider, &institutionID)
+	}
 
 	isMockAccount := false
-	if integrationID != "" {
-		if strings.HasPrefix(integrationID, "mock_") {
-			isMockAccount = true
-		} else {
-			var provider, institutionID string
-			_ = h.mainDB.QueryRowContext(ctx, `
-				SELECT provider, institution_id FROM user_integrations
-				WHERE id = ?`, integrationID).Scan(&provider, &institutionID)
-			if provider == "MOCK" || strings.HasPrefix(institutionID, "MOCK_") || strings.Contains(strings.ToUpper(institutionID), "SANDBOX") {
-				isMockAccount = true
-			}
-		}
+	if provider == "MOCK" || strings.HasPrefix(integrationID, "mock_") || strings.HasPrefix(institutionID, "MOCK_") || strings.Contains(strings.ToUpper(institutionID), "SANDBOX") {
+		isMockAccount = true
 	}
+
+	isGoCardless := provider == "GOCARDLESS" && h.gocardlessClient != nil && extAcctID != "" && !strings.HasPrefix(institutionID, "MOCK_")
 
 	// Rate limit check: max 4 imports per account in the last 24 hours (86400 seconds) - exempt for mock/sandbox accounts
 	if !isMockAccount {
@@ -1466,10 +1512,11 @@ func (h *TransactionsHandler) executeAccountSync(ctx context.Context, tenantDB *
 		acctCurrency = "PLN"
 	}
 
-	// Check if this account already has any transactions (either raw_transactions or budget_transactions)
+	// Check if this account already has any booked transactions
 	var latestRawDate, latestBudgetTxDate sql.NullInt64
 	_ = tenantDB.QueryRowContext(ctx, `
-		SELECT MAX(booking_date) FROM raw_transactions_current WHERE account_id = ?`, userAcctID).Scan(&latestRawDate)
+		SELECT MAX(booking_date) FROM raw_transactions_current 
+		WHERE account_id = ? AND booking_status = 'BOOKED'`, userAcctID).Scan(&latestRawDate)
 	_ = tenantDB.QueryRowContext(ctx, `
 		SELECT MAX(transaction_date) FROM budget_transactions_current 
 		WHERE source_account_id = ? OR destination_account_id = ?`, userAcctID, userAcctID).Scan(&latestBudgetTxDate)
@@ -1490,67 +1537,268 @@ func (h *TransactionsHandler) executeAccountSync(ctx context.Context, tenantDB *
 		// Incremental sync: only transactions newer than latest imported booking date
 		sinceMicro = latestKnownDate
 	} else {
-		// First sync: calculate window from user input (clamp between 1 and 30 days)
+		// First sync: calculate window from user input (clamp between 1 and 90 days)
 		days := daysWindow
 		if days < 1 {
 			days = 1
-		} else if days > 30 {
-			days = 30
+		} else if days > 90 {
+			days = 90
 		}
 		sinceMicro = now - int64(days)*24*3600*1_000_000
 	}
 
-	// Fetch transactions from mock bank adapter
-	extTxs, err := h.mockAdapter.FetchTransactions(ctx, userAcctID, sinceMicro)
-	if err != nil {
-		logger.Error(logCtx, "Bank sync failed fetching transactions from adapter", "account_id", userAcctID, "error", err.Error())
-		return 0, err
+	type incomingTx struct {
+		ExternalID       string
+		BookingDateMicro int64
+		AmountMinor      int64
+		Currency         string
+		Payee            string
+		CounterpartyIBAN string
+		Reference        string
+		BookingStatus    string // "BOOKED" or "PENDING"
 	}
 
-	// Fetch external account balance from adapter for this account
-	extAccounts, _ := h.mockAdapter.FetchAccounts(ctx, userID)
+	var incoming []incomingTx
 	var bankBalanceMinor int64
-	for _, ea := range extAccounts {
-		if ea.Currency == acctCurrency {
-			bankBalanceMinor = ea.BalanceMinor
-			break
+
+	if isGoCardless {
+		dateFrom := time.UnixMicro(sinceMicro).Format("2006-01-02")
+		txResp, txErr := h.gocardlessClient.GetAccountTransactions(ctx, extAcctID, dateFrom, "")
+		if txErr != nil {
+			logger.Error(logCtx, "GoCardless GetAccountTransactions failed",
+				"account_id", userAcctID,
+				"external_account_id", extAcctID,
+				"error", txErr.Error(),
+			)
+			return 0, fmt.Errorf("bank transaction fetch failed: %w", txErr)
+		}
+
+		for _, b := range txResp.Transactions.Booked {
+			amt, aErr := b.GetAmountMinor()
+			if aErr != nil {
+				continue
+			}
+			curr := b.TransactionAmount.Currency
+			if curr == "" {
+				curr = acctCurrency
+			}
+			incoming = append(incoming, incomingTx{
+				ExternalID:       b.GetExternalID(),
+				BookingDateMicro: b.GetBookingDateMicro(),
+				AmountMinor:      amt,
+				Currency:         curr,
+				Payee:            b.GetPayee(),
+				CounterpartyIBAN: b.GetCounterpartyIBAN(),
+				Reference:        b.GetReference(),
+				BookingStatus:    "BOOKED",
+			})
+		}
+
+		for _, p := range txResp.Transactions.Pending {
+			amt, aErr := p.GetAmountMinor()
+			if aErr != nil {
+				continue
+			}
+			curr := p.TransactionAmount.Currency
+			if curr == "" {
+				curr = acctCurrency
+			}
+			incoming = append(incoming, incomingTx{
+				ExternalID:       p.GetExternalID(),
+				BookingDateMicro: p.GetBookingDateMicro(),
+				AmountMinor:      amt,
+				Currency:         curr,
+				Payee:            p.GetPayee(),
+				CounterpartyIBAN: p.GetCounterpartyIBAN(),
+				Reference:        p.GetReference(),
+				BookingStatus:    "PENDING",
+			})
+		}
+
+		// Fetch available balance from GoCardless
+		balResp, balErr := h.gocardlessClient.GetAccountBalances(ctx, extAcctID)
+		if balErr == nil && balResp != nil && len(balResp.Balances) > 0 {
+			var chosenBal *gocardless.AccountBalance
+			findBal := func(types ...string) *gocardless.AccountBalance {
+				for _, t := range types {
+					for i := range balResp.Balances {
+						if strings.EqualFold(balResp.Balances[i].BalanceType, t) {
+							return &balResp.Balances[i]
+						}
+					}
+				}
+				return nil
+			}
+			// User choice: Available balance preferred (interimAvailable, authorised, forwardAvailable)
+			// fallback to closingBooked, interimBooked, or first balance
+			chosenBal = findBal("interimAvailable", "authorised", "forwardAvailable")
+			if chosenBal == nil {
+				chosenBal = findBal("closingBooked", "interimBooked")
+			}
+			if chosenBal == nil && len(balResp.Balances) > 0 {
+				chosenBal = &balResp.Balances[0]
+			}
+			if chosenBal != nil {
+				var f float64
+				if _, err := fmt.Sscanf(strings.TrimSpace(chosenBal.BalanceAmount.Amount), "%f", &f); err == nil {
+					bankBalanceMinor = int64(math.Round(f * 100))
+				}
+			}
+		}
+	} else {
+		// Mock adapter
+		extTxs, err := h.mockAdapter.FetchTransactions(ctx, userAcctID, sinceMicro)
+		if err != nil {
+			logger.Error(logCtx, "Bank sync failed fetching transactions from adapter", "account_id", userAcctID, "error", err.Error())
+			return 0, err
+		}
+		for _, tx := range extTxs {
+			bStatus := tx.BookingStatus
+			if bStatus == "" {
+				bStatus = "BOOKED"
+			}
+			incoming = append(incoming, incomingTx{
+				ExternalID:       tx.ExternalTxID,
+				BookingDateMicro: tx.BookingDateMicro,
+				AmountMinor:      tx.AmountMinor,
+				Currency:         tx.Currency,
+				Payee:            tx.Payee,
+				CounterpartyIBAN: tx.CounterpartyIBAN,
+				Reference:        tx.Reference,
+				BookingStatus:    bStatus,
+			})
+		}
+
+		extAccounts, _ := h.mockAdapter.FetchAccounts(ctx, userID)
+		for _, ea := range extAccounts {
+			if ea.Currency == acctCurrency {
+				bankBalanceMinor = ea.BalanceMinor
+				break
+			}
+		}
+		if bankBalanceMinor == 0 && len(extAccounts) > 0 {
+			bankBalanceMinor = extAccounts[0].BalanceMinor
 		}
 	}
-	if bankBalanceMinor == 0 && len(extAccounts) > 0 {
-		bankBalanceMinor = extAccounts[0].BalanceMinor
+
+	// Fetch existing pending holds for this account to reconcile or remove expired holds
+	type oldPending struct {
+		id         string
+		externalID string
+		amount     int64
+		payee      string
+		date       int64
+	}
+	var existingPending []oldPending
+	pRows, pErr := tenantDB.QueryContext(ctx, `
+		SELECT id, COALESCE(external_transaction_id, ''), amount_minor, raw_payee, booking_date
+		FROM raw_transactions_current
+		WHERE account_id = ? AND status = 'PENDING' AND booking_status = 'PENDING'`, userAcctID)
+	if pErr == nil && pRows != nil {
+		for pRows.Next() {
+			var op oldPending
+			pRows.Scan(&op.id, &op.externalID, &op.amount, &op.payee, &op.date)
+			existingPending = append(existingPending, op)
+		}
+		pRows.Close()
 	}
 
+	retainedPendingIDs := make(map[string]bool)
 	importedCount := 0
 	var sumImportedDelta int64
 	var oldestTxDate int64 = now
 
-	for _, ext := range extTxs {
-		dedup := transaction.ComputeCanonicalDedupHash(userAcctID, ext.ExternalTxID, ext.BookingDateMicro, ext.AmountMinor, ext.Currency, ext.Payee, ext.Reference)
+	for _, inc := range incoming {
+		if inc.BookingStatus == "BOOKED" {
+			// Check if this booked transaction matches any existing pending hold
+			var matchedPendingID string
+			for _, op := range existingPending {
+				if !retainedPendingIDs[op.id] {
+					if (op.externalID != "" && op.externalID == inc.ExternalID) ||
+						(op.amount == inc.AmountMinor && op.payee == inc.Payee && math.Abs(float64(op.date-inc.BookingDateMicro)) < 7*86400*1_000_000) {
+						matchedPendingID = op.id
+						break
+					}
+				}
+			}
+
+			if matchedPendingID != "" {
+				// Transition pending hold to BOOKED
+				dedup := transaction.ComputeCanonicalDedupHash(userAcctID, inc.ExternalID, inc.BookingDateMicro, inc.AmountMinor, inc.Currency, inc.Payee, inc.Reference)
+				res, err := tenantDB.ExecContext(ctx, `
+					UPDATE raw_transactions_current
+					SET booking_status = 'BOOKED',
+					    external_transaction_id = ?,
+					    dedup_hash = ?,
+					    booking_date = ?,
+					    amount_minor = ?,
+					    currency = ?,
+					    raw_payee = ?,
+					    counterparty_iban = ?,
+					    reference = ?,
+					    updated_at = ?
+					WHERE id = ?`,
+					inc.ExternalID, dedup, inc.BookingDateMicro, inc.AmountMinor, inc.Currency, inc.Payee, inc.CounterpartyIBAN, inc.Reference, now, matchedPendingID,
+				)
+				if err == nil {
+					if rows, _ := res.RowsAffected(); rows > 0 {
+						retainedPendingIDs[matchedPendingID] = true
+						importedCount++
+						sumImportedDelta += inc.AmountMinor
+						if inc.BookingDateMicro < oldestTxDate {
+							oldestTxDate = inc.BookingDateMicro
+						}
+						continue
+					}
+				}
+			}
+		}
+
+		// Insert transaction
+		dedup := transaction.ComputeCanonicalDedupHash(userAcctID, inc.ExternalID, inc.BookingDateMicro, inc.AmountMinor, inc.Currency, inc.Payee, inc.Reference)
 		rawID := domain.NewUUIDv7()
 
 		res, err := tenantDB.ExecContext(ctx, `
 			INSERT INTO raw_transactions_current (
 				id, version, account_id, external_transaction_id, dedup_hash, booking_date,
-				amount_minor, currency, raw_payee, reference, status, updated_at
-			) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+				amount_minor, currency, raw_payee, counterparty_iban, reference, status, booking_status, updated_at
+			) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)
 			ON CONFLICT(account_id, dedup_hash) DO NOTHING`,
-			rawID, userAcctID, ext.ExternalTxID, dedup, ext.BookingDateMicro,
-			ext.AmountMinor, ext.Currency, ext.Payee, ext.Reference, now,
+			rawID, userAcctID, inc.ExternalID, dedup, inc.BookingDateMicro,
+			inc.AmountMinor, inc.Currency, inc.Payee, inc.CounterpartyIBAN, inc.Reference, inc.BookingStatus, now,
 		)
 		if err == nil {
 			if rows, _ := res.RowsAffected(); rows > 0 {
 				importedCount++
-				sumImportedDelta += ext.AmountMinor
-				if ext.BookingDateMicro < oldestTxDate {
-					oldestTxDate = ext.BookingDateMicro
+				if inc.BookingStatus == "BOOKED" {
+					sumImportedDelta += inc.AmountMinor
+					if inc.BookingDateMicro < oldestTxDate {
+						oldestTxDate = inc.BookingDateMicro
+					}
+				} else {
+					retainedPendingIDs[rawID] = true
+				}
+			} else if inc.BookingStatus == "PENDING" {
+				var existingID string
+				_ = tenantDB.QueryRowContext(ctx, `SELECT id FROM raw_transactions_current WHERE account_id = ? AND dedup_hash = ?`, userAcctID, dedup).Scan(&existingID)
+				if existingID != "" {
+					retainedPendingIDs[existingID] = true
 				}
 			}
 		}
 	}
 
+	// Remove stale pending holds that were neither booked nor returned in bank's current pending list
+	for _, op := range existingPending {
+		if !retainedPendingIDs[op.id] {
+			_, _ = tenantDB.ExecContext(ctx, `DELETE FROM raw_transactions_current WHERE id = ? AND booking_status = 'PENDING'`, op.id)
+			logger.Info(logCtx, "Removed expired or dropped bank pending hold", "raw_id", op.id, "payee", op.payee, "amount", op.amount)
+		}
+	}
+
 	// If it's the first sync, ensure 'Set Balance' party and virtual external account exist,
 	// then record an initial Set Balance transaction so starting balance + pending transactions = real bank balance.
-	if isFirstSync {
+	if isFirstSync && bankBalanceMinor != 0 {
 		var setBalancePartyID, setBalanceAcctID string
 		err := tenantDB.QueryRowContext(ctx, `
 			SELECT p.id, a.id FROM parties_current p
@@ -1603,6 +1851,12 @@ func (h *TransactionsHandler) executeAccountSync(ctx context.Context, tenantDB *
 			}
 		}
 	}
+
+	// Update last_synced_at on account_integration_links
+	_, _ = tenantDB.ExecContext(ctx, `
+		UPDATE account_integration_links 
+		SET last_synced_at = ? 
+		WHERE account_id = ?`, now, userAcctID)
 
 	// Log successful sync for rate limit accounting
 	logID := domain.NewUUIDv7()
@@ -2121,19 +2375,22 @@ func (h *TransactionsHandler) ResolveRawTransaction(c echo.Context) error {
 	var extTxID, counterpartyIBAN, ref sql.NullString
 	var bookingDate sql.NullInt64
 	var amountMinor int64
-	var status string
+	var status, bStatus string
 	err := tenantDB.QueryRowContext(c.Request().Context(), `
 		SELECT account_id, external_transaction_id, booking_date, amount_minor, currency,
-		       raw_payee, counterparty_iban, reference, status
+		       raw_payee, counterparty_iban, reference, status, COALESCE(booking_status, 'BOOKED')
 		FROM raw_transactions_current WHERE id = ?`, rawID).Scan(
 		&userAcctID, &extTxID, &bookingDate, &amountMinor, &currency,
-		&rawPayee, &counterpartyIBAN, &ref, &status,
+		&rawPayee, &counterpartyIBAN, &ref, &status, &bStatus,
 	)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusNotFound, "Raw transaction not found")
 	}
 	if status != "PENDING" {
 		return echo.NewHTTPError(http.StatusBadRequest, "Raw transaction is not in PENDING status")
+	}
+	if bStatus == "PENDING" {
+		return echo.NewHTTPError(http.StatusBadRequest, "Pending bank holds cannot be resolved into budget transactions until cleared by the bank")
 	}
 
 	partyName := strings.TrimSpace(c.FormValue("party_name"))
@@ -2264,9 +2521,9 @@ func (h *TransactionsHandler) IgnoreRawTransaction(c echo.Context) error {
 	_, err = tx.ExecContext(c.Request().Context(), `
 		INSERT INTO raw_transactions (
 			id, version, account_id, external_transaction_id, dedup_hash, booking_date, value_date,
-			amount_minor, currency, raw_payee, counterparty_iban, reference, status, action,
+			amount_minor, currency, raw_payee, counterparty_iban, reference, status, booking_status, action,
 			agent_id, correlation_id, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IGNORED', 'UPDATE', ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IGNORED', 'BOOKED', 'UPDATE', ?, ?, ?)`,
 		rawID, newVersion, accountID, extTxID, dedupHash, bookingDate, valueDate,
 		amountMinor, currency, rawPayee, counterpartyIBAN, reference,
 		userID, corrID, now,
@@ -2310,7 +2567,7 @@ func (h *TransactionsHandler) AutoMatchRawTransactions(c echo.Context) error {
 		SELECT id, account_id, booking_date, amount_minor, currency,
 		       COALESCE(raw_payee, ''), COALESCE(counterparty_iban, ''), COALESCE(reference, '')
 		FROM raw_transactions_current
-		WHERE status = 'PENDING'
+		WHERE status = 'PENDING' AND booking_status = 'BOOKED'
 		ORDER BY booking_date ASC`)
 	if err != nil {
 		return err
@@ -2424,7 +2681,7 @@ func (h *TransactionsHandler) BatchResolveRawTransactions(c echo.Context) error 
 			var bDate sql.NullInt64
 			err := tenantDB.QueryRowContext(c.Request().Context(), `
 				SELECT amount_minor, currency, account_id, booking_date
-				FROM raw_transactions_current WHERE id = ? AND status = 'PENDING'`, rID).
+				FROM raw_transactions_current WHERE id = ? AND status = 'PENDING' AND booking_status = 'BOOKED'`, rID).
 				Scan(&amt, &curr, &acctID, &bDate)
 			if err != nil {
 				return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Pending raw transaction %s not found", rID))
@@ -2516,7 +2773,7 @@ func (h *TransactionsHandler) BatchResolveRawTransactions(c echo.Context) error 
 		var amountMinor int64
 		err := tenantDB.QueryRowContext(c.Request().Context(), `
 			SELECT account_id, booking_date, amount_minor, currency, raw_payee
-			FROM raw_transactions_current WHERE id = ? AND status = 'PENDING'`, rawID).
+			FROM raw_transactions_current WHERE id = ? AND status = 'PENDING' AND booking_status = 'BOOKED'`, rawID).
 			Scan(&userAcctID, &bookingDate, &amountMinor, &currency, &rawPayee)
 		if err != nil {
 			return echo.NewHTTPError(http.StatusBadRequest, "Pending raw transaction not found")
@@ -2746,9 +3003,9 @@ func (h *TransactionsHandler) BatchIgnoreRawTransactions(c echo.Context) error {
 				_, _ = tx.ExecContext(c.Request().Context(), `
 					INSERT INTO raw_transactions (
 						id, version, account_id, external_transaction_id, dedup_hash, booking_date, value_date,
-						amount_minor, currency, raw_payee, counterparty_iban, reference, status, action,
+						amount_minor, currency, raw_payee, counterparty_iban, reference, status, booking_status, action,
 						agent_id, correlation_id, created_at
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IGNORED', 'UPDATE', ?, ?, ?)`,
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'IGNORED', 'BOOKED', 'UPDATE', ?, ?, ?)`,
 					rawID, newVersion, accountID, extTxID, dedupHash, bookingDate, valueDate,
 					amountMinor, currency, rawPayee, counterpartyIBAN, reference,
 					userID, corrID, now,

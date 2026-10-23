@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS raw_transactions (
     counterparty_iban TEXT,
     reference TEXT,
     status TEXT NOT NULL CHECK(status IN ('PENDING', 'PROCESSED', 'IGNORED')),
+    booking_status TEXT NOT NULL DEFAULT 'BOOKED' CHECK(booking_status IN ('BOOKED', 'PENDING')),
     action TEXT NOT NULL CHECK(action IN ('CREATE', 'UPDATE', 'RESTORE', 'SOFT_DELETE')),
     agent_id TEXT NOT NULL,
     correlation_id TEXT NOT NULL,
@@ -303,11 +304,13 @@ CREATE TABLE IF NOT EXISTS raw_transactions_current (
     counterparty_iban TEXT,
     reference TEXT,
     status TEXT NOT NULL,
+    booking_status TEXT NOT NULL DEFAULT 'BOOKED' CHECK(booking_status IN ('BOOKED', 'PENDING')),
     updated_at INTEGER NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_tx_curr_dedup ON raw_transactions_current(account_id, dedup_hash);
 CREATE INDEX IF NOT EXISTS idx_raw_tx_curr_status_date ON raw_transactions_current(status, booking_date DESC);
+CREATE INDEX IF NOT EXISTS idx_raw_tx_curr_booking_status ON raw_transactions_current(booking_status);
 CREATE INDEX IF NOT EXISTS idx_raw_tx_curr_account ON raw_transactions_current(account_id, booking_date DESC);
 
 CREATE TABLE IF NOT EXISTS budget_transactions_current (

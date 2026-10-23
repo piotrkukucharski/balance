@@ -97,17 +97,17 @@ func ExecuteResolution(ctx context.Context, tenantDB *sql.DB, input ResolveResol
 		var status string
 		var rawVersion int
 		var accountID string
-		var dedupHash, currency, rawPayee string
+		var dedupHash, currency, rawPayee, bStatus string
 		var extTxID, counterpartyIBAN, reference sql.NullString
 		var bookingDate, valueDate sql.NullInt64
 		var amountMinor int64
 
 		err := tx.QueryRowContext(ctx, `
 			SELECT version, account_id, external_transaction_id, dedup_hash, booking_date, value_date,
-			       amount_minor, currency, raw_payee, counterparty_iban, reference, status
+			       amount_minor, currency, raw_payee, counterparty_iban, reference, status, COALESCE(booking_status, 'BOOKED')
 			FROM raw_transactions_current WHERE id = ?`, rawID).Scan(
 			&rawVersion, &accountID, &extTxID, &dedupHash, &bookingDate, &valueDate,
-			&amountMinor, &currency, &rawPayee, &counterpartyIBAN, &reference, &status,
+			&amountMinor, &currency, &rawPayee, &counterpartyIBAN, &reference, &status, &bStatus,
 		)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -118,14 +118,17 @@ func ExecuteResolution(ctx context.Context, tenantDB *sql.DB, input ResolveResol
 		if status != "PENDING" {
 			return "", fmt.Errorf("raw transaction %s is not PENDING (status: %s)", rawID, status)
 		}
+		if bStatus == "PENDING" {
+			return "", fmt.Errorf("raw transaction %s cannot be resolved while pending hold", rawID)
+		}
 
 		newVersion := rawVersion + 1
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO raw_transactions (
 				id, version, account_id, external_transaction_id, dedup_hash, booking_date, value_date,
-				amount_minor, currency, raw_payee, counterparty_iban, reference, status, action,
+				amount_minor, currency, raw_payee, counterparty_iban, reference, status, booking_status, action,
 				agent_id, correlation_id, created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROCESSED', 'UPDATE', ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROCESSED', 'BOOKED', 'UPDATE', ?, ?, ?)`,
 			rawID, newVersion, accountID, extTxID, dedupHash, bookingDate, valueDate,
 			amountMinor, currency, rawPayee, counterpartyIBAN, reference,
 			input.AgentID, input.CorrelationID, now,

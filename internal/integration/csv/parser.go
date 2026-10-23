@@ -645,8 +645,8 @@ func ImportTransactions(
 		INSERT INTO raw_transactions_current (
 			id, version, account_id, external_transaction_id, dedup_hash, booking_date,
 			value_date, amount_minor, currency, raw_payee, counterparty_iban, reference,
-			status, updated_at
-		) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+			status, booking_status, updated_at
+		) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 'BOOKED', ?)
 		ON CONFLICT(account_id, dedup_hash) DO NOTHING`)
 	if err != nil {
 		return nil, fmt.Errorf("prepare raw_transactions_current insert failed: %w", err)
@@ -657,8 +657,8 @@ func ImportTransactions(
 		INSERT INTO raw_transactions (
 			id, version, account_id, external_transaction_id, dedup_hash, booking_date,
 			value_date, amount_minor, currency, raw_payee, counterparty_iban, reference,
-			status, action, agent_id, correlation_id, created_at
-		) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 'CREATE', ?, ?, ?)`)
+			status, booking_status, action, agent_id, correlation_id, created_at
+		) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 'BOOKED', 'CREATE', ?, ?, ?)`)
 	if err != nil {
 		return nil, fmt.Errorf("prepare raw_transactions insert failed: %w", err)
 	}

@@ -1304,7 +1304,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 
 		var netSumRaw int64
-		err = bDB.QueryRow(`SELECT SUM(amount_minor) FROM raw_transactions_current`).Scan(&netSumRaw)
+		err = bDB.QueryRow(`SELECT SUM(amount_minor) FROM raw_transactions_current WHERE booking_status = 'BOOKED'`).Scan(&netSumRaw)
 		if err != nil {
 			return fmt.Errorf("failed querying sum of raw transactions: %v", err)
 		}
@@ -1715,6 +1715,207 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		body := tc.lastResponse.Body.String()
 		if !strings.Contains(body, "Żabka") || !strings.Contains(body, "-50.00") {
 			return fmt.Errorf("expected booking date, payee Żabka and amount -50.00 in response body")
+		}
+		return nil
+	})
+
+	var testPendingRawID string
+
+	ctx.Step(`^an active checking account "([^"]*)" linked to a bank feed with booked and pending transactions$`, func(acctName string) error {
+		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		userAcctID := domain.NewUUIDv7()
+
+		tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, created_at, updated_at)
+			VALUES ('01900000-0000-7000-8000-000000000001', 'Family Home', 'PLN', ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name`, now, now)
+
+		bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, 'user_1', ?)`, pID, now)
+		bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, acctName, now)
+
+		tc.activeUserID = "user_1"
+		return nil
+	})
+
+	ctx.Step(`^newly discovered raw transactions should include booked transactions with "booking_status = 'BOOKED'"$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, false)
+		if err != nil {
+			return err
+		}
+		var count int
+		err = bDB.QueryRow(`SELECT count(*) FROM raw_transactions_current WHERE booking_status = 'BOOKED'`).Scan(&count)
+		if err != nil || count == 0 {
+			return fmt.Errorf("expected booked transactions, got count=%d, err=%v", count, err)
+		}
+		return nil
+	})
+
+	ctx.Step(`^raw transactions should include pending holds with "booking_status = 'PENDING'"$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, false)
+		if err != nil {
+			return err
+		}
+		var count int
+		err = bDB.QueryRow(`SELECT count(*) FROM raw_transactions_current WHERE booking_status = 'PENDING'`).Scan(&count)
+		if err != nil || count == 0 {
+			return fmt.Errorf("expected pending hold transactions, got count=%d, err=%v", count, err)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the Reconcile Workbench should display "Pending Hold" badge for pending holds$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		req := httptest.NewRequest(http.MethodGet, "/budgets/"+tc.activeBudgetID+"/transactions", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set(handlers.ContextRoleKey, "OWNER")
+		c.Set("csrfToken", "dummy_csrf_token")
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.TransactionsView(c)
+		if err != nil {
+			return err
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "Pending Hold") {
+			return fmt.Errorf("expected 'Pending Hold' badge in Reconcile Workbench")
+		}
+		return nil
+	})
+
+	ctx.Step(`^resolving or converting a pending hold transaction into a budget transaction should be blocked$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var pendingID string
+		err = bDB.QueryRow(`SELECT id FROM raw_transactions_current WHERE booking_status = 'PENDING' LIMIT 1`).Scan(&pendingID)
+		if err != nil {
+			return fmt.Errorf("no pending transaction found to test: %v", err)
+		}
+
+		form := url.Values{}
+		form.Set("csrf_token", "dummy_csrf_token")
+		form.Set("bucket_id", domain.NewUUIDv7())
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/transactions/raw/%s/resolve", tc.activeBudgetID, pendingID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "rawId")
+		c.SetParamValues(tc.activeBudgetID, pendingID)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		resErr := tc.txHandler.ResolveRawTransaction(c)
+		if resErr == nil && rec.Code < 400 {
+			return fmt.Errorf("expected resolve to be rejected for pending hold, got status %d", rec.Code)
+		}
+		return nil
+	})
+
+	ctx.Step(`^a pending hold raw transaction in account "([^"]*)"$`, func(acctName string) error {
+		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		userAcctID := domain.NewUUIDv7()
+
+		tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, created_at, updated_at)
+			VALUES ('01900000-0000-7000-8000-000000000001', 'Family Home', 'PLN', ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name`, now, now)
+
+		bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, 'user_1', ?)`, pID, now)
+		bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, acctName, now)
+
+		testPendingRawID = domain.NewUUIDv7()
+		dedup := "pending_dedup_hash"
+		bDB.Exec(`
+			INSERT INTO raw_transactions_current (
+				id, version, account_id, external_transaction_id, dedup_hash, booking_date,
+				amount_minor, currency, raw_payee, reference, status, booking_status, updated_at
+			) VALUES (?, 1, ?, 'tx_mock_dinner_cleared', ?, ?, -30000, 'PLN', 'RESTAURACJA POD BARANEM', 'Kolacja', 'PENDING', 'PENDING', ?)`,
+			testPendingRawID, userAcctID, dedup, now-86400*1_000_000, now,
+		)
+		tc.activeUserID = "user_1"
+		return nil
+	})
+
+	ctx.Step(`^the bank subsequently reports the transaction as cleared and booked$`, func() error {
+		return nil
+	})
+
+	ctx.Step(`^the pending raw transaction should transition to "booking_status = 'BOOKED'"$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, false)
+		if err != nil {
+			return err
+		}
+		var bStatus string
+		err = bDB.QueryRow(`SELECT booking_status FROM raw_transactions_current WHERE id = ?`, testPendingRawID).Scan(&bStatus)
+		if err != nil {
+			return fmt.Errorf("failed fetching updated raw transaction: %v", err)
+		}
+		if bStatus != "BOOKED" {
+			return fmt.Errorf("expected booking_status 'BOOKED', got %q", bStatus)
+		}
+		return nil
+	})
+
+	ctx.Step(`^it should now be resolvable in the Reconcile Workbench$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		pID := domain.NewUUIDv7()
+		bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'Dining Out Merchant', 'ORGANIZATION', 0, 'user_1', ?)`, pID, time.Now().UTC().UnixMicro())
+
+		form := url.Values{}
+		form.Set("csrf_token", "dummy_csrf_token")
+		form.Set("party_name", "RESTAURACJA POD BARANEM")
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/transactions/raw/%s/resolve", tc.activeBudgetID, testPendingRawID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "rawId")
+		c.SetParamValues(tc.activeBudgetID, testPendingRawID)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.ResolveRawTransaction(c)
+		if err != nil {
+			return fmt.Errorf("expected transaction to resolve successfully, got: %v", err)
+		}
+		if rec.Code >= 400 {
+			return fmt.Errorf("expected HTTP redirect or success, got status %d", rec.Code)
 		}
 		return nil
 	})

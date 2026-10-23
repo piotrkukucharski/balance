@@ -78,6 +78,21 @@ Feature: Two-Tier Transaction Resolution (Move, Merge, Split) and Deduplication
     Then I should see a tab or workbench for "Pending Bank Feeds"
     And each raw transaction should display its booking date, raw payee, and amount
 
+  Scenario: Bank synchronization distinguishes booked transactions and pending holds
+    Given an active checking account "mBank Checking" linked to a bank feed with booked and pending transactions
+    When I trigger "Sync with Bank" on budget "Family Home" for account "mBank Checking"
+    Then newly discovered raw transactions should include booked transactions with "booking_status = 'BOOKED'"
+    And raw transactions should include pending holds with "booking_status = 'PENDING'"
+    And the Reconcile Workbench should display "Pending Hold" badge for pending holds
+    And resolving or converting a pending hold transaction into a budget transaction should be blocked
+
+  Scenario: Subsequent bank sync settles pending hold into booked transaction
+    Given a pending hold raw transaction in account "mBank Checking"
+    When the bank subsequently reports the transaction as cleared and booked
+    And I trigger "Sync with Bank" on budget "Family Home" for account "mBank Checking"
+    Then the pending raw transaction should transition to "booking_status = 'BOOKED'"
+    And it should now be resolvable in the Reconcile Workbench
+
   Scenario: Direct Move resolution of a single raw transaction into budget transaction
     Given a pending raw transaction of "-50.00 PLN" from "Żabka" in account "mBank Checking"
     When I resolve the raw transaction into bucket "Groceries"

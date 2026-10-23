@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -380,3 +382,168 @@ func (c *Client) GetAccountBalances(ctx context.Context, accountID string) (*Bal
 	}
 	return &balances, nil
 }
+
+type TransactionAmount struct {
+	Amount   string `json:"amount"`
+	Currency string `json:"currency"`
+}
+
+type AccountReference struct {
+	IBAN string `json:"iban"`
+}
+
+type BankTransaction struct {
+	TransactionID                         string            `json:"transactionId"`
+	EntryReference                        string            `json:"entryReference"`
+	BookingDate                           string            `json:"bookingDate"`
+	BookingDateTime                       string            `json:"bookingDateTime"`
+	ValueDate                             string            `json:"valueDate"`
+	ValueDateTime                         string            `json:"valueDateTime"`
+	TransactionAmount                     TransactionAmount `json:"transactionAmount"`
+	CreditorName                          string            `json:"creditorName"`
+	CreditorAccount                       AccountReference  `json:"creditorAccount"`
+	DebtorName                            string            `json:"debtorName"`
+	DebtorAccount                         AccountReference  `json:"debtorAccount"`
+	RemittanceInformationUnstructured     string            `json:"remittanceInformationUnstructured"`
+	RemittanceInformationUnstructuredArray []string        `json:"remittanceInformationUnstructuredArray"`
+	InternalTransactionID                 string            `json:"internalTransactionId"`
+}
+
+func (t *BankTransaction) GetAmountMinor() (int64, error) {
+	var f float64
+	_, err := fmt.Sscanf(strings.TrimSpace(t.TransactionAmount.Amount), "%f", &f)
+	if err != nil {
+		return 0, err
+	}
+	return int64(math.Round(f * 100)), nil
+}
+
+func (t *BankTransaction) GetBookingDateMicro() int64 {
+	dateStr := t.BookingDate
+	if dateStr == "" {
+		dateStr = t.BookingDateTime
+	}
+	if dateStr == "" {
+		dateStr = t.ValueDate
+	}
+	if dateStr == "" {
+		dateStr = t.ValueDateTime
+	}
+	if len(dateStr) >= 10 {
+		if pt, err := time.Parse("2006-01-02", dateStr[:10]); err == nil {
+			return pt.UTC().UnixMicro()
+		}
+	}
+	if pt, err := time.Parse(time.RFC3339, dateStr); err == nil {
+		return pt.UTC().UnixMicro()
+	}
+	return time.Now().UTC().UnixMicro()
+}
+
+func (t *BankTransaction) GetPayee() string {
+	var payee string
+	amountMinor, _ := t.GetAmountMinor()
+	if amountMinor < 0 {
+		payee = t.CreditorName
+		if payee == "" {
+			payee = t.DebtorName
+		}
+	} else {
+		payee = t.DebtorName
+		if payee == "" {
+			payee = t.CreditorName
+		}
+	}
+	if payee == "" {
+		payee = t.RemittanceInformationUnstructured
+	}
+	if payee == "" && len(t.RemittanceInformationUnstructuredArray) > 0 {
+		payee = t.RemittanceInformationUnstructuredArray[0]
+	}
+	if payee == "" {
+		payee = "Unknown Bank Payee"
+	}
+	return strings.TrimSpace(payee)
+}
+
+func (t *BankTransaction) GetCounterpartyIBAN() string {
+	amountMinor, _ := t.GetAmountMinor()
+	if amountMinor < 0 {
+		return t.CreditorAccount.IBAN
+	}
+	return t.DebtorAccount.IBAN
+}
+
+func (t *BankTransaction) GetReference() string {
+	if t.RemittanceInformationUnstructured != "" {
+		return strings.TrimSpace(t.RemittanceInformationUnstructured)
+	}
+	if len(t.RemittanceInformationUnstructuredArray) > 0 {
+		return strings.TrimSpace(strings.Join(t.RemittanceInformationUnstructuredArray, " "))
+	}
+	return strings.TrimSpace(t.EntryReference)
+}
+
+func (t *BankTransaction) GetExternalID() string {
+	if t.TransactionID != "" {
+		return t.TransactionID
+	}
+	if t.InternalTransactionID != "" {
+		return t.InternalTransactionID
+	}
+	if t.EntryReference != "" {
+		return t.EntryReference
+	}
+	return ""
+}
+
+type TransactionsResponse struct {
+	Transactions struct {
+		Booked  []BankTransaction `json:"booked"`
+		Pending []BankTransaction `json:"pending"`
+	} `json:"transactions"`
+}
+
+func (c *Client) GetAccountTransactions(ctx context.Context, accountID string, dateFrom, dateTo string) (*TransactionsResponse, error) {
+	token, err := c.getAccessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint := fmt.Sprintf("%s/accounts/%s/transactions/", c.baseURL, accountID)
+	var queryParams []string
+	if dateFrom != "" {
+		queryParams = append(queryParams, "date_from="+dateFrom)
+	}
+	if dateTo != "" {
+		queryParams = append(queryParams, "date_to="+dateTo)
+	}
+	if len(queryParams) > 0 {
+		endpoint += "?" + strings.Join(queryParams, "&")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("account transactions request failed (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	var txResp TransactionsResponse
+	if err := json.Unmarshal(respBody, &txResp); err != nil {
+		return nil, fmt.Errorf("decode account transactions error: %w, response: %s", err, string(respBody))
+	}
+	return &txResp, nil
+}
+

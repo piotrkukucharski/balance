@@ -22,6 +22,7 @@ type ExtTransaction struct {
 	Payee            string
 	CounterpartyIBAN string
 	Reference        string
+	BookingStatus    string // "BOOKED" or "PENDING"
 }
 
 type Institution struct {
@@ -141,6 +142,7 @@ func (m *MockAdapter) FetchTransactions(ctx context.Context, extAccountID string
 			Payee:            "ACME CORP SP Z O O",
 			CounterpartyIBAN: "PL88881111222233334444555566",
 			Reference:        "Wynagrodzenie za biezacy miesiac",
+			BookingStatus:    "BOOKED",
 		},
 		{
 			ExternalTxID:     fmt.Sprintf("tx_mock_zabka_1_%d", now),
@@ -149,6 +151,7 @@ func (m *MockAdapter) FetchTransactions(ctx context.Context, extAccountID string
 			Currency:         "PLN",
 			Payee:            "ZABKA Z1234 WARSZAWA",
 			Reference:        "Platnosc karta 1234",
+			BookingStatus:    "BOOKED",
 		},
 		{
 			ExternalTxID:     fmt.Sprintf("tx_mock_zabka_2_%d", now),
@@ -157,6 +160,7 @@ func (m *MockAdapter) FetchTransactions(ctx context.Context, extAccountID string
 			Currency:         "PLN",
 			Payee:            "ZABKA Z5678 KRAKOW",
 			Reference:        "Platnosc karta 1234",
+			BookingStatus:    "BOOKED",
 		},
 		{
 			ExternalTxID:     fmt.Sprintf("tx_mock_dinner_%d", now),
@@ -165,6 +169,7 @@ func (m *MockAdapter) FetchTransactions(ctx context.Context, extAccountID string
 			Currency:         "PLN",
 			Payee:            "RESTAURACJA POD BARANEM",
 			Reference:        "Kolacja",
+			BookingStatus:    "BOOKED",
 		},
 		{
 			ExternalTxID:     fmt.Sprintf("tx_mock_friend_a_%d", now),
@@ -173,6 +178,7 @@ func (m *MockAdapter) FetchTransactions(ctx context.Context, extAccountID string
 			Currency:         "PLN",
 			Payee:            "MAREK KOWALSKI",
 			Reference:        "Zwrot za kolacje",
+			BookingStatus:    "BOOKED",
 		},
 		{
 			ExternalTxID:     fmt.Sprintf("tx_mock_friend_b_%d", now),
@@ -181,6 +187,16 @@ func (m *MockAdapter) FetchTransactions(ctx context.Context, extAccountID string
 			Currency:         "PLN",
 			Payee:            "ANNA NOWAK",
 			Reference:        "Za wino",
+			BookingStatus:    "BOOKED",
+		},
+		{
+			ExternalTxID:     fmt.Sprintf("tx_mock_pending_coffee_%d", now),
+			BookingDateMicro: now - 1800*1_000_000, // 30 minutes ago
+			AmountMinor:      -1850, // -18.50 PLN coffee hold
+			Currency:         "PLN",
+			Payee:            "COSTA COFFEE WARSZAWA",
+			Reference:        "Blokada karty 1234",
+			BookingStatus:    "PENDING",
 		},
 	}
 
