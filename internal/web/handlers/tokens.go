@@ -172,13 +172,17 @@ func (h *TokensHandler) TokensView(c echo.Context) error {
 	}
 
 	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en" data-theme="emerald">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Balance — Personal Access Tokens</title>
-    <link href="/assets/style.css" rel="stylesheet">
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="manifest" href="/manifest.webmanifest">
 </head>
 <body class="bg-base-200 min-h-screen text-base-content flex flex-col justify-between">
     <div class="navbar bg-base-100 border-b border-base-300 px-4 md:px-8">
