@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/balance/balance/internal/domain"
@@ -962,4 +964,44 @@ func CalculateReadyToAssign(ctx context.Context, tenantDB *sql.DB) (map[string]i
 	}
 
 	return readyToAssign, nil
+}
+
+// GetAvailableCurrencies returns a unique sorted list of currencies available for a budget:
+// its default currency plus currencies present in accounts_current and account_currency_balances.
+func GetAvailableCurrencies(ctx context.Context, tenantDB *sql.DB, defaultCurrency string) ([]string, error) {
+	currMap := make(map[string]bool)
+	defaultCurrency = strings.ToUpper(strings.TrimSpace(defaultCurrency))
+	if defaultCurrency != "" {
+		currMap[defaultCurrency] = true
+	} else {
+		currMap["PLN"] = true
+	}
+
+	if tenantDB != nil {
+		rows, err := tenantDB.QueryContext(ctx, `
+			SELECT DISTINCT currency FROM (
+				SELECT primary_currency AS currency FROM accounts_current WHERE primary_currency IS NOT NULL AND primary_currency != ''
+				UNION
+				SELECT currency FROM account_currency_balances WHERE currency IS NOT NULL AND currency != ''
+			)`)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var c string
+				if err := rows.Scan(&c); err == nil {
+					c = strings.ToUpper(strings.TrimSpace(c))
+					if c != "" {
+						currMap[c] = true
+					}
+				}
+			}
+		}
+	}
+
+	currencies := make([]string, 0, len(currMap))
+	for c := range currMap {
+		currencies = append(currencies, c)
+	}
+	sort.Strings(currencies)
+	return currencies, nil
 }

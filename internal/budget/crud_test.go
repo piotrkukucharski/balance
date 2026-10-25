@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
@@ -361,5 +362,65 @@ func TestAssignFundsReverseWaterfallAndMoveFunds(t *testing.T) {
 	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, tDest).Scan(&dFunded)
 	if mFunded != 0 || dFunded != 50000 {
 		t.Fatalf("expected source target=0, dest target=50000, got src=%d dst=%d", mFunded, dFunded)
+	}
+}
+
+func TestGetAvailableCurrencies(t *testing.T) {
+	ctx := context.Background()
+	tenantDB := setupTestTenantDB(t)
+	defer tenantDB.Close()
+
+	// Initial check: empty DB, only default currency
+	currencies, err := GetAvailableCurrencies(ctx, tenantDB, "PLN")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(currencies) != 1 || currencies[0] != "PLN" {
+		t.Fatalf("expected [PLN], got %v", currencies)
+	}
+
+	// Add an account with primary_currency EUR
+	userPartyID := domain.NewUUIDv7()
+	acctID1 := domain.NewUUIDv7()
+	acctID2 := domain.NewUUIDv7()
+	agentID := domain.NewUUIDv7()
+	now := time.Now().UTC().UnixMicro()
+
+	_, err = tenantDB.ExecContext(ctx, `
+		INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+		VALUES (?, 1, 'Self', 'INDIVIDUAL', 1, ?, ?)`, userPartyID, agentID, now)
+	if err != nil {
+		t.Fatalf("failed inserting party: %v", err)
+	}
+
+	_, err = tenantDB.ExecContext(ctx, `
+		INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+		VALUES (?, 1, ?, 'EUR Account', 'CHECKING', 'EUR', 0, ?, ?)`, acctID1, userPartyID, agentID, now)
+	if err != nil {
+		t.Fatalf("failed inserting account: %v", err)
+	}
+
+	// Add another account balance with USD
+	_, err = tenantDB.ExecContext(ctx, `
+		INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+		VALUES (?, 1, ?, 'Multi Account', 'CHECKING', 'PLN', 0, ?, ?)`, acctID2, userPartyID, agentID, now)
+	if err != nil {
+		t.Fatalf("failed inserting account: %v", err)
+	}
+
+	_, err = tenantDB.ExecContext(ctx, `
+		INSERT INTO account_currency_balances (account_id, currency, balance_minor, updated_at)
+		VALUES (?, 'USD', 10000, ?)`, acctID2, now)
+	if err != nil {
+		t.Fatalf("failed inserting account_currency_balances: %v", err)
+	}
+
+	currencies, err = GetAvailableCurrencies(ctx, tenantDB, "PLN")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Expected sorted: EUR, PLN, USD
+	if len(currencies) != 3 || currencies[0] != "EUR" || currencies[1] != "PLN" || currencies[2] != "USD" {
+		t.Fatalf("expected [EUR, PLN, USD], got %v", currencies)
 	}
 }

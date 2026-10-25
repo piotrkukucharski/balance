@@ -143,3 +143,19 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     And the bucket "Pet Care" should have health status "Over-allocated"
     And the bucket "Pet Care" should be marked with P3 at risk
 
+  Scenario: Creating a target in an available non-default currency and enforcing currency immutability
+    Given an open budget "Family Home" with "5,000.00 PLN" in checking account
+    And an account "EUR Savings" with currency "EUR" and balance "1,000.00 EUR"
+    When I create a bucket "Euro Travel" in group "Wants"
+    And I add a target "Hotel Reservation" with priority 2, cadence "MONTHLY", amount "250.00 EUR" in currency "EUR"
+    Then target "Hotel Reservation" in projections should have currency "EUR" and amount "250.00 EUR"
+    When I attempt to update target "Hotel Reservation" with currency "USD"
+    Then target "Hotel Reservation" in projections should still have currency "EUR"
+
+  Scenario: Rejecting target creation with currency not available in budget
+    Given an open budget "Family Home" with "5,000.00 PLN" in checking account
+    When I create a bucket "US Shopping" in group "Wants"
+    And I attempt to add a target "Amazon US" in currency "USD"
+    Then the target creation should be rejected due to unsupported currency
+
+

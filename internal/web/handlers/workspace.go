@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -45,6 +46,11 @@ func (h *WorkspaceHandler) SetService(svc *service.AppService) {
 
 func (h *WorkspaceHandler) SetStructureAIProvider(p ai.BudgetStructureAIProvider) {
 	h.structureAI = p
+}
+
+// GetAvailableCurrencies returns a unique sorted list of currencies available for a budget.
+func (h *WorkspaceHandler) GetAvailableCurrencies(ctx context.Context, tenantDB *sql.DB, defaultCurrency string) ([]string, error) {
+	return budget.GetAvailableCurrencies(ctx, tenantDB, defaultCurrency)
 }
 
 // BudgetsList renders the post-login budget selection dashboard with DaisyUI 5.
@@ -2173,6 +2179,19 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		otherBudgetOptions.WriteString(`<option value="" disabled selected>No other budgets available to import from</option>`)
 	}
 
+	availCurrencies, err := budget.GetAvailableCurrencies(c.Request().Context(), tenantDB, defaultCurr)
+	if err != nil {
+		availCurrencies = []string{defaultCurr}
+	}
+	var targetCurrencyOptions strings.Builder
+	for _, curr := range availCurrencies {
+		selectedAttr := ""
+		if curr == defaultCurr {
+			selectedAttr = " selected"
+		}
+		targetCurrencyOptions.WriteString(fmt.Sprintf(`<option value="%s"%s>%s</option>`, curr, selectedAttr, curr))
+	}
+
 	structureModalHTML := fmt.Sprintf(`
     <!-- Budget Structure Generator & Import Modal -->
     <dialog id="structure_modal" class="modal modal-bottom sm:modal-middle">
@@ -2607,11 +2626,19 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 <input type="hidden" name="horizon" value="%s" />
                 <input type="hidden" name="filter" value="%s" />
                 <input type="hidden" id="target_bucket_id" name="bucket_id" value="" />
-                <input type="hidden" id="target_currency" name="currency" value="%s" />
 
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Target Name</span></label>
-                    <input type="text" id="target_name" name="name" required placeholder="e.g. Monthly Rent, Electricity" class="input input-bordered w-full input-md focus:input-primary" />
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div class="form-control sm:col-span-2">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Target Name</span></label>
+                        <input type="text" id="target_name" name="name" required placeholder="e.g. Monthly Rent, Electricity" class="input input-bordered w-full input-md focus:input-primary" />
+                    </div>
+                    <div class="form-control sm:col-span-1">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Currency</span></label>
+                        <select id="target_currency" name="currency" class="select select-bordered w-full select-md focus:select-primary">
+                            %s
+                        </select>
+                        <span id="target_currency_help" class="text-[10px] text-base-content/50 mt-1 hidden">(Currency cannot be changed after creation)</span>
+                    </div>
                 </div>
 
                 <div class="grid grid-cols-2 gap-4">
@@ -2993,7 +3020,28 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             document.getElementById('target_strategy').value = t.NonSpendingStrategy;
             document.getElementById('target_amount').value = (t.AmountMinor / 100).toFixed(2);
             document.getElementById('target_ceiling').value = t.CeilingAmountMinor ? (t.CeilingAmountMinor / 100).toFixed(2) : '';
-            document.getElementById('target_currency').value = t.Currency;
+            const currSelect = document.getElementById('target_currency');
+            if (currSelect) {
+                let hasOpt = false;
+                for (let i = 0; i < currSelect.options.length; i++) {
+                    if (currSelect.options[i].value === t.Currency) {
+                        hasOpt = true;
+                        break;
+                    }
+                }
+                if (!hasOpt && t.Currency) {
+                    const opt = document.createElement('option');
+                    opt.value = t.Currency;
+                    opt.innerText = t.Currency;
+                    currSelect.appendChild(opt);
+                }
+                currSelect.value = t.Currency;
+                currSelect.disabled = true;
+            }
+            const currHelp = document.getElementById('target_currency_help');
+            if (currHelp) {
+                currHelp.classList.remove('hidden');
+            }
             document.getElementById('target_lua_script').value = t.LuaScript || '';
 
             toggleCustomDays();
@@ -3023,7 +3071,15 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             document.getElementById('target_strategy').value = 'ROLL_OVER';
             document.getElementById('target_amount').value = '';
             document.getElementById('target_ceiling').value = '';
-            document.getElementById('target_currency').value = currentCurrency;
+            const newCurrSelect = document.getElementById('target_currency');
+            if (newCurrSelect) {
+                newCurrSelect.value = currentCurrency;
+                newCurrSelect.disabled = false;
+            }
+            const newCurrHelp = document.getElementById('target_currency_help');
+            if (newCurrHelp) {
+                newCurrHelp.classList.add('hidden');
+            }
             document.getElementById('target_lua_script').value = '';
 
             toggleCustomDays();
@@ -3178,7 +3234,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 },
                 body: JSON.stringify({
                     current_bucket_name: document.getElementById('drawer_bucket_name').innerText.trim() || 'General',
-                    target_currency: currentCurrency || 'PLN',
+                    target_currency: (document.getElementById('target_currency') ? document.getElementById('target_currency').value : '') || currentCurrency || 'PLN',
                     user_prompt: prompt,
                     window_days: 30
                 })
@@ -3545,7 +3601,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		csrfToken, horizonParam, filterParam,
 		csrfToken, horizonParam, filterParam, defaultCurr, defaultCurr,
 		budgetID, csrfToken, horizonParam, filterParam, defaultCurr, bucketSelectOptions.String(), defaultCurr,
-		budgetID, csrfToken, horizonParam, filterParam, defaultCurr,
+		budgetID, csrfToken, horizonParam, filterParam, targetCurrencyOptions.String(),
 		budgetID, csrfToken, defaultCurr, horizonParam, filterParam, toJSONString(allBuckets))
 
 	return c.HTML(http.StatusOK, htmlContent)
@@ -3801,9 +3857,33 @@ func (h *WorkspaceHandler) CreateTarget(c echo.Context) error {
 	if priority < 1 {
 		priority = 2
 	}
-	currency := c.FormValue("currency")
+
+	var defaultCurr string
+	_ = h.mainDB.QueryRowContext(c.Request().Context(), "SELECT default_currency FROM budgets WHERE id = ?", budgetID).Scan(&defaultCurr)
+	if defaultCurr == "" {
+		defaultCurr = "PLN"
+	}
+
+	availCurrencies, err := budget.GetAvailableCurrencies(c.Request().Context(), tenantDB, defaultCurr)
+	if err != nil {
+		logger.Error(c.Request().Context(), "Failed checking available currencies", "budget_id", budgetID, "error", err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed checking available currencies")
+	}
+
+	currency := strings.ToUpper(strings.TrimSpace(c.FormValue("currency")))
 	if currency == "" {
-		currency = "PLN"
+		currency = defaultCurr
+	}
+
+	isAllowed := false
+	for _, ac := range availCurrencies {
+		if ac == currency {
+			isAllowed = true
+			break
+		}
+	}
+	if !isAllowed {
+		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("currency %s is not available in budget", currency))
 	}
 	cadence := c.FormValue("recurrence_cadence")
 	if cadence == "" {
@@ -3864,7 +3944,7 @@ func (h *WorkspaceHandler) CreateTarget(c echo.Context) error {
 		}
 	}
 
-	_, err := budget.CreateTarget(c.Request().Context(), tenantDB, budget.CreateTargetInput{
+	_, err = budget.CreateTarget(c.Request().Context(), tenantDB, budget.CreateTargetInput{
 		BucketID:            bucketID,
 		Name:                name,
 		TargetType:          tType,

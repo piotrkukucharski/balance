@@ -1584,6 +1584,260 @@ func TestPartyMatchingRulesCRUD(t *testing.T) {
 	}
 }
 
+func TestTargetCurrencySelectionAndImmutability(t *testing.T) {
+	logger.BindTestLogger(t)
+
+	tmpDir, err := os.MkdirTemp("", "balance_target_currency_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mainPath := filepath.Join(tmpDir, "main.db")
+	mainDB, err := db.OpenDB(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tmpDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+	e := echo.New()
+
+	userID := domain.NewUUIDv7()
+	budgetID := domain.NewUUIDv7()
+	now := time.Now().UTC().UnixMicro()
+
+	// 1. Setup user and budget
+	_, err = mainDB.Exec(`
+		INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at)
+		VALUES (?, 'traveler@example.com', 'hash', 'Traveler', ?, ?)`, userID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = mainDB.Exec(`
+		INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at)
+		VALUES (?, 'Vacation Budget', 'PLN', 'UTC', ?, ?, ?)`, budgetID, userID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = mainDB.Exec(`
+		INSERT INTO budget_members (budget_id, user_id, role, joined_at)
+		VALUES (?, ?, 'OWNER', ?)`, budgetID, userID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create bucket
+	bucketID, err := budget.CreateBucket(context.Background(), tenantDB, budget.CreateBucketInput{
+		GroupName:     "Travel",
+		Name:          "Trips",
+		AgentID:       userID,
+		CorrelationID: domain.NewUUIDv7(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Initial BudgetView: only default currency (PLN)
+	viewReq := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/budget", nil)
+	viewRec := httptest.NewRecorder()
+	viewCtx := e.NewContext(viewReq, viewRec)
+	viewCtx.SetParamNames("budgetId")
+	viewCtx.SetParamValues(budgetID)
+	viewCtx.Set(ContextBudgetDBKey, tenantDB)
+	viewCtx.Set(ContextUserIDKey, userID)
+	viewCtx.Set(ContextRoleKey, "OWNER")
+	viewCtx.Set("csrfToken", "test-csrf")
+
+	if err := workspaceHandler.BudgetView(viewCtx); err != nil {
+		t.Fatalf("BudgetView failed: %v", err)
+	}
+	html := viewRec.Body.String()
+	if !strings.Contains(html, `<select id="target_currency" name="currency"`) {
+		t.Fatalf("expected select target_currency in HTML, got:\n%s", html)
+	}
+	if !strings.Contains(html, `<option value="PLN" selected>PLN</option>`) {
+		t.Fatalf("expected PLN option selected in target_currency select")
+	}
+	if !strings.Contains(html, `(Currency cannot be changed after creation)`) {
+		t.Fatalf("expected currency immutability helper text in modal")
+	}
+
+	// 3. Add account with EUR and account_currency_balances with USD
+	userPartyID := domain.NewUUIDv7()
+	acctID := domain.NewUUIDv7()
+	_, err = tenantDB.Exec(`
+		INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+		VALUES (?, 1, 'Self', 'INDIVIDUAL', 1, ?, ?)`, userPartyID, userID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = tenantDB.Exec(`
+		INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+		VALUES (?, 1, ?, 'Euro Account', 'CHECKING', 'EUR', 0, ?, ?)`, acctID, userPartyID, userID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = tenantDB.Exec(`
+		INSERT INTO account_currency_balances (account_id, currency, balance_minor, updated_at)
+		VALUES (?, 'USD', 50000, ?)`, acctID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// BudgetView again: should now include EUR, PLN, USD
+	viewRec2 := httptest.NewRecorder()
+	viewCtx2 := e.NewContext(viewReq, viewRec2)
+	viewCtx2.SetParamNames("budgetId")
+	viewCtx2.SetParamValues(budgetID)
+	viewCtx2.Set(ContextBudgetDBKey, tenantDB)
+	viewCtx2.Set(ContextUserIDKey, userID)
+	viewCtx2.Set(ContextRoleKey, "OWNER")
+	viewCtx2.Set("csrfToken", "test-csrf")
+
+	if err := workspaceHandler.BudgetView(viewCtx2); err != nil {
+		t.Fatalf("BudgetView failed: %v", err)
+	}
+	html2 := viewRec2.Body.String()
+	if !strings.Contains(html2, `<option value="EUR">EUR</option>`) ||
+		!strings.Contains(html2, `<option value="PLN" selected>PLN</option>`) ||
+		!strings.Contains(html2, `<option value="USD">USD</option>`) {
+		t.Fatalf("expected EUR, PLN, USD in select target_currency, got:\n%s", html2)
+	}
+
+	// 4. Create target in EUR (available currency)
+	createForm := url.Values{}
+	createForm.Set("bucket_id", bucketID)
+	createForm.Set("name", "Hotel Rome")
+	createForm.Set("target_type", "EXPENSE")
+	createForm.Set("priority", "2")
+	createForm.Set("currency", "EUR")
+	createForm.Set("recurrence_cadence", "MONTHLY")
+	createForm.Set("amount", "250.00")
+
+	createReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets", strings.NewReader(createForm.Encode()))
+	createReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	createRec := httptest.NewRecorder()
+	createCtx := e.NewContext(createReq, createRec)
+	createCtx.SetParamNames("budgetId")
+	createCtx.SetParamValues(budgetID)
+	createCtx.Set(ContextBudgetDBKey, tenantDB)
+	createCtx.Set(ContextUserIDKey, userID)
+	createCtx.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.CreateTarget(createCtx); err != nil {
+		t.Fatalf("CreateTarget failed: %v", err)
+	}
+	if createRec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect, got %d", createRec.Code)
+	}
+
+	var targetID, targetCurr, targetName string
+	var amountMinor int64
+	err = tenantDB.QueryRow(`
+		SELECT id, name, currency, amount_minor
+		FROM targets_projection
+		WHERE name = 'Hotel Rome' AND is_archived = 0`).Scan(&targetID, &targetName, &targetCurr, &amountMinor)
+	if err != nil {
+		t.Fatalf("failed finding created target: %v", err)
+	}
+	if targetCurr != "EUR" {
+		t.Fatalf("expected target currency EUR, got %s", targetCurr)
+	}
+	if amountMinor != 25000 {
+		t.Fatalf("expected amount minor 25000, got %d", amountMinor)
+	}
+
+	// 5. Reject creating target in unsupported currency (JPY)
+	badForm := url.Values{}
+	badForm.Set("bucket_id", bucketID)
+	badForm.Set("name", "Tokyo Tickets")
+	badForm.Set("currency", "JPY")
+	badForm.Set("amount", "10000.00")
+
+	badReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets", strings.NewReader(badForm.Encode()))
+	badReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	badRec := httptest.NewRecorder()
+	badCtx := e.NewContext(badReq, badRec)
+	badCtx.SetParamNames("budgetId")
+	badCtx.SetParamValues(budgetID)
+	badCtx.Set(ContextBudgetDBKey, tenantDB)
+	badCtx.Set(ContextUserIDKey, userID)
+	badCtx.Set("correlationID", domain.NewUUIDv7())
+
+	err = workspaceHandler.CreateTarget(badCtx)
+	if err == nil {
+		t.Fatalf("expected error creating target with unsupported currency JPY, got nil")
+	}
+	he, ok := err.(*echo.HTTPError)
+	if !ok || he.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request HTTPError, got %v", err)
+	}
+
+	// 6. Update target: attempt to change currency to USD
+	updateForm := url.Values{}
+	updateForm.Set("name", "Hotel Rome Luxury")
+	updateForm.Set("target_type", "EXPENSE")
+	updateForm.Set("priority", "3")
+	updateForm.Set("amount", "350.00")
+	updateForm.Set("recurrence_cadence", "MONTHLY")
+	updateForm.Set("currency", "USD") // Attempted tamper
+
+	updateReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets/"+targetID+"/update", strings.NewReader(updateForm.Encode()))
+	updateReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	updateRec := httptest.NewRecorder()
+	updateCtx := e.NewContext(updateReq, updateRec)
+	updateCtx.SetParamNames("budgetId", "id")
+	updateCtx.SetParamValues(budgetID, targetID)
+	updateCtx.Set(ContextBudgetDBKey, tenantDB)
+	updateCtx.Set(ContextUserIDKey, userID)
+	updateCtx.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.UpdateTarget(updateCtx); err != nil {
+		t.Fatalf("UpdateTarget failed: %v", err)
+	}
+
+	var updatedCurr, updatedName string
+	var updatedAmt int64
+	err = tenantDB.QueryRow(`
+		SELECT name, currency, amount_minor
+		FROM targets_projection
+		WHERE id = ?`, targetID).Scan(&updatedName, &updatedCurr, &updatedAmt)
+	if err != nil {
+		t.Fatalf("failed querying updated target: %v", err)
+	}
+	if updatedName != "Hotel Rome Luxury" {
+		t.Fatalf("expected updated name 'Hotel Rome Luxury', got '%s'", updatedName)
+	}
+	if updatedCurr != "EUR" {
+		t.Fatalf("expected target currency to remain immutable as 'EUR', got '%s'", updatedCurr)
+	}
+	if updatedAmt != 35000 {
+		t.Fatalf("expected amount minor 35000, got %d", updatedAmt)
+	}
+}
+
 
 
 

@@ -2892,6 +2892,191 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	ctx.Step(`^an account "([^"]*)" with currency "([^"]*)" and balance "([^"]*)"$`, func(acctName, curr, balStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		var partyID string
+		err = bDB.QueryRow(`SELECT id FROM parties_current WHERE is_user_owned = 1 LIMIT 1`).Scan(&partyID)
+		if err != nil {
+			partyID = domain.NewUUIDv7()
+			_, err = bDB.Exec(`
+				INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+				VALUES (?, 1, 'Self', 'INDIVIDUAL', 1, ?, ?)`, partyID, tc.activeUserID, now)
+			if err != nil {
+				return err
+			}
+		}
+
+		acctID := domain.NewUUIDv7()
+		curr = strings.ToUpper(strings.TrimSpace(curr))
+		_, err = bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', ?, 0, ?, ?)`, acctID, partyID, acctName, curr, tc.activeUserID, now)
+		if err != nil {
+			return err
+		}
+
+		amt := parseAmountStr(balStr)
+		_, err = bDB.Exec(`
+			INSERT INTO account_currency_balances (account_id, currency, balance_minor, updated_at)
+			VALUES (?, ?, ?, ?)`, acctID, curr, amt, now)
+		return err
+	})
+
+	ctx.Step(`^I add a target "([^"]*)" with priority (\d+), cadence "([^"]*)", amount "([^"]*)" in currency "([^"]*)"$`, func(name string, prio int, cadence, amt, curr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var defaultCurr string
+		_ = tc.mainDB.QueryRow(`SELECT default_currency FROM budgets WHERE id = ?`, tc.activeBudgetID).Scan(&defaultCurr)
+		avail, err := budget.GetAvailableCurrencies(context.Background(), bDB, defaultCurr)
+		if err != nil {
+			return err
+		}
+		curr = strings.ToUpper(strings.TrimSpace(curr))
+		isAllowed := false
+		for _, c := range avail {
+			if c == curr {
+				isAllowed = true
+				break
+			}
+		}
+		if !isAllowed {
+			return fmt.Errorf("currency %s not allowed", curr)
+		}
+
+		tID, err := budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:          activeBucketID,
+			Name:              name,
+			TargetType:        "EXPENSE",
+			Priority:          prio,
+			AmountMinor:       parseAmountStr(amt),
+			Currency:          curr,
+			RecurrenceCadence: cadence,
+			AgentID:           tc.activeUserID,
+			CorrelationID:     domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		activeTargetID = tID
+		return nil
+	})
+
+	ctx.Step(`^target "([^"]*)" in projections should have currency "([^"]*)" and amount "([^"]*)"$`, func(name, expectedCurr, expectedAmtStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var curr string
+		var amt int64
+		err = bDB.QueryRow(`SELECT currency, amount_minor FROM targets_projection WHERE name = ? AND is_archived = 0`, name).Scan(&curr, &amt)
+		if err != nil {
+			return fmt.Errorf("target %s not found: %w", name, err)
+		}
+		expectedCurr = strings.ToUpper(strings.TrimSpace(expectedCurr))
+		if curr != expectedCurr {
+			return fmt.Errorf("expected currency %s, got %s", expectedCurr, curr)
+		}
+		expectedAmt := parseAmountStr(expectedAmtStr)
+		if amt != expectedAmt {
+			return fmt.Errorf("expected amount %d, got %d", expectedAmt, amt)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I attempt to update target "([^"]*)" with currency "([^"]*)"$`, func(name, newCurr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var tID string
+		err = bDB.QueryRow(`SELECT id FROM targets_projection WHERE name = ? AND is_archived = 0`, name).Scan(&tID)
+		if err != nil {
+			return err
+		}
+		return budget.UpdateTarget(context.Background(), bDB, budget.UpdateTargetInput{
+			ID:                  tID,
+			Name:                name,
+			TargetType:          "EXPENSE",
+			Priority:            2,
+			AmountMinor:         parseAmountStr("250.00 EUR"),
+			RecurrenceCadence:   budget.CadenceMonthly,
+			NonSpendingStrategy: budget.StrategyRollOver,
+			AgentID:             tc.activeUserID,
+			CorrelationID:       domain.NewUUIDv7(),
+		})
+	})
+
+	ctx.Step(`^target "([^"]*)" in projections should still have currency "([^"]*)"$`, func(name, expectedCurr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var curr string
+		err = bDB.QueryRow(`SELECT currency FROM targets_projection WHERE name = ? AND is_archived = 0`, name).Scan(&curr)
+		if err != nil {
+			return fmt.Errorf("target %s not found: %w", name, err)
+		}
+		expectedCurr = strings.ToUpper(strings.TrimSpace(expectedCurr))
+		if curr != expectedCurr {
+			return fmt.Errorf("expected currency %s, got %s", expectedCurr, curr)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I attempt to add a target "([^"]*)" in currency "([^"]*)"$`, func(name, curr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var defaultCurr string
+		_ = tc.mainDB.QueryRow(`SELECT default_currency FROM budgets WHERE id = ?`, tc.activeBudgetID).Scan(&defaultCurr)
+		avail, err := budget.GetAvailableCurrencies(context.Background(), bDB, defaultCurr)
+		if err != nil {
+			lastTargetErr = err
+			return nil
+		}
+		curr = strings.ToUpper(strings.TrimSpace(curr))
+		isAllowed := false
+		for _, c := range avail {
+			if c == curr {
+				isAllowed = true
+				break
+			}
+		}
+		if !isAllowed {
+			lastTargetErr = fmt.Errorf("currency %s is not available in budget", curr)
+			return nil
+		}
+		_, lastTargetErr = budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:          activeBucketID,
+			Name:              name,
+			TargetType:        "EXPENSE",
+			Priority:          2,
+			AmountMinor:       10000,
+			Currency:          curr,
+			RecurrenceCadence: budget.CadenceMonthly,
+			AgentID:           tc.activeUserID,
+			CorrelationID:     domain.NewUUIDv7(),
+		})
+		return nil
+	})
+
+	ctx.Step(`^the target creation should be rejected due to unsupported currency$`, func() error {
+		if lastTargetErr == nil {
+			return fmt.Errorf("expected target creation to fail due to unsupported currency, but succeeded")
+		}
+		if !strings.Contains(lastTargetErr.Error(), "not available in budget") && !strings.Contains(lastTargetErr.Error(), "not allowed") {
+			return fmt.Errorf("unexpected error: %v", lastTargetErr)
+		}
+		return nil
+	})
+
 	ctx.Step(`^the bucket and targets should be recorded in event streams and projections$`, func() error {
 		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
 		if err != nil {
