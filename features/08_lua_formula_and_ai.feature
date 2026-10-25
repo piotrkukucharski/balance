@@ -24,6 +24,16 @@ Feature: Sandboxed Lua Formula Engine and AI Formula Assistant
     And the sandbox dry-run should evaluate without errors
     And a live calculated preview badge should be displayed in the UI
 
+  Scenario: Generating a Lua formula for periodic expense with AI Assistant
+    Given an authenticated user editing target "Karta Miejska" in bucket "Transport"
+    When I request AI formula generation with prompt "125 zł płatne co trzy miesiące"
+    Then the AI assistant should generate valid sandboxed Lua code:
+      """
+      return math.ceil(money(125) * window.days / 90)
+      """
+    And the sandbox dry-run should evaluate without errors
+    And a live calculated preview badge should be displayed in the UI
+
   Scenario: Blocking unsafe constructs in Lua formulas
     Given a user-submitted Lua formula attempting to use a while loop or function declaration:
       """

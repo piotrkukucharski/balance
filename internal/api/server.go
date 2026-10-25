@@ -39,8 +39,8 @@ type Server struct {
 
 // NewServer creates a new API Server instance.
 func NewServer(mainDB *sql.DB, tenantMgr *db.TenantDBManager, appService *service.AppService) *Server {
-	mockAI := ai.NewMockFormulaAIProvider()
-	aiService := ai.NewFormulaAssistantService(mockAI)
+	formulaAI := ai.NewFormulaAIProvider()
+	aiService := ai.NewFormulaAssistantService(formulaAI)
 	structureAI := ai.NewBudgetStructureProvider()
 	fxService := fx.NewService(mainDB, nil, nil)
 
@@ -62,6 +62,11 @@ func (s *Server) SetFXService(svc *fx.Service) {
 // SetStructureAIProvider overrides structure AI provider (useful for tests).
 func (s *Server) SetStructureAIProvider(p ai.BudgetStructureAIProvider) {
 	s.structureAI = p
+}
+
+// SetFormulaAIProvider overrides formula AI provider (useful for tests).
+func (s *Server) SetFormulaAIProvider(p ai.FormulaAIProvider) {
+	s.aiService = ai.NewFormulaAssistantService(p)
 }
 
 // Ensure Server implements ServerInterface.
@@ -1212,11 +1217,43 @@ func (s *Server) GenerateFormula(ctx echo.Context, budgetId BudgetIdPathParam) e
 
 	snap, _ := budget.BuildBudgetSnapshot(ctx.Request().Context(), tenantDB, req.TargetCurrency, wDays)
 
+	var availTargets []ai.TargetContextMeta
+	if snap != nil && snap.Targets != nil {
+		for _, t := range snap.Targets {
+			availTargets = append(availTargets, ai.TargetContextMeta{
+				ID:            t.ID,
+				Name:          t.Name,
+				Priority:      t.Priority,
+				Currency:      t.Currency,
+				RequiredMinor: t.Required,
+				FundedMinor:   t.Funded,
+			})
+		}
+	}
+
+	var availBuckets []ai.BucketContextMeta
+	bRows, bErr := tenantDB.QueryContext(ctx.Request().Context(), `SELECT id, name FROM buckets_projection WHERE is_archived = 0 ORDER BY name ASC`)
+	if bErr == nil {
+		defer bRows.Close()
+		for bRows.Next() {
+			var bID, bName string
+			if err := bRows.Scan(&bID, &bName); err == nil {
+				availBuckets = append(availBuckets, ai.BucketContextMeta{
+					ID:       bID,
+					Name:     bName,
+					Currency: req.TargetCurrency,
+				})
+			}
+		}
+	}
+
 	res, _, err := s.aiService.GenerateAndValidateFormula(ctx.Request().Context(), ai.FormulaGenerationRequest{
 		CurrentBucketName: req.CurrentBucketName,
 		TargetCurrency:    req.TargetCurrency,
 		UserPrompt:        req.UserPrompt,
 		WindowDays:        wDays,
+		AvailableBuckets:  availBuckets,
+		AvailableTargets:  availTargets,
 	}, snap)
 	if err != nil {
 		return sendError(ctx, http.StatusBadRequest, err.Error(), "FORMULA_GEN_FAILED", nil)

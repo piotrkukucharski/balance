@@ -49,3 +49,34 @@ func TestLiveGeminiBudgetStructure_ComplexPrompt(t *testing.T) {
 		t.Errorf("expected at least 15 targets from prompt, got %d", totalTargets)
 	}
 }
+
+func TestLiveGeminiFormula_QuarterlyPrompt(t *testing.T) {
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	if apiKey == "" {
+		t.Skip("GEMINI_API_KEY not set")
+	}
+
+	model := os.Getenv("GEMINI_MODEL")
+	if model == "" {
+		model = "gemini-3.8-flash"
+	}
+
+	provider := NewGeminiDirectHTTPProvider(apiKey, model, ResolveGeminiTimeout())
+
+	res, err := provider.GenerateLuaFormula(context.Background(), FormulaGenerationRequest{
+		UserPrompt:        "125 zł płatne co trzy miesiące",
+		CurrentBucketName: "Karta miejska",
+		TargetCurrency:    "PLN",
+		WindowDays:        30,
+	})
+	if err != nil {
+		t.Fatalf("GenerateLuaFormula failed: %v", err)
+	}
+
+	t.Logf("Generated Lua script: %s", res.LuaScript)
+	t.Logf("Generated explanation: %s", res.Explanation)
+
+	if len(res.LuaScript) == 0 {
+		t.Fatalf("empty lua script returned")
+	}
+}

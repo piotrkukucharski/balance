@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +54,19 @@ type FormulaAIProvider interface {
 	GenerateLuaFormula(ctx context.Context, req FormulaGenerationRequest) (*FormulaGenerationResult, error)
 }
 
+// NewFormulaAIProvider creates a concrete Gemini or mock FormulaAIProvider based on environment variables.
+func NewFormulaAIProvider() FormulaAIProvider {
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	model := os.Getenv("GEMINI_MODEL")
+	if model == "" {
+		model = os.Getenv("AI_GEMINI_MODEL")
+	}
+	if os.Getenv("AI_PROVIDER") == "mock" || apiKey == "" {
+		return NewMockFormulaAIProvider()
+	}
+	return NewGeminiDirectHTTPProvider(apiKey, model, ResolveGeminiTimeout())
+}
+
 // MockFormulaAIProvider provides deterministic Lua formulas for tests and offline usage.
 type MockFormulaAIProvider struct{}
 
@@ -63,21 +78,80 @@ func (m *MockFormulaAIProvider) ProviderName() string {
 	return "MOCK"
 }
 
+var reAmountOnly = regexp.MustCompile(`(?i)(\d+(?:[.,]\d+)?)\s*(?:zł|pln|eur|usd)?`)
+
 func (m *MockFormulaAIProvider) GenerateLuaFormula(ctx context.Context, req FormulaGenerationRequest) (*FormulaGenerationResult, error) {
 	promptLower := strings.ToLower(req.UserPrompt)
 
-	if strings.Contains(promptLower, "mortgage") || strings.Contains(promptLower, "overpayment") {
+	if strings.Contains(promptLower, "mortgage") || strings.Contains(promptLower, "overpayment") || strings.Contains(promptLower, "kredyt") || strings.Contains(promptLower, "nadpłat") {
 		return &FormulaGenerationResult{
 			LuaScript:   `return math.max(0, money(2000) - target("Required Mortgage Installment").required)`,
 			Explanation: "Deduct the required mortgage installment from 2,000 PLN.",
 		}, nil
 	}
 
-	if strings.Contains(promptLower, "income") || strings.Contains(promptLower, "save") {
+	if strings.Contains(promptLower, "income") || strings.Contains(promptLower, "save") || strings.Contains(promptLower, "oszczędz") || strings.Contains(promptLower, "przychód") {
 		return &FormulaGenerationResult{
 			LuaScript:   `return math.min(money(5000), math.floor(budget.income(30, "PLN") * 0.15))`,
 			Explanation: "Save 15% of total income over the last 30 days, capped at 5,000 PLN.",
 		}, nil
+	}
+
+	// Periodic / recurrence parsing
+	if strings.Contains(promptLower, "co") || strings.Contains(promptLower, "kwartal") || strings.Contains(promptLower, "roczn") || strings.Contains(promptLower, "miesięcz") {
+		amtMatch := reAmountOnly.FindStringSubmatch(req.UserPrompt)
+		if len(amtMatch) >= 2 {
+			amtStr := strings.ReplaceAll(amtMatch[1], ",", ".")
+			amt, err := strconv.ParseFloat(amtStr, 64)
+			if err == nil && amt > 0 {
+				cycleDays := 0
+				if strings.Contains(promptLower, "co 3") || strings.Contains(promptLower, "co trzy") || strings.Contains(promptLower, "kwartal") {
+					cycleDays = 90
+				} else if strings.Contains(promptLower, "co 6") || strings.Contains(promptLower, "co sześć") || strings.Contains(promptLower, "pół roku") {
+					cycleDays = 180
+				} else if strings.Contains(promptLower, "co 2") || strings.Contains(promptLower, "co dwa") {
+					cycleDays = 60
+				} else if strings.Contains(promptLower, "co miesiąc") || strings.Contains(promptLower, "co 1 miesiąc") || strings.Contains(promptLower, "miesięcz") {
+					cycleDays = 30
+				} else if strings.Contains(promptLower, "co rok") || strings.Contains(promptLower, "roczn") {
+					cycleDays = 365
+				} else if strings.Contains(promptLower, "co tydzień") || strings.Contains(promptLower, "co 1 tydzień") {
+					cycleDays = 7
+				}
+
+				if cycleDays > 0 {
+					var amtFormatted string
+					if amt == float64(int64(amt)) {
+						amtFormatted = fmt.Sprintf("%d", int64(amt))
+					} else {
+						amtFormatted = fmt.Sprintf("%.2f", amt)
+					}
+					return &FormulaGenerationResult{
+						LuaScript:   fmt.Sprintf("return math.ceil(money(%s) * window.days / %d)", amtFormatted, cycleDays),
+						Explanation: fmt.Sprintf("Calculates proportional allocation for %s PLN expense every %d days based on window.", amtFormatted, cycleDays),
+					}, nil
+				}
+			}
+		}
+	}
+
+	// Fixed amount parsing if user specifies an amount
+	amtMatch := reAmountOnly.FindStringSubmatch(req.UserPrompt)
+	if len(amtMatch) >= 2 {
+		amtStr := strings.ReplaceAll(amtMatch[1], ",", ".")
+		amt, err := strconv.ParseFloat(amtStr, 64)
+		if err == nil && amt > 0 {
+			var amtFormatted string
+			if amt == float64(int64(amt)) {
+				amtFormatted = fmt.Sprintf("%d", int64(amt))
+			} else {
+				amtFormatted = fmt.Sprintf("%.2f", amt)
+			}
+			return &FormulaGenerationResult{
+				LuaScript:   fmt.Sprintf("return money(%s)", amtFormatted),
+				Explanation: fmt.Sprintf("Fixed allocation of %s.", amtFormatted),
+			}, nil
+		}
 	}
 
 	return &FormulaGenerationResult{
@@ -159,6 +233,38 @@ func (g *GeminiDirectHTTPProvider) ProviderName() string {
 	return "GEMINI_DIRECT"
 }
 
+const formulaSystemInstruction = `You are an expert Lua 5.1 formula generator for the Balance budgeting engine.
+Return strictly JSON matching: {"lua_script": "string", "explanation": "string"}.
+The script must end with return <int64_minor_units>, returning a single non-negative integer in minor units (e.g. 1 PLN = 100 minor units).
+
+Available helper functions and runtime environment:
+- money(val): converts major currency units (number or string) into integer minor units (e.g. money(125) -> 12500, money("19.99") -> 1999).
+- target("name").required, .funded, .planned, .spent, .priority: inspects another target in the budget.
+- bucket.balance(currency?): returns current bucket balance in minor units.
+- budget.income(days, currency?): external inflows over last N days (1 <= days <= 3650).
+- budget.spent(days, currency?): external outflows over last N days (1 <= days <= 3650).
+- window.days: active horizon window in days (default 30).
+- Whitelisted math: math.max, math.min, math.floor, math.ceil, math.abs, math.fmod, math.pow, math.sqrt, tonumber.
+
+Formula rules & best practices:
+- Always use money(val) for currency amounts (never raw minor units directly unless using existing target/bucket properties).
+- For recurring expenses with a cycle of N days or months (e.g. "125 zł płatne co 3 miesiące / kwartalnie"):
+  Calculate the proportional savings allocation for the active window:
+  math.ceil(money(125) * window.days / 90)
+- For complementary targets (e.g. total mortgage payment of 2000 PLN minus required installment):
+  math.max(0, money(2000) - target("Required Mortgage Installment").required)
+- For percentage of income savings (e.g. save 15% of past 30 days income capped at 5000 PLN):
+  math.min(money(5000), math.floor(budget.income(30, "PLN") * 0.15))
+- For fixed amounts:
+  money(100)
+
+Strictly forbidden constructs (will be rejected by compiler):
+- Loops: while, repeat, for
+- User-defined functions: function ... end
+- Jumps: goto
+- String concatenation: ..
+- Unsafe libraries: io, os, debug, string, table, loadstring, dofile`
+
 func (g *GeminiDirectHTTPProvider) GenerateLuaFormula(ctx context.Context, req FormulaGenerationRequest) (*FormulaGenerationResult, error) {
 	ctx = logger.WithComponent(ctx, "ai:formula")
 	if g.apiKey == "" {
@@ -182,23 +288,47 @@ func (g *GeminiDirectHTTPProvider) GenerateLuaFormula(ctx context.Context, req F
 		"timeout_seconds", timeoutSec,
 	)
 
-	systemInstruction := `You are a Lua 5.1 formula generator for the Balance budgeting engine. Return JSON {"lua_script": "...", "explanation": "..."}. You must end with return <int64_minor_units>. Strictly forbidden: while, repeat, for, goto, function, concatenation (..). Only allowed math: abs, ceil, floor, fmod, max, min, pow, sqrt.`
+	promptBuilder := strings.Builder{}
+	fmt.Fprintf(&promptBuilder, "User prompt: %s\nBucket: %s, Currency: %s, Window: %d", req.UserPrompt, req.CurrentBucketName, req.TargetCurrency, req.WindowDays)
+
+	if len(req.AvailableTargets) > 0 {
+		targetsJSON, _ := json.Marshal(req.AvailableTargets)
+		fmt.Fprintf(&promptBuilder, "\n\n<untrusted_budget_metadata_json>\nAvailable Targets in budget: %s\n</untrusted_budget_metadata_json>", string(targetsJSON))
+	}
+
+	if req.PreviousAttempt != "" {
+		fmt.Fprintf(&promptBuilder, "\n\nPrevious attempt failed with error:\nPrevious script: %s\nValidation Error: %s\nPlease fix the script so that it passes validation.", req.PreviousAttempt, req.ValidationError)
+	}
+
+	responseSchema := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"lua_script": map[string]interface{}{
+				"type": "string",
+			},
+			"explanation": map[string]interface{}{
+				"type": "string",
+			},
+		},
+		"required": []string{"lua_script", "explanation"},
+	}
 
 	bodyData := map[string]interface{}{
 		"systemInstruction": map[string]interface{}{
 			"parts": []map[string]interface{}{
-				{"text": systemInstruction},
+				{"text": formulaSystemInstruction},
 			},
 		},
 		"contents": []map[string]interface{}{
 			{
 				"parts": []map[string]interface{}{
-					{"text": fmt.Sprintf("User prompt: %s\nBucket: %s, Currency: %s, Window: %d", req.UserPrompt, req.CurrentBucketName, req.TargetCurrency, req.WindowDays)},
+					{"text": promptBuilder.String()},
 				},
 			},
 		},
 		"generationConfig": map[string]interface{}{
 			"responseMimeType": "application/json",
+			"responseSchema":   responseSchema,
 			"temperature":      0.1,
 		},
 	}
