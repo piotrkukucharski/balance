@@ -267,8 +267,19 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 			},
 		})
 
+		budgetCheckboxHTML := fmt.Sprintf(`
+			<input type="checkbox" name="selected_tx_ids" value="%s" 
+			       data-tx-id="%s" data-amount="%d" data-currency="%s"
+			       class="checkbox checkbox-primary checkbox-xs budget-tx-select-cb" 
+			       onchange="updateLedgerFloatingActionBar()" />`,
+			id, id, amountMinor, curr,
+		)
+
 		txRows.WriteString(fmt.Sprintf(`
 			<tr class="hover group transition-colors">
+				<td class="w-10 text-center">
+					%s
+				</td>
 				<td class="font-mono text-xs text-base-content/80 whitespace-nowrap">%s</td>
 				<td>%s</td>
 				<td class="text-sm font-semibold max-w-xs truncate" title="%s">%s</td>
@@ -280,6 +291,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 					%s
 				</td>
 			</tr>`,
+			budgetCheckboxHTML,
 			dateTag, bucketBadge, escapedNotes, notes, accountDisplay,
 			amountClass, amountDisplay, actionMenu,
 		))
@@ -288,7 +300,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 	if !hasTxs {
 		txRows.WriteString(`
 			<tr>
-				<td colspan="6" class="text-center py-12 text-base-content/50">
+				<td colspan="7" class="text-center py-12 text-base-content/50">
 					<div class="text-3xl mb-2">💸</div>
 					<div class="font-semibold text-sm">No transactions recorded yet.</div>
 					<div class="text-xs text-base-content/40 mt-1">Use 🔄 Sync with Bank or enter one via the quick-add row above.</div>
@@ -615,6 +627,9 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
                         <table class="table table-zebra table-sm w-full">
                             <thead>
                                 <tr class="bg-base-200/30 text-xs text-base-content/70">
+                                    <th class="w-10 text-center">
+                                        <input type="checkbox" id="budget-master-cb" class="checkbox checkbox-primary checkbox-xs" onchange="toggleAllBudgetCbs(this)" title="Select all" />
+                                    </th>
                                     <th class="font-bold">Date</th>
                                     <th class="font-bold">Envelope (Bucket)</th>
                                     <th class="font-bold">Notes / Payee</th>
@@ -626,7 +641,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
                             <tbody>
                                 <!-- INLINE QUICK-ADD ROW -->
                                 <tr id="quick-add-row" class="bg-base-200/80 border-b-2 border-primary/40">
-                                    <td colspan="6" class="p-3">
+                                    <td colspan="7" class="p-3">
                                         <form id="quick_add_form" method="POST" action="/budgets/%s/transactions" class="flex flex-col gap-2.5">
                                             <input type="hidden" name="csrf_token" value="%s" />
                                             <input type="hidden" id="qa_tx_type" name="tx_type" value="EXPENSE" />
@@ -688,7 +703,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
     <div id="floating-action-bar" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-base-100/95 backdrop-blur-md border-2 border-primary/40 shadow-2xl rounded-2xl px-5 py-3 items-center gap-4 hidden flex-wrap">
         <div class="flex items-center gap-2">
             <span id="fab-count" class="badge badge-primary font-bold">0</span>
-            <span class="text-xs font-medium text-base-content/70">selected</span>
+            <span class="text-xs font-medium text-base-content/70">bank feeds selected</span>
         </div>
         <div class="divider divider-horizontal my-0"></div>
         <div id="fab-net-display" class="font-mono font-bold text-sm text-primary">Net: 0.00 PLN</div>
@@ -722,6 +737,50 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
             <button type="button" class="btn btn-ghost btn-sm btn-circle" onclick="clearAllSelections()" title="Clear selection">✕</button>
         </div>
     </div>
+
+    <!-- FLOATING ACTION BAR FOR BUDGET TRANSACTIONS LEDGER -->
+    <div id="ledger-floating-action-bar" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-base-100/95 backdrop-blur-md border-2 border-error/40 shadow-2xl rounded-2xl px-5 py-3 items-center gap-4 hidden flex-wrap">
+        <div class="flex items-center gap-2">
+            <span id="ledger-fab-count" class="badge badge-error text-error-content font-bold">0</span>
+            <span class="text-xs font-medium text-base-content/70">transactions selected</span>
+        </div>
+        <div class="divider divider-horizontal my-0"></div>
+        <div id="ledger-fab-total-display" class="font-mono font-bold text-sm text-base-content">Total: 0.00 PLN</div>
+        <div class="divider divider-horizontal my-0"></div>
+        <div class="flex items-center gap-2">
+            <button type="button" class="btn btn-error btn-sm gap-1.5 font-bold shadow-xs" onclick="openBatchDeleteConfirmModal()">
+                <span>🗑️</span>
+                <span>Delete Selected</span>
+            </button>
+            <button type="button" class="btn btn-ghost btn-sm btn-circle" onclick="clearAllLedgerSelections()" title="Clear selection">✕</button>
+        </div>
+    </div>
+
+    <!-- BATCH DELETE BUDGET TRANSACTIONS MODAL -->
+    <dialog id="batch_delete_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-3">
+                <h3 class="font-extrabold text-xl tracking-tight flex items-center gap-2 text-error">
+                    <span>⚠️</span>
+                    <span>Confirm Batch Deletion</span>
+                </h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <p class="text-sm text-base-content/70 mb-4">
+                Are you sure you want to delete <span id="batch_delete_modal_count" class="font-bold text-base-content">0</span> selected transaction(s)?
+                This will revert all associated account balances and envelope assignments.
+            </p>
+            <form id="ledger_batch_delete_form" method="POST" action="/budgets/%s/transactions/batch-delete" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="%s" />
+                <div id="batch_delete_tx_inputs"></div>
+                <div class="modal-action mt-2 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="batch_delete_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-error font-bold shadow-md">Yes, Delete Transactions</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
 
     %s
 
@@ -1138,6 +1197,67 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
             updateFloatingActionBar();
         }
 
+        function updateLedgerFloatingActionBar() {
+            const checkedBoxes = Array.from(document.querySelectorAll('.budget-tx-select-cb:checked'));
+            const bar = document.getElementById('ledger-floating-action-bar');
+            const countLabel = document.getElementById('ledger-fab-count');
+            const totalDisplay = document.getElementById('ledger-fab-total-display');
+
+            if (!bar) return;
+
+            if (checkedBoxes.length === 0) {
+                bar.classList.add('hidden');
+                const master = document.getElementById('budget-master-cb');
+                if (master) master.checked = false;
+                return;
+            }
+
+            bar.classList.remove('hidden');
+            countLabel.innerText = checkedBoxes.length;
+
+            let totalMinor = 0;
+            let currency = 'PLN';
+            checkedBoxes.forEach(cb => {
+                const amt = parseInt(cb.dataset.amount || '0', 10);
+                currency = cb.dataset.currency || currency;
+                totalMinor += Math.abs(amt);
+            });
+
+            const totalMajor = totalMinor / 100.0;
+            totalDisplay.innerText = 'Total: ' + totalMajor.toFixed(2) + ' ' + currency;
+        }
+
+        function clearAllLedgerSelections() {
+            document.querySelectorAll('.budget-tx-select-cb').forEach(cb => cb.checked = false);
+            const master = document.getElementById('budget-master-cb');
+            if (master) master.checked = false;
+            updateLedgerFloatingActionBar();
+        }
+
+        function toggleAllBudgetCbs(master) {
+            document.querySelectorAll('.budget-tx-select-cb').forEach(b => b.checked = master.checked);
+            updateLedgerFloatingActionBar();
+        }
+
+        function openBatchDeleteConfirmModal() {
+            const checkedBoxes = Array.from(document.querySelectorAll('.budget-tx-select-cb:checked'));
+            if (checkedBoxes.length === 0) return;
+
+            const container = document.getElementById('batch_delete_tx_inputs');
+            container.innerHTML = '';
+            document.getElementById('batch_delete_modal_count').innerText = checkedBoxes.length;
+
+            checkedBoxes.forEach(cb => {
+                const inp = document.createElement('input');
+                inp.type = 'hidden';
+                inp.name = 'transaction_ids';
+                inp.value = cb.value;
+                container.appendChild(inp);
+            });
+
+            batch_delete_modal.showModal();
+        }
+
         function openMergeModal() {
             const checkedBoxes = Array.from(document.querySelectorAll('.raw-select-cb:checked'));
             if (checkedBoxes.length === 0) return;
@@ -1366,6 +1486,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		rawTxRows.String(),
 		budgetID, csrfToken, todayDateStr, acctOptions.String(), qaDestAcctOptions.String(), qaBucketOptions.String(),
 		txRows.String(),
+		budgetID, csrfToken,
 		budgetID, csrfToken,
 		budgetID, csrfToken,
 		RenderBottomDock(budgetID, "transactions"),
@@ -2376,6 +2497,31 @@ func (h *TransactionsHandler) DeleteTransaction(c echo.Context) error {
 	}
 
 	logger.Info(ctx, "Transaction deleted successfully", "budget_id", budgetID, "tx_id", txID)
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
+}
+
+// BatchDeleteTransactions handles bulk deletion of multiple budget transactions.
+func (h *TransactionsHandler) BatchDeleteTransactions(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:transaction:batch_delete")
+
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	formParams, _ := c.FormParams()
+	txIDs := formParams["transaction_ids"]
+	if len(txIDs) == 0 {
+		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
+	}
+
+	err := transaction.BatchDeleteBudgetTransactions(c.Request().Context(), tenantDB, txIDs, userID, corrID)
+	if err != nil {
+		logger.Error(ctx, "Failed batch deleting transactions", "count", len(txIDs), "error", err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to delete transactions: %v", err))
+	}
+
+	logger.Info(ctx, "Transactions batch deleted successfully", "budget_id", budgetID, "count", len(txIDs))
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
 }
 

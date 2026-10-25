@@ -222,6 +222,7 @@ func (tc *e2eScenarioContext) setup() error {
 	tenantEditor.POST("/transactions", txHandler.AddManualTransaction)
 	tenantEditor.POST("/transactions/:txId/update", txHandler.UpdateTransaction)
 	tenantEditor.POST("/transactions/:txId/delete", txHandler.DeleteTransaction)
+	tenantEditor.POST("/transactions/batch-delete", txHandler.BatchDeleteTransactions)
 	tenantEditor.POST("/transactions/sync", txHandler.SyncWithBank)
 	tenantEditor.POST("/transactions/preview-csv", txHandler.PreviewCSV)
 	tenantEditor.POST("/transactions/import-csv", txHandler.ImportCSV)

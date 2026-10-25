@@ -41,6 +41,20 @@ Feature: Two-Tier Transaction Resolution (Move, Merge, Split) and Deduplication
     When I delete the transaction
     Then the transaction should no longer appear in the budget transactions ledger
 
+  Scenario: Batch deletion of multiple budget transactions from ledger
+    Given an active checking account in "Family Home" with starting balance of "500.00 PLN"
+    And an active bucket "Office Supplies" with available balance of "500.00 PLN"
+    And 3 budget transactions recorded:
+      | Note          | Amount     | Bucket          |
+      | Desk Lamp     | 100.00 PLN | Office Supplies |
+      | Ergonomic Mat | 50.00 PLN  | Office Supplies |
+      | Sticky Notes  | 25.00 PLN  | Office Supplies |
+    When I batch delete the budget transactions for "Desk Lamp" and "Ergonomic Mat"
+    Then the transactions for "Desk Lamp" and "Ergonomic Mat" should no longer appear in the budget transactions ledger
+    And the transaction for "Sticky Notes" should still appear in the budget transactions ledger
+    And the account balance should be reverted by "150.00 PLN" to "475.00 PLN"
+    And the available balance of bucket "Office Supplies" should be restored by "150.00 PLN" to "475.00 PLN"
+
   Scenario: First bank sync calculates Set Balance offset based on imported window
     Given an active checking account "mBank Checking" with 0.00 PLN initial balance
     And the external bank account currently has a balance of "5,420.50 PLN"

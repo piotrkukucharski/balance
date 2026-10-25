@@ -1547,6 +1547,254 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	// Batch delete budget transactions steps
+	var batchBudgetAcctID string
+	var batchBucketID string
+
+	ctx.Step(`^an active checking account in "([^"]*)" with starting balance of "([^"]*)"$`, func(budgetName, balStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		batchBudgetAcctID = domain.NewUUIDv7()
+
+		tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, created_at, updated_at)
+			VALUES ('01900000-0000-7000-8000-000000000001', ?, 'PLN', ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name`, budgetName, now, now)
+
+		bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'Batch Family', 'INDIVIDUAL', 1, 'user_1', ?)`, pID, now)
+		bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, 'Checking Account', 'CHECKING', 'PLN', 0, 'user_1', ?)`, batchBudgetAcctID, pID, now)
+
+		parts := strings.Split(balStr, " ")
+		var f float64
+		fmt.Sscanf(parts[0], "%f", &f)
+		balMinor := int64(f * 100)
+
+		bDB.Exec(`
+			INSERT INTO account_currency_balances (account_id, currency, balance_minor, updated_at)
+			VALUES (?, 'PLN', ?, ?)
+			ON CONFLICT(account_id, currency) DO UPDATE SET balance_minor = excluded.balance_minor`, batchBudgetAcctID, balMinor, now)
+
+		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+		tc.activeUserID = "user_1"
+		return nil
+	})
+
+	ctx.Step(`^an active bucket "([^"]*)" with available balance of "([^"]*)"$`, func(bucketName, balStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		batchBucketID = domain.NewUUIDv7()
+
+		bDB.Exec(`
+			INSERT INTO buckets_projection (id, group_name, name, is_archived, version, updated_at)
+			VALUES (?, 'Default', ?, 0, 1, ?)`, batchBucketID, bucketName, now)
+
+		bDB.Exec(`
+			INSERT INTO buckets (id, version, name, category, formula_type, action, agent_id, correlation_id, created_at)
+			VALUES (?, 1, ?, 'Expenses', 'FIXED', 'CREATE', 'user_1', 'corr_1', ?)`, batchBucketID, bucketName, now)
+
+		bDB.Exec(`
+			INSERT INTO buckets_current (id, version, name, category, formula_type, is_archived, agent_id, updated_at)
+			VALUES (?, 1, ?, 'Expenses', 'FIXED', 0, 'user_1', ?)`, batchBucketID, bucketName, now)
+
+		parts := strings.Split(balStr, " ")
+		var f float64
+		fmt.Sscanf(parts[0], "%f", &f)
+		balMinor := int64(f * 100)
+
+		bDB.Exec(`
+			INSERT INTO bucket_currency_balances (bucket_id, currency, balance_minor)
+			VALUES (?, 'PLN', ?)
+			ON CONFLICT(bucket_id, currency) DO UPDATE SET balance_minor = excluded.balance_minor`, batchBucketID, balMinor)
+
+		return nil
+	})
+
+	ctx.Step(`^3 budget transactions recorded:$`, func(table *godog.Table) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+
+		// external merchant party & account
+		extPID := domain.NewUUIDv7()
+		extAID := domain.NewUUIDv7()
+		bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'Merchants', 'MERCHANT', 0, 'user_1', ?)`, extPID, now)
+		bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, 'Merchant Store', 'CHECKING', 'PLN', 0, 'user_1', ?)`, extAID, extPID, now)
+
+		for i, row := range table.Rows {
+			if i == 0 {
+				continue // header
+			}
+			note := row.Cells[0].Value
+			amtStr := row.Cells[1].Value
+
+			parts := strings.Split(amtStr, " ")
+			var f float64
+			fmt.Sscanf(parts[0], "%f", &f)
+			amtMinor := int64(f * 100)
+
+			txID := domain.NewUUIDv7()
+
+			_, err = bDB.Exec(`
+				INSERT INTO budget_transactions (
+					id, version, source_account_id, destination_account_id, source_amount_minor, source_currency,
+					destination_amount_minor, destination_currency, bucket_id, transaction_date, notes, action, agent_id, correlation_id, created_at
+				) VALUES (?, 1, ?, ?, ?, 'PLN', ?, 'PLN', ?, ?, ?, 'CREATE', 'user_1', 'corr_1', ?)`,
+				txID, batchBudgetAcctID, extAID, amtMinor, amtMinor, batchBucketID, now+int64(i), note, now+int64(i),
+			)
+			if err != nil {
+				return err
+			}
+
+			_, err = bDB.Exec(`
+				INSERT INTO budget_transactions_current (
+					id, version, source_account_id, destination_account_id, source_amount_minor, source_currency,
+					destination_amount_minor, destination_currency, bucket_id, transaction_date, notes, updated_at
+				) VALUES (?, 1, ?, ?, ?, 'PLN', ?, 'PLN', ?, ?, ?, ?)`,
+				txID, batchBudgetAcctID, extAID, amtMinor, amtMinor, batchBucketID, now+int64(i), note, now+int64(i),
+			)
+			if err != nil {
+				return err
+			}
+
+			// decrement balances as when created
+			bDB.Exec(`UPDATE account_currency_balances SET balance_minor = balance_minor - ? WHERE account_id = ? AND currency = 'PLN'`, amtMinor, batchBudgetAcctID)
+			bDB.Exec(`UPDATE bucket_currency_balances SET balance_minor = balance_minor - ? WHERE bucket_id = ? AND currency = 'PLN'`, amtMinor, batchBucketID)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I batch delete the budget transactions for "([^"]*)" and "([^"]*)"$`, func(note1, note2 string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		rows, err := bDB.Query(`SELECT id FROM budget_transactions_current WHERE notes IN (?, ?)`, note1, note2)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			ids = append(ids, id)
+		}
+
+		form := url.Values{}
+		for _, id := range ids {
+			form.Add("transaction_ids", id)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/01900000-0000-7000-8000-000000000001/transactions/batch-delete", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues("01900000-0000-7000-8000-000000000001")
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.BatchDeleteTransactions(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the transactions for "([^"]*)" and "([^"]*)" should no longer appear in the budget transactions ledger$`, func(note1, note2 string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var count int
+		err = bDB.QueryRow(`SELECT count(*) FROM budget_transactions_current WHERE notes IN (?, ?)`, note1, note2).Scan(&count)
+		if err != nil || count != 0 {
+			return fmt.Errorf("expected 0 transactions for %s and %s, found %d", note1, note2, count)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the transaction for "([^"]*)" should still appear in the budget transactions ledger$`, func(note string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		var count int
+		err = bDB.QueryRow(`SELECT count(*) FROM budget_transactions_current WHERE notes = ?`, note).Scan(&count)
+		if err != nil || count != 1 {
+			return fmt.Errorf("expected 1 transaction for %s, found %d", note, count)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the account balance should be reverted by "([^"]*)" to "([^"]*)"$`, func(revertedAmt, expectedBalStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		parts := strings.Split(expectedBalStr, " ")
+		var f float64
+		fmt.Sscanf(parts[0], "%f", &f)
+		expectedMinor := int64(f * 100)
+
+		var actualMinor int64
+		err = bDB.QueryRow(`SELECT balance_minor FROM account_currency_balances WHERE account_id = ? AND currency = 'PLN'`, batchBudgetAcctID).Scan(&actualMinor)
+		if err != nil {
+			return err
+		}
+
+		if actualMinor != expectedMinor {
+			return fmt.Errorf("expected account balance %d minor, got %d minor", expectedMinor, actualMinor)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the available balance of bucket "([^"]*)" should be restored by "([^"]*)" to "([^"]*)"$`, func(bucketName, restoredAmt, expectedBalStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+		if err != nil {
+			return err
+		}
+
+		parts := strings.Split(expectedBalStr, " ")
+		var f float64
+		fmt.Sscanf(parts[0], "%f", &f)
+		expectedMinor := int64(f * 100)
+
+		var actualMinor int64
+		err = bDB.QueryRow(`SELECT balance_minor FROM bucket_currency_balances WHERE bucket_id = ? AND currency = 'PLN'`, batchBucketID).Scan(&actualMinor)
+		if err != nil {
+			return err
+		}
+
+		if actualMinor != expectedMinor {
+			return fmt.Errorf("expected bucket available %d minor, got %d minor", expectedMinor, actualMinor)
+		}
+		return nil
+	})
+
 	// Bank sync initial balance & incremental sync steps
 	var externalBankBalMinor int64
 

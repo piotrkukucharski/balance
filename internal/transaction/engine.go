@@ -447,6 +447,15 @@ func UpdateBudgetTransaction(ctx context.Context, tenantDB *sql.DB, input Update
 // 2. Appending SOFT_DELETE record to budget_transactions
 // 3. Removing from budget_transactions_current projection
 func DeleteBudgetTransaction(ctx context.Context, tenantDB *sql.DB, txID, agentID, correlationID string) error {
+	return BatchDeleteBudgetTransactions(ctx, tenantDB, []string{txID}, agentID, correlationID)
+}
+
+// BatchDeleteBudgetTransactions atomically soft-deletes multiple budget transactions.
+func BatchDeleteBudgetTransactions(ctx context.Context, tenantDB *sql.DB, txIDs []string, agentID, correlationID string) error {
+	if len(txIDs) == 0 {
+		return nil
+	}
+
 	tx, err := tenantDB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -455,73 +464,75 @@ func DeleteBudgetTransaction(ctx context.Context, tenantDB *sql.DB, txID, agentI
 
 	now := time.Now().UTC().UnixMicro()
 
-	var curVersion int
-	var srcAcctID, dstAcctID, srcCurrency, dstCurrency string
-	var srcAmountMinor, dstAmountMinor, txDate int64
-	var bucketID, targetID, notes sql.NullString
+	for _, txID := range txIDs {
+		var curVersion int
+		var srcAcctID, dstAcctID, srcCurrency, dstCurrency string
+		var srcAmountMinor, dstAmountMinor, txDate int64
+		var bucketID, targetID, notes sql.NullString
 
-	err = tx.QueryRowContext(ctx, `
-		SELECT version, source_account_id, destination_account_id, source_amount_minor, source_currency,
-		       destination_amount_minor, destination_currency, bucket_id, target_id, transaction_date, notes
-		FROM budget_transactions_current WHERE id = ?`, txID).Scan(
-		&curVersion, &srcAcctID, &dstAcctID, &srcAmountMinor, &srcCurrency,
-		&dstAmountMinor, &dstCurrency, &bucketID, &targetID, &txDate, &notes,
-	)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("budget transaction %s not found", txID)
-		}
-		return err
-	}
-
-	// Revert account & bucket balances
-	var srcUserOwned, dstUserOwned int
-	tx.QueryRowContext(ctx, `SELECT p.is_user_owned FROM accounts_current a JOIN parties_current p ON a.party_id = p.id WHERE a.id = ?`, srcAcctID).Scan(&srcUserOwned)
-	tx.QueryRowContext(ctx, `SELECT p.is_user_owned FROM accounts_current a JOIN parties_current p ON a.party_id = p.id WHERE a.id = ?`, dstAcctID).Scan(&dstUserOwned)
-
-	if err := adjustAccountBalance(ctx, tx, srcAcctID, srcCurrency, srcAmountMinor, now); err != nil {
-		return err
-	}
-	if err := adjustAccountBalance(ctx, tx, dstAcctID, dstCurrency, -dstAmountMinor, now); err != nil {
-		return err
-	}
-	if bucketID.Valid && bucketID.String != "" && srcUserOwned == 1 && dstUserOwned == 0 {
-		if err := adjustBucketBalance(ctx, tx, bucketID.String, srcCurrency, srcAmountMinor); err != nil {
+		err = tx.QueryRowContext(ctx, `
+			SELECT version, source_account_id, destination_account_id, source_amount_minor, source_currency,
+			       destination_amount_minor, destination_currency, bucket_id, target_id, transaction_date, notes
+			FROM budget_transactions_current WHERE id = ?`, txID).Scan(
+			&curVersion, &srcAcctID, &dstAcctID, &srcAmountMinor, &srcCurrency,
+			&dstAmountMinor, &dstCurrency, &bucketID, &targetID, &txDate, &notes,
+		)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("budget transaction %s not found", txID)
+			}
 			return err
 		}
-	}
 
-	// Append SOFT_DELETE version
-	newVersion := curVersion + 1
-	var bID, tID, n *string
-	if bucketID.Valid {
-		bID = &bucketID.String
-	}
-	if targetID.Valid {
-		tID = &targetID.String
-	}
-	if notes.Valid {
-		n = &notes.String
-	}
+		// Revert account & bucket balances
+		var srcUserOwned, dstUserOwned int
+		tx.QueryRowContext(ctx, `SELECT p.is_user_owned FROM accounts_current a JOIN parties_current p ON a.party_id = p.id WHERE a.id = ?`, srcAcctID).Scan(&srcUserOwned)
+		tx.QueryRowContext(ctx, `SELECT p.is_user_owned FROM accounts_current a JOIN parties_current p ON a.party_id = p.id WHERE a.id = ?`, dstAcctID).Scan(&dstUserOwned)
 
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO budget_transactions (
-			id, version, source_account_id, destination_account_id, source_amount_minor, source_currency,
-			destination_amount_minor, destination_currency, bucket_id, target_id, transaction_date, notes,
-			action, agent_id, correlation_id, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SOFT_DELETE', ?, ?, ?)`,
-		txID, newVersion, srcAcctID, dstAcctID, srcAmountMinor, srcCurrency,
-		dstAmountMinor, dstCurrency, bID, tID, txDate, n,
-		agentID, correlationID, now,
-	)
-	if err != nil {
-		return fmt.Errorf("failed appending soft delete to budget_transactions: %w", err)
-	}
+		if err := adjustAccountBalance(ctx, tx, srcAcctID, srcCurrency, srcAmountMinor, now); err != nil {
+			return err
+		}
+		if err := adjustAccountBalance(ctx, tx, dstAcctID, dstCurrency, -dstAmountMinor, now); err != nil {
+			return err
+		}
+		if bucketID.Valid && bucketID.String != "" && srcUserOwned == 1 && dstUserOwned == 0 {
+			if err := adjustBucketBalance(ctx, tx, bucketID.String, srcCurrency, srcAmountMinor); err != nil {
+				return err
+			}
+		}
 
-	// Remove from current projection
-	_, err = tx.ExecContext(ctx, `DELETE FROM budget_transactions_current WHERE id = ?`, txID)
-	if err != nil {
-		return fmt.Errorf("failed deleting from budget_transactions_current: %w", err)
+		// Append SOFT_DELETE version
+		newVersion := curVersion + 1
+		var bID, tID, n *string
+		if bucketID.Valid {
+			bID = &bucketID.String
+		}
+		if targetID.Valid {
+			tID = &targetID.String
+		}
+		if notes.Valid {
+			n = &notes.String
+		}
+
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO budget_transactions (
+				id, version, source_account_id, destination_account_id, source_amount_minor, source_currency,
+				destination_amount_minor, destination_currency, bucket_id, target_id, transaction_date, notes,
+				action, agent_id, correlation_id, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SOFT_DELETE', ?, ?, ?)`,
+			txID, newVersion, srcAcctID, dstAcctID, srcAmountMinor, srcCurrency,
+			dstAmountMinor, dstCurrency, bID, tID, txDate, n,
+			agentID, correlationID, now,
+		)
+		if err != nil {
+			return fmt.Errorf("failed appending soft delete to budget_transactions: %w", err)
+		}
+
+		// Remove from current projection
+		_, err = tx.ExecContext(ctx, `DELETE FROM budget_transactions_current WHERE id = ?`, txID)
+		if err != nil {
+			return fmt.Errorf("failed deleting from budget_transactions_current: %w", err)
+		}
 	}
 
 	return tx.Commit()
