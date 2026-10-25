@@ -81,3 +81,65 @@ func TestRunMonteCarloSimulation(t *testing.T) {
 		t.Fatalf("expected 6 points (ages 60..65), got %d", len(res.Percentile50Trajectory))
 	}
 }
+
+func TestRunMonteCarloSimulation_WithIncomeStreamsAndGuardrails(t *testing.T) {
+	logger.BindTestLogger(t)
+
+	ctx := context.Background()
+	cfg := MonteCarloConfig{
+		CurrentAge:       60,
+		TargetAge:        70,
+		SimulationsCount: 1000,
+		ReturnModel:      "RANDOM_NORMAL",
+		WithdrawalRule:   "GUARDRAILS_GUYTON_KLINGER",
+		InflationMeanPct: 2.5,
+		InflationStdDev:  1.0,
+		Pots: []MontePot{
+			{
+				Name:                 "Bridge Pot",
+				StartingBalanceMinor: 20000000, // 200,000 PLN
+				ExpectedReturnPct:    6.0,
+				VolatilityStdDevPct:  10.0,
+				AccessibleFromAge:    60,
+			},
+			{
+				Name:                 "Locked Pension Pot",
+				StartingBalanceMinor: 50000000, // 500,000 PLN
+				ExpectedReturnPct:    7.0,
+				VolatilityStdDevPct:  12.0,
+				AccessibleFromAge:    65, // bridge-gap accessible from 65
+			},
+		},
+		IncomeStreams: []IncomeStream{
+			{
+				Name:              "ZUS State Pension",
+				FromAge:           65,
+				ToAge:             70,
+				AnnualGrossMinor:  3000000, // 30,000 PLN / year from age 65
+				AdjustByInflation: true,
+			},
+		},
+		SpendingPhases: []SpendPhase{
+			{
+				FromAge:           60,
+				ToAge:             70,
+				AnnualTargetMinor: 4000000, // 40,000 PLN / year
+			},
+		},
+	}
+
+	res, err := RunMonteCarloSimulation(ctx, cfg)
+	if err != nil {
+		t.Fatalf("RunMonteCarloSimulation failed: %v", err)
+	}
+
+	if res.CurrentAge != 60 || res.TargetAge != 70 {
+		t.Errorf("expected ages 60 and 70, got %d and %d", res.CurrentAge, res.TargetAge)
+	}
+	if res.SuccessRatePct < 85.0 {
+		t.Errorf("expected high success rate (>85%%), got %.2f%%", res.SuccessRatePct)
+	}
+	if res.DepletionAgeHistogram == nil {
+		t.Errorf("expected non-nil depletion age histogram")
+	}
+}

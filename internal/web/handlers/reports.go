@@ -759,38 +759,123 @@ func (h *ReportsHandler) GetBudgetAnalysisData(c echo.Context) error {
 func (h *ReportsHandler) GetMonteCarloData(c echo.Context) error {
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 
-	// Pull active account balances to seed starting balance
-	var totalBalanceMinor int64
-	_ = tenantDB.QueryRowContext(c.Request().Context(), `
-		SELECT COALESCE(SUM(balance_minor), 0)
-		FROM account_currency_balances`).Scan(&totalBalanceMinor)
-
-	startBalance := totalBalanceMinor
-	if startBalance < 10000000 { // Min 100,000 PLN seed if zero or negative
-		startBalance = 100000000 // 1,000,000 PLN default retirement pot
+	var cfg report.MonteCarloConfig
+	if c.Request().Method == http.MethodPost && strings.Contains(c.Request().Header.Get("Content-Type"), "application/json") {
+		_ = c.Bind(&cfg)
 	}
 
-	cfg := report.MonteCarloConfig{
-		CurrentAge:       40,
-		TargetAge:        65,
-		SimulationsCount: 1000,
-		ReturnModel:      "RANDOM_NORMAL",
-		Pots: []report.MontePot{
+	if cfg.CurrentAge <= 0 {
+		if age, err := strconv.Atoi(c.QueryParam("current_age")); err == nil && age > 0 {
+			cfg.CurrentAge = age
+		} else {
+			cfg.CurrentAge = 40
+		}
+	}
+	if cfg.TargetAge <= 0 {
+		if age, err := strconv.Atoi(c.QueryParam("target_age")); err == nil && age > 0 {
+			cfg.TargetAge = age
+		} else {
+			cfg.TargetAge = 65
+		}
+	}
+	if cfg.SimulationsCount <= 0 {
+		if cnt, err := strconv.Atoi(c.QueryParam("simulations_count")); err == nil && cnt > 0 {
+			cfg.SimulationsCount = cnt
+		} else {
+			cfg.SimulationsCount = 1000
+		}
+	}
+	if cfg.ReturnModel == "" {
+		cfg.ReturnModel = "RANDOM_NORMAL"
+	}
+	if cfg.WithdrawalRule == "" {
+		cfg.WithdrawalRule = c.QueryParam("withdrawal_rule")
+		if cfg.WithdrawalRule == "" {
+			cfg.WithdrawalRule = "FIXED_REAL"
+		}
+	}
+	if cfg.InflationMeanPct == 0 {
+		if inf, err := strconv.ParseFloat(c.QueryParam("inflation_pct"), 64); err == nil {
+			cfg.InflationMeanPct = inf
+			cfg.InflationStdDev = 1.5
+		}
+	}
+
+	var startingBalance int64
+	if startStr := c.QueryParam("starting_balance"); startStr != "" {
+		if val, err := strconv.ParseInt(startStr, 10, 64); err == nil {
+			startingBalance = val
+		}
+	}
+	if startingBalance <= 0 {
+		_ = tenantDB.QueryRowContext(c.Request().Context(), `
+			SELECT COALESCE(SUM(balance_minor), 0)
+			FROM account_currency_balances`).Scan(&startingBalance)
+		if startingBalance < 10000000 {
+			startingBalance = 100000000 // 1,000,000 PLN default
+		}
+	}
+
+	expReturn := 7.0
+	if retStr := c.QueryParam("expected_return_pct"); retStr != "" {
+		if val, err := strconv.ParseFloat(retStr, 64); err == nil {
+			expReturn = val
+		}
+	}
+	vol := 12.0
+	if volStr := c.QueryParam("volatility_pct"); volStr != "" {
+		if val, err := strconv.ParseFloat(volStr, 64); err == nil {
+			vol = val
+		}
+	}
+
+	if len(cfg.Pots) == 0 {
+		cfg.Pots = []report.MontePot{
 			{
 				Name:                 "Liquid Assets & Portfolio",
-				StartingBalanceMinor: startBalance,
-				ExpectedReturnPct:    7.0,
-				VolatilityStdDevPct:  12.0,
-				AccessibleFromAge:    40,
+				StartingBalanceMinor: startingBalance,
+				ExpectedReturnPct:    expReturn,
+				VolatilityStdDevPct:  vol,
+				AccessibleFromAge:    cfg.CurrentAge,
 			},
-		},
-		SpendingPhases: []report.SpendPhase{
+		}
+	}
+
+	var annualSpend int64 = 4000000 // 40,000 PLN default
+	if spendStr := c.QueryParam("annual_spend"); spendStr != "" {
+		if val, err := strconv.ParseInt(spendStr, 10, 64); err == nil {
+			annualSpend = val
+		}
+	}
+
+	if len(cfg.SpendingPhases) == 0 {
+		cfg.SpendingPhases = []report.SpendPhase{
 			{
-				FromAge:           40,
-				ToAge:             65,
-				AnnualTargetMinor: 4000000, // 40,000 PLN / year
+				FromAge:           cfg.CurrentAge,
+				ToAge:             cfg.TargetAge,
+				AnnualTargetMinor: annualSpend,
 			},
-		},
+		}
+	}
+
+	if len(cfg.IncomeStreams) == 0 {
+		if pAmtStr := c.QueryParam("pension_amount"); pAmtStr != "" {
+			if pAmt, err := strconv.ParseInt(pAmtStr, 10, 64); err == nil && pAmt > 0 {
+				pFromAge := 65
+				if pFromStr := c.QueryParam("pension_from_age"); pFromStr != "" {
+					if a, err := strconv.Atoi(pFromStr); err == nil {
+						pFromAge = a
+					}
+				}
+				cfg.IncomeStreams = append(cfg.IncomeStreams, report.IncomeStream{
+					Name:              "State Pension / External",
+					FromAge:           pFromAge,
+					ToAge:             cfg.TargetAge,
+					AnnualGrossMinor:  pAmt,
+					AdjustByInflation: true,
+				})
+			}
+		}
 	}
 
 	res, err := report.RunMonteCarloSimulation(c.Request().Context(), cfg)
@@ -1020,6 +1105,64 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
 		}
 	}
 
+	monteCarloControls := ""
+	if meta.Type == "monte-carlo" {
+		monteCarloControls = `
+            <div id="monte-carlo-settings" class="card card-border bg-base-100 border-base-300 p-6 rounded-2xl shadow-xs">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-base font-bold flex items-center gap-2">
+                        <span>🎲</span>
+                        <span>Retirement Plan & Longevity Simulation Parameters</span>
+                    </h2>
+                    <span class="badge badge-primary badge-soft text-xs">Multi-Pot & Dynamic Withdrawals</span>
+                </div>
+                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs">Current Age</span></label>
+                        <input type="number" id="mc_current_age" name="current_age" value="40" min="18" max="100" class="input input-bordered input-sm font-mono" />
+                    </div>
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs">Target Age</span></label>
+                        <input type="number" id="mc_target_age" name="target_age" value="65" min="30" max="120" class="input input-bordered input-sm font-mono" />
+                    </div>
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs">Annual Spend</span></label>
+                        <input type="number" id="mc_annual_spend" name="annual_spend" value="50000" min="1000" step="5000" class="input input-bordered input-sm font-mono" />
+                    </div>
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs">Return (%%)</span></label>
+                        <input type="number" id="mc_expected_return" name="expected_return_pct" value="7.0" step="0.5" class="input input-bordered input-sm font-mono" />
+                    </div>
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs">Inflation (%%)</span></label>
+                        <input type="number" id="mc_inflation" name="inflation_pct" value="2.5" step="0.5" class="input input-bordered input-sm font-mono" />
+                    </div>
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs">Withdrawal Rule</span></label>
+                        <select id="mc_withdrawal_rule" name="withdrawal_rule" class="select select-bordered select-sm">
+                            <option value="FIXED_REAL">Fixed Real</option>
+                            <option value="GUARDRAILS_GUYTON_KLINGER">Guyton-Klinger</option>
+                            <option value="RATCHETING_KITCES">Kitces Ratchet</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 pt-3 border-t border-base-200">
+                    <div class="flex items-center gap-2">
+                        <label class="text-xs font-semibold whitespace-nowrap">External Pension (e.g. ZUS):</label>
+                        <input type="number" id="mc_pension_amount" placeholder="Annual Amount (e.g. 36000)" class="input input-bordered input-sm font-mono flex-1" />
+                        <label class="text-xs whitespace-nowrap">From age:</label>
+                        <input type="number" id="mc_pension_from" value="65" min="50" max="100" class="input input-bordered input-sm font-mono w-20" />
+                    </div>
+                    <div class="flex justify-end gap-2">
+                        <button type="button" id="btn-run-simulation" class="btn btn-sm btn-primary gap-1">
+                            <span>▶</span>
+                            <span>Run Stochastic Simulation</span>
+                        </button>
+                    </div>
+                </div>
+            </div>`
+	}
+
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -1126,6 +1269,8 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
                     </div>
                 </form>
             </div>
+
+            %s
 
             <!-- KPI Metric Cards Grid -->
             <div id="report-kpi-cards" class="grid grid-cols-2 md:grid-cols-4 gap-4"></div>
@@ -1502,7 +1647,8 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
                 const p10 = (data && data.p10_trajectory) ? data.p10_trajectory.map(v => v / 100) : [];
                 const p50 = (data && data.p50_trajectory) ? data.p50_trajectory.map(v => v / 100) : [];
                 const p90 = (data && data.p90_trajectory) ? data.p90_trajectory.map(v => v / 100) : [];
-                const xData = p50.map((_, i) => 'Age ' + (40 + i));
+                const startAge = (data && data.current_age) ? data.current_age : (parseInt(document.getElementById('mc_current_age') ? document.getElementById('mc_current_age').value : 40) || 40);
+                const xData = p50.map((_, i) => 'Age ' + (startAge + i));
 
                 chart.setOption({
                     backgroundColor: chartBg,
@@ -1510,7 +1656,7 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
                     tooltip: { trigger: 'axis' },
                     legend: { textStyle: textStyle, data: ['P90 Optimistic', 'P50 Median', 'P10 Conservative'], top: 0 },
                     grid: { top: 50, right: 40, bottom: 40, left: 70 },
-                    xAxis: { type: 'category', data: xData.length ? xData : ['Age 40', 'Age 65'], axisLine: { lineStyle: { color: 'rgba(255,255,255,0.2)' } } },
+                    xAxis: { type: 'category', data: xData.length ? xData : ['Age ' + startAge, 'Age ' + (startAge + 25)], axisLine: { lineStyle: { color: 'rgba(255,255,255,0.2)' } } },
                     yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
                     series: [
                         { name: 'P90 Optimistic', type: 'line', data: p90, color: '#22c55e', smooth: true },
@@ -1553,11 +1699,44 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
             const excludeInternal = form.elements['exclude_internal'] ? form.elements['exclude_internal'].checked : true;
 
             const params = new URLSearchParams({ range: range, currency: curr, exclude_internal: excludeInternal });
+
+            const saveCfg = { range: range, currency: curr, exclude_internal: excludeInternal };
+            if (type === 'monte-carlo') {
+                const mcCur = document.getElementById('mc_current_age');
+                const mcTgt = document.getElementById('mc_target_age');
+                const mcSpend = document.getElementById('mc_annual_spend');
+                const mcRet = document.getElementById('mc_expected_return');
+                const mcInf = document.getElementById('mc_inflation');
+                const mcRule = document.getElementById('mc_withdrawal_rule');
+                const mcPAmt = document.getElementById('mc_pension_amount');
+                const mcPFrom = document.getElementById('mc_pension_from');
+
+                if (mcCur && mcCur.value) { params.set('current_age', mcCur.value); saveCfg.current_age = parseInt(mcCur.value); }
+                if (mcTgt && mcTgt.value) { params.set('target_age', mcTgt.value); saveCfg.target_age = parseInt(mcTgt.value); }
+                if (mcSpend && mcSpend.value) {
+                    const spendMinor = Math.round(parseFloat(mcSpend.value) * 100);
+                    params.set('annual_spend', spendMinor);
+                    saveCfg.annual_spend = spendMinor;
+                }
+                if (mcRet && mcRet.value) { params.set('expected_return_pct', mcRet.value); saveCfg.expected_return_pct = parseFloat(mcRet.value); }
+                if (mcInf && mcInf.value) { params.set('inflation_pct', mcInf.value); saveCfg.inflation_pct = parseFloat(mcInf.value); }
+                if (mcRule && mcRule.value) { params.set('withdrawal_rule', mcRule.value); saveCfg.withdrawal_rule = mcRule.value; }
+                if (mcPAmt && mcPAmt.value) {
+                    const pMinor = Math.round(parseFloat(mcPAmt.value) * 100);
+                    params.set('pension_amount', pMinor);
+                    saveCfg.pension_amount = pMinor;
+                    if (mcPFrom && mcPFrom.value) {
+                        params.set('pension_from_age', mcPFrom.value);
+                        saveCfg.pension_from_age = parseInt(mcPFrom.value);
+                    }
+                }
+            }
+
             window.history.replaceState(null, '', '?' + params.toString());
 
             const saveCfgInput = document.getElementById('save_config_json');
             if (saveCfgInput) {
-                saveCfgInput.value = JSON.stringify({ range: range, currency: curr, exclude_internal: excludeInternal });
+                saveCfgInput.value = JSON.stringify(saveCfg);
             }
 
             if (chart) chart.showLoading({ color: '#3b82f6' });
@@ -1575,6 +1754,14 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
             updateReport();
         }
 
+        const runSimBtn = document.getElementById('btn-run-simulation');
+        if (runSimBtn) {
+            runSimBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                updateReport();
+            });
+        }
+
         const presetsSelect = document.getElementById('saved-presets-select');
         if (presetsSelect) {
             presetsSelect.addEventListener('change', (e) => {
@@ -1588,8 +1775,18 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
                         if (cfg.range && filterForm.elements['range']) filterForm.elements['range'].value = cfg.range;
                         if (cfg.currency && filterForm.elements['currency']) filterForm.elements['currency'].value = cfg.currency;
                         if (cfg.exclude_internal != null && filterForm.elements['exclude_internal']) filterForm.elements['exclude_internal'].checked = !!cfg.exclude_internal;
-                        updateReport();
                     }
+                    if (type === 'monte-carlo') {
+                        if (cfg.current_age && document.getElementById('mc_current_age')) document.getElementById('mc_current_age').value = cfg.current_age;
+                        if (cfg.target_age && document.getElementById('mc_target_age')) document.getElementById('mc_target_age').value = cfg.target_age;
+                        if (cfg.annual_spend && document.getElementById('mc_annual_spend')) document.getElementById('mc_annual_spend').value = Math.round(cfg.annual_spend / 100);
+                        if (cfg.expected_return_pct && document.getElementById('mc_expected_return')) document.getElementById('mc_expected_return').value = cfg.expected_return_pct;
+                        if (cfg.inflation_pct && document.getElementById('mc_inflation')) document.getElementById('mc_inflation').value = cfg.inflation_pct;
+                        if (cfg.withdrawal_rule && document.getElementById('mc_withdrawal_rule')) document.getElementById('mc_withdrawal_rule').value = cfg.withdrawal_rule;
+                        if (cfg.pension_amount && document.getElementById('mc_pension_amount')) document.getElementById('mc_pension_amount').value = Math.round(cfg.pension_amount / 100);
+                        if (cfg.pension_from_age && document.getElementById('mc_pension_from')) document.getElementById('mc_pension_from').value = cfg.pension_from_age;
+                    }
+                    updateReport();
                 } catch (err) {
                     console.error("error parsing preset config:", err);
                 }
@@ -1634,6 +1831,7 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
 		selectedAttr(selectedCurrency == "USD"),
 		selectedAttr(selectedCurrency == "GBP"),
 		checkedAttr(excludeInternal),
+		monteCarloControls,
 		budgetID,
 		csrfToken,
 		reportTypeEnum,
@@ -1646,6 +1844,8 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
 		meta.Endpoint,
 		meta.ChartID,
 		meta.Type)
+
+	return c.HTML(http.StatusOK, html)
 
 	return c.HTML(http.StatusOK, html)
 }
