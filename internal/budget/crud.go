@@ -340,6 +340,11 @@ func CreateTargetTx(ctx context.Context, tx *sql.Tx, input CreateTargetInput) (s
 	if input.RecurrenceCadence == "" {
 		input.RecurrenceCadence = CadenceMonthly
 	}
+	if input.RecurrenceCadence == CadenceCustomDays && input.RecurrenceDays < 1 {
+		input.RecurrenceDays = 90
+	} else if input.RecurrenceCadence != CadenceCustomDays {
+		input.RecurrenceDays = 0
+	}
 	if input.NonSpendingStrategy == "" {
 		input.NonSpendingStrategy = StrategyRollOver
 	}
@@ -438,6 +443,12 @@ func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput
 
 	if err := domain.ValidateAmountMinor(input.AmountMinor, true); err != nil {
 		return fmt.Errorf("invalid target amount: %w", err)
+	}
+
+	if input.RecurrenceCadence == CadenceCustomDays && input.RecurrenceDays < 1 {
+		input.RecurrenceDays = 90
+	} else if input.RecurrenceCadence != "" && input.RecurrenceCadence != CadenceCustomDays {
+		input.RecurrenceDays = 0
 	}
 
 	tx, err := tenantDB.BeginTx(ctx, nil)

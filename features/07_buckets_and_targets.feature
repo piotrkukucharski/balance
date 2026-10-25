@@ -10,6 +10,12 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     And I add a recommended target "Electricity" with priority 2, cadence "MONTHLY", amount "300.00 PLN"
     Then the bucket and targets should be recorded in event streams and projections
 
+  Scenario: Creating a target with custom days recurrence interval
+    Given an open budget "Family Home"
+    When I create a bucket "Subscriptions" in group "Needs"
+    And I add a target "Quarterly Pass" with priority 2, cadence "CUSTOM_DAYS", recurrence days 90, amount "125.00 PLN"
+    Then target "Quarterly Pass" in projections should have recurrence days 90
+
   Scenario: Updating targets and validating deletion constraints on buckets
     Given an open budget "Family Home"
     And an existing bucket "Subscriptions" in group "Needs" with funded balance "100.00 PLN"

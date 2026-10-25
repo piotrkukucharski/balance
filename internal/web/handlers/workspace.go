@@ -1585,7 +1585,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 <div class="grid grid-cols-2 gap-4">
                     <div class="form-control">
                         <label class="label pb-1"><span class="label-text font-medium text-xs">Cadence</span></label>
-                        <select id="target_cadence" name="recurrence_cadence" class="select select-bordered w-full select-md focus:select-primary">
+                        <select id="target_cadence" name="recurrence_cadence" class="select select-bordered w-full select-md focus:select-primary" onchange="toggleCustomDays()">
                             <option value="MONTHLY" selected>Monthly</option>
                             <option value="WEEKLY">Weekly</option>
                             <option value="ANNUAL">Annual</option>
@@ -1603,6 +1603,12 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                             <option value="PRORATE_FUTURE">Prorate Future</option>
                         </select>
                     </div>
+                </div>
+
+                <!-- Custom Days Interval Input -->
+                <div id="custom_days_container" class="hidden form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs font-semibold">Recurrence Interval (Days)</span></label>
+                    <input type="number" id="target_recurrence_days" name="recurrence_days" min="1" max="36500" placeholder="e.g. 90 for quarterly, 180 for semi-annual" class="input input-bordered w-full input-md focus:input-primary font-mono" />
                 </div>
 
                 <!-- Calculation Mode Selector -->
@@ -1720,6 +1726,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                     const ceilingHtml = t.CeilingAmountMinor ? ' • <span class="font-semibold text-primary">Goal: ' + (t.CeilingAmountMinor/100).toFixed(2) + ' ' + t.Currency + '</span>' : '';
                     const luaBadge = t.AmountMode === 'LUA_FORMULA' ? ' <span class="badge badge-outline badge-xs font-mono text-secondary border-secondary">LUA</span>' : '';
                     const formulaErrHtml = (t.LastFormulaError && t.LastFormulaError.length > 0) ? '<div class="text-[11px] text-error font-mono mt-1">⚠️ ' + escapeHtml(t.LastFormulaError) + '</div>' : '';
+                    const cadenceDisplay = t.RecurrenceCadence === 'CUSTOM_DAYS' ? ((t.RecurrenceDays || 90) + 'd') : t.RecurrenceCadence;
 
                     card.innerHTML = 
                         '<div class="flex justify-between items-start">' +
@@ -1727,7 +1734,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                                 '<div class="font-bold text-sm tracking-tight flex items-center gap-1">' +
                                     escapeHtml(t.Name) + luaBadge +
                                 '</div>' +
-                                '<div class="text-[11px] text-base-content/60">Priority: ' + priorityText + ' • Cadence: ' + t.RecurrenceCadence + ' • Strategy: ' + t.NonSpendingStrategy + ceilingHtml + '</div>' +
+                                '<div class="text-[11px] text-base-content/60">Priority: ' + priorityText + ' • Cadence: ' + cadenceDisplay + ' • Strategy: ' + t.NonSpendingStrategy + ceilingHtml + '</div>' +
                             '</div>' +
                             '<span class="badge ' + t.HealthBadgeClass + ' badge-sm font-semibold">' + t.HealthBadge + '</span>' +
                         '</div>' +
@@ -1764,12 +1771,14 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             document.getElementById('target_type').value = t.TargetType;
             document.getElementById('target_priority').value = t.Priority;
             document.getElementById('target_cadence').value = t.RecurrenceCadence;
+            document.getElementById('target_recurrence_days').value = t.RecurrenceDays || 90;
             document.getElementById('target_strategy').value = t.NonSpendingStrategy;
             document.getElementById('target_amount').value = (t.AmountMinor / 100).toFixed(2);
             document.getElementById('target_ceiling').value = t.CeilingAmountMinor ? (t.CeilingAmountMinor / 100).toFixed(2) : '';
             document.getElementById('target_currency').value = t.Currency;
             document.getElementById('target_lua_script').value = t.LuaScript || '';
 
+            toggleCustomDays();
             hideFormulaPreview();
             hideAIPanel();
 
@@ -1787,17 +1796,35 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             document.getElementById('target_type').value = 'EXPENSE';
             document.getElementById('target_priority').value = '2';
             document.getElementById('target_cadence').value = 'MONTHLY';
+            document.getElementById('target_recurrence_days').value = '90';
             document.getElementById('target_strategy').value = 'ROLL_OVER';
             document.getElementById('target_amount').value = '';
             document.getElementById('target_ceiling').value = '';
             document.getElementById('target_currency').value = currentCurrency;
             document.getElementById('target_lua_script').value = '';
 
+            toggleCustomDays();
             hideFormulaPreview();
             hideAIPanel();
             switchAmountMode('FIXED');
 
             target_modal.showModal();
+        }
+
+        function toggleCustomDays() {
+            const cadenceSelect = document.getElementById('target_cadence');
+            const customDaysContainer = document.getElementById('custom_days_container');
+            const rDaysInput = document.getElementById('target_recurrence_days');
+            if (!cadenceSelect || !customDaysContainer) return;
+            const isCustom = cadenceSelect.value === 'CUSTOM_DAYS';
+            if (isCustom) {
+                customDaysContainer.classList.remove('hidden');
+                if (rDaysInput && (!rDaysInput.value || parseInt(rDaysInput.value) < 1)) {
+                    rDaysInput.value = '90';
+                }
+            } else {
+                customDaysContainer.classList.add('hidden');
+            }
         }
 
         function switchAmountMode(mode) {
@@ -2513,6 +2540,12 @@ func (h *WorkspaceHandler) CreateTarget(c echo.Context) error {
 	if cadence == "" {
 		cadence = budget.CadenceMonthly
 	}
+	rDays, _ := strconv.Atoi(c.FormValue("recurrence_days"))
+	if cadence == budget.CadenceCustomDays && rDays < 1 {
+		rDays = 90
+	} else if cadence != budget.CadenceCustomDays {
+		rDays = 0
+	}
 	strategy := c.FormValue("non_spending_strategy")
 	if strategy == "" {
 		strategy = budget.StrategyRollOver
@@ -2553,6 +2586,7 @@ func (h *WorkspaceHandler) CreateTarget(c echo.Context) error {
 		LuaScript:           luaScript,
 		Currency:            currency,
 		RecurrenceCadence:   cadence,
+		RecurrenceDays:      rDays,
 		NonSpendingStrategy: strategy,
 		CeilingAmountMinor:  ceilingMinor,
 		AgentID:             userID,
@@ -2585,6 +2619,12 @@ func (h *WorkspaceHandler) UpdateTarget(c echo.Context) error {
 	cadence := c.FormValue("recurrence_cadence")
 	if cadence == "" {
 		cadence = budget.CadenceMonthly
+	}
+	rDays, _ := strconv.Atoi(c.FormValue("recurrence_days"))
+	if cadence == budget.CadenceCustomDays && rDays < 1 {
+		rDays = 90
+	} else if cadence != budget.CadenceCustomDays {
+		rDays = 0
 	}
 	strategy := c.FormValue("non_spending_strategy")
 	if strategy == "" {
@@ -2625,6 +2665,7 @@ func (h *WorkspaceHandler) UpdateTarget(c echo.Context) error {
 		AmountMinor:         amtMinor,
 		LuaScript:           luaScript,
 		RecurrenceCadence:   cadence,
+		RecurrenceDays:      rDays,
 		NonSpendingStrategy: strategy,
 		CeilingAmountMinor:  ceilingMinor,
 		AgentID:             userID,

@@ -1004,6 +1004,177 @@ func TestTargetModalAndLuaFormulaAssistant(t *testing.T) {
 	if !strings.Contains(body, "mode_lua") || !strings.Contains(body, "mode_fixed") {
 		t.Fatalf("expected target_modal to have calculation mode radio inputs")
 	}
+	if !strings.Contains(body, "target_recurrence_days") || !strings.Contains(body, "toggleCustomDays") {
+		t.Fatalf("expected target_modal to have recurrence_days input and toggleCustomDays function")
+	}
+}
+
+func TestCreateAndEditTarget_CustomDays(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "balance_custom_days_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mainDBPath := filepath.Join(tmpDir, "main.db")
+	mainDB, err := db.OpenDB(mainDBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tmpDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+	e := echo.New()
+
+	userID := domain.NewUUIDv7()
+	now := time.Now().UTC().UnixMicro()
+	_, _ = mainDB.Exec(`INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, 'user@example.com', 'h', 'User', ?, ?)`, userID, now, now)
+
+	// Create budget
+	bForm := url.Values{}
+	bForm.Set("name", "Custom Days Budget")
+	bForm.Set("default_currency", "PLN")
+	bForm.Set("timezone", "Europe/Warsaw")
+
+	bReq := httptest.NewRequest(http.MethodPost, "/budgets", strings.NewReader(bForm.Encode()))
+	bReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	bRec := httptest.NewRecorder()
+	bCtx := e.NewContext(bReq, bRec)
+	bCtx.Set(ContextUserIDKey, userID)
+
+	if err := workspaceHandler.CreateBudget(bCtx); err != nil {
+		t.Fatalf("CreateBudget failed: %v", err)
+	}
+	loc := bRec.Header().Get("Location")
+	budgetID := strings.Split(loc, "/")[2]
+
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, false)
+	if err != nil {
+		t.Fatalf("GetTenantDB failed: %v", err)
+	}
+
+	// Create bucket
+	bucketID, err := budget.CreateBucket(context.Background(), tenantDB, budget.CreateBucketInput{
+		GroupName:     "Fixed",
+		Name:          "Subscriptions",
+		AgentID:       userID,
+		CorrelationID: domain.NewUUIDv7(),
+	})
+	if err != nil {
+		t.Fatalf("failed creating bucket: %v", err)
+	}
+
+	// 1. Create target with CUSTOM_DAYS and recurrence_days = 90
+	f1 := url.Values{}
+	f1.Set("bucket_id", bucketID)
+	f1.Set("name", "Quarterly Card")
+	f1.Set("amount", "125.00")
+	f1.Set("currency", "PLN")
+	f1.Set("recurrence_cadence", "CUSTOM_DAYS")
+	f1.Set("recurrence_days", "90")
+	f1.Set("non_spending_strategy", "ROLL_OVER")
+
+	req1 := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets", strings.NewReader(f1.Encode()))
+	req1.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	rec1 := httptest.NewRecorder()
+	ctx1 := e.NewContext(req1, rec1)
+	ctx1.SetParamNames("budgetId")
+	ctx1.SetParamValues(budgetID)
+	ctx1.Set(ContextBudgetDBKey, tenantDB)
+	ctx1.Set(ContextUserIDKey, userID)
+	ctx1.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.CreateTarget(ctx1); err != nil {
+		t.Fatalf("CreateTarget (CUSTOM_DAYS 90) failed: %v", err)
+	}
+
+	var t1ID string
+	var t1Days int
+	var t1Cadence string
+	err = tenantDB.QueryRow(`SELECT id, recurrence_cadence, recurrence_days FROM targets_projection WHERE name = 'Quarterly Card'`).Scan(&t1ID, &t1Cadence, &t1Days)
+	if err != nil {
+		t.Fatalf("failed querying Quarterly Card target: %v", err)
+	}
+	if t1Cadence != "CUSTOM_DAYS" || t1Days != 90 {
+		t.Fatalf("expected CUSTOM_DAYS with 90 days, got cadence=%s, days=%d", t1Cadence, t1Days)
+	}
+
+	// 2. Create target with CUSTOM_DAYS but empty recurrence_days (should gracefully default to 90 without CHECK constraint error)
+	f2 := url.Values{}
+	f2.Set("bucket_id", bucketID)
+	f2.Set("name", "Omitted Days Target")
+	f2.Set("amount", "50.00")
+	f2.Set("currency", "PLN")
+	f2.Set("recurrence_cadence", "CUSTOM_DAYS")
+	f2.Set("recurrence_days", "")
+	f2.Set("non_spending_strategy", "ROLL_OVER")
+
+	req2 := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets", strings.NewReader(f2.Encode()))
+	req2.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	rec2 := httptest.NewRecorder()
+	ctx2 := e.NewContext(req2, rec2)
+	ctx2.SetParamNames("budgetId")
+	ctx2.SetParamValues(budgetID)
+	ctx2.Set(ContextBudgetDBKey, tenantDB)
+	ctx2.Set(ContextUserIDKey, userID)
+	ctx2.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.CreateTarget(ctx2); err != nil {
+		t.Fatalf("CreateTarget with empty recurrence_days failed: %v", err)
+	}
+
+	var t2Days int
+	err = tenantDB.QueryRow(`SELECT recurrence_days FROM targets_projection WHERE name = 'Omitted Days Target'`).Scan(&t2Days)
+	if err != nil {
+		t.Fatalf("failed querying Omitted Days Target: %v", err)
+	}
+	if t2Days != 90 {
+		t.Fatalf("expected fallback to 90 days, got %d", t2Days)
+	}
+
+	// 3. Update target to 180 days
+	fUpd := url.Values{}
+	fUpd.Set("name", "Semi-Annual Card")
+	fUpd.Set("amount", "250.00")
+	fUpd.Set("recurrence_cadence", "CUSTOM_DAYS")
+	fUpd.Set("recurrence_days", "180")
+	fUpd.Set("non_spending_strategy", "ROLL_OVER")
+
+	reqUpd := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets/"+t1ID+"/update", strings.NewReader(fUpd.Encode()))
+	reqUpd.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	recUpd := httptest.NewRecorder()
+	ctxUpd := e.NewContext(reqUpd, recUpd)
+	ctxUpd.SetParamNames("budgetId", "id")
+	ctxUpd.SetParamValues(budgetID, t1ID)
+	ctxUpd.Set(ContextBudgetDBKey, tenantDB)
+	ctxUpd.Set(ContextUserIDKey, userID)
+	ctxUpd.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.UpdateTarget(ctxUpd); err != nil {
+		t.Fatalf("UpdateTarget to 180 days failed: %v", err)
+	}
+
+	var updDays int
+	var updName string
+	err = tenantDB.QueryRow(`SELECT name, recurrence_days FROM targets_projection WHERE id = ?`, t1ID).Scan(&updName, &updDays)
+	if err != nil {
+		t.Fatalf("failed querying updated target: %v", err)
+	}
+	if updName != "Semi-Annual Card" || updDays != 180 {
+		t.Fatalf("expected name Semi-Annual Card and 180 days, got name=%s, days=%d", updName, updDays)
+	}
 }
 
 

@@ -2408,6 +2408,46 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return err
 	})
 
+	ctx.Step(`^I add a target "([^"]*)" with priority (\d+), cadence "([^"]*)", recurrence days (\d+), amount "([^"]*)"$`, func(name string, prio int, cadence string, rDays int, amt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		tID, err := budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:          activeBucketID,
+			Name:              name,
+			TargetType:        "EXPENSE",
+			Priority:          prio,
+			AmountMinor:       parseAmountStr(amt),
+			Currency:          "PLN",
+			RecurrenceCadence: cadence,
+			RecurrenceDays:    rDays,
+			AgentID:           tc.activeUserID,
+			CorrelationID:     domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		activeTargetID = tID
+		return nil
+	})
+
+	ctx.Step(`^target "([^"]*)" in projections should have recurrence days (\d+)$`, func(name string, expectedDays int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var days int
+		err = bDB.QueryRow(`SELECT recurrence_days FROM targets_projection WHERE name = ? AND is_archived = 0`, name).Scan(&days)
+		if err != nil {
+			return fmt.Errorf("target %s not found: %w", name, err)
+		}
+		if days != expectedDays {
+			return fmt.Errorf("expected recurrence days %d, got %d", expectedDays, days)
+		}
+		return nil
+	})
+
 	ctx.Step(`^the bucket and targets should be recorded in event streams and projections$`, func() error {
 		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
 		if err != nil {
