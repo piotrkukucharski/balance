@@ -1321,6 +1321,216 @@ func TestCreateAndEditTarget_CustomDays(t *testing.T) {
 	}
 }
 
+func TestPartyMatchingRulesCRUD(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.db")
+	mainDB, err := db.OpenDB(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tempDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	partiesHandler := NewPartiesHandler(mainDB, tenantMgr)
+	e := echo.New()
+
+	userID := domain.NewUUIDv7()
+	budgetID := domain.NewUUIDv7()
+	now := time.Now().UTC().UnixMicro()
+
+	_, err = mainDB.Exec(`INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, 'user@example.com', 'hash', 'User', ?, ?)`, userID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = mainDB.Exec(`INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at) VALUES (?, 'Rules Budget', 'PLN', 'Europe/Warsaw', ?, ?, ?)`, budgetID, userID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Create a party
+	pForm := url.Values{}
+	pForm.Set("name", "Żabka Polska")
+	pForm.Set("party_type", "ORGANIZATION")
+
+	pReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/parties", strings.NewReader(pForm.Encode()))
+	pReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	pRec := httptest.NewRecorder()
+	pCtx := e.NewContext(pReq, pRec)
+	pCtx.SetParamNames("budgetId")
+	pCtx.SetParamValues(budgetID)
+	pCtx.Set(ContextBudgetDBKey, tenantDB)
+	pCtx.Set(ContextUserIDKey, userID)
+	pCtx.Set("correlationID", domain.NewUUIDv7())
+
+	if err := partiesHandler.CreateParty(pCtx); err != nil {
+		t.Fatalf("CreateParty failed: %v", err)
+	}
+
+	var partyID string
+	err = tenantDB.QueryRow(`SELECT id FROM parties_current WHERE name = 'Żabka Polska'`).Scan(&partyID)
+	if err != nil {
+		t.Fatalf("failed finding created party: %v", err)
+	}
+
+	// Check party in PartiesView
+	pvReq := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/parties", nil)
+	pvRec := httptest.NewRecorder()
+	pvCtx := e.NewContext(pvReq, pvRec)
+	pvCtx.SetParamNames("budgetId")
+	pvCtx.SetParamValues(budgetID)
+	pvCtx.Set(ContextBudgetDBKey, tenantDB)
+	pvCtx.Set(ContextUserIDKey, userID)
+	pvCtx.Set("csrfToken", "test-token")
+
+	if err := partiesHandler.PartiesView(pvCtx); err != nil {
+		t.Fatalf("PartiesView failed: %v", err)
+	}
+	pvBody := pvRec.Body.String()
+	if !strings.Contains(pvBody, "Żabka Polska") || !strings.Contains(pvBody, "/budgets/"+budgetID+"/parties/"+partyID+"/rules") {
+		t.Fatalf("PartiesView body missing party or rules link: %s", pvBody)
+	}
+
+	// Create a bucket for testing optional default bucket
+	bucketID, err := budget.CreateBucket(context.Background(), tenantDB, budget.CreateBucketInput{
+		GroupName:     "Daily",
+		Name:          "Groceries",
+		AgentID:       userID,
+		CorrelationID: domain.NewUUIDv7(),
+	})
+	if err != nil {
+		t.Fatalf("failed creating bucket: %v", err)
+	}
+
+	// 2. View party rules (empty state)
+	prvReq := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/parties/"+partyID+"/rules", nil)
+	prvRec := httptest.NewRecorder()
+	prvCtx := e.NewContext(prvReq, prvRec)
+	prvCtx.SetParamNames("budgetId", "partyId")
+	prvCtx.SetParamValues(budgetID, partyID)
+	prvCtx.Set(ContextBudgetDBKey, tenantDB)
+	prvCtx.Set(ContextUserIDKey, userID)
+	prvCtx.Set("csrfToken", "test-token")
+
+	if err := partiesHandler.PartyRulesView(prvCtx); err != nil {
+		t.Fatalf("PartyRulesView failed: %v", err)
+	}
+	if !strings.Contains(prvRec.Body.String(), "No auto-matching rules configured") {
+		t.Fatalf("expected empty rules message in PartyRulesView")
+	}
+
+	// 3. Create a matching rule
+	rForm := url.Values{}
+	rForm.Set("name", "Match Zabka Merchant")
+	rForm.Set("match_field", "RAW_PAYEE")
+	rForm.Set("match_operator", "CONTAINS")
+	rForm.Set("match_pattern", "ZABKA")
+	rForm.Set("default_bucket_id", bucketID)
+	rForm.Set("priority", "50")
+
+	rReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/parties/"+partyID+"/rules", strings.NewReader(rForm.Encode()))
+	rReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	rRec := httptest.NewRecorder()
+	rCtx := e.NewContext(rReq, rRec)
+	rCtx.SetParamNames("budgetId", "partyId")
+	rCtx.SetParamValues(budgetID, partyID)
+	rCtx.Set(ContextBudgetDBKey, tenantDB)
+	rCtx.Set(ContextUserIDKey, userID)
+	rCtx.Set("correlationID", domain.NewUUIDv7())
+
+	if err := partiesHandler.CreatePartyRule(rCtx); err != nil {
+		t.Fatalf("CreatePartyRule failed: %v", err)
+	}
+	if rRec.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect 303, got %d", rRec.Code)
+	}
+
+	var ruleID, rName, rField, rOp, rPat, rBucket string
+	var rPrio int
+	err = tenantDB.QueryRow(`
+		SELECT id, name, priority, match_field, match_operator, match_pattern, default_bucket_id
+		FROM matching_rules_current
+		WHERE name = 'Match Zabka Merchant'`).Scan(&ruleID, &rName, &rPrio, &rField, &rOp, &rPat, &rBucket)
+	if err != nil {
+		t.Fatalf("failed finding created matching rule in projection: %v", err)
+	}
+	if rPrio != 50 || rField != "RAW_PAYEE" || rOp != "CONTAINS" || rPat != "ZABKA" || rBucket != bucketID {
+		t.Fatalf("unexpected rule fields: %v %d %s %s %s %s", ruleID, rPrio, rField, rOp, rPat, rBucket)
+	}
+
+	// Check rule rendered in PartyRulesView
+	prvRec2 := httptest.NewRecorder()
+	prvCtx2 := e.NewContext(prvReq, prvRec2)
+	prvCtx2.SetParamNames("budgetId", "partyId")
+	prvCtx2.SetParamValues(budgetID, partyID)
+	prvCtx2.Set(ContextBudgetDBKey, tenantDB)
+	prvCtx2.Set(ContextUserIDKey, userID)
+	prvCtx2.Set("csrfToken", "test-token")
+
+	if err := partiesHandler.PartyRulesView(prvCtx2); err != nil {
+		t.Fatalf("PartyRulesView 2 failed: %v", err)
+	}
+	prvBody2 := prvRec2.Body.String()
+	if !strings.Contains(prvBody2, "Match Zabka Merchant") || !strings.Contains(prvBody2, "Groceries") {
+		t.Fatalf("PartyRulesView missing rule details: %s", prvBody2)
+	}
+
+	// 4. Test invalid REGEX fails validation
+	badRegexForm := url.Values{}
+	badRegexForm.Set("name", "Bad Regex Rule")
+	badRegexForm.Set("match_field", "RAW_PAYEE")
+	badRegexForm.Set("match_operator", "REGEX")
+	badRegexForm.Set("match_pattern", "[invalid(")
+
+	badReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/parties/"+partyID+"/rules", strings.NewReader(badRegexForm.Encode()))
+	badReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	badRec := httptest.NewRecorder()
+	badCtx := e.NewContext(badReq, badRec)
+	badCtx.SetParamNames("budgetId", "partyId")
+	badCtx.SetParamValues(budgetID, partyID)
+	badCtx.Set(ContextBudgetDBKey, tenantDB)
+	badCtx.Set(ContextUserIDKey, userID)
+	badCtx.Set("correlationID", domain.NewUUIDv7())
+
+	if err := partiesHandler.CreatePartyRule(badCtx); err == nil {
+		t.Fatalf("expected error creating rule with invalid regex, got nil")
+	}
+
+	// 5. Delete matching rule
+	dReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/parties/"+partyID+"/rules/"+ruleID+"/delete", nil)
+	dRec := httptest.NewRecorder()
+	dCtx := e.NewContext(dReq, dRec)
+	dCtx.SetParamNames("budgetId", "partyId", "ruleId")
+	dCtx.SetParamValues(budgetID, partyID, ruleID)
+	dCtx.Set(ContextBudgetDBKey, tenantDB)
+	dCtx.Set(ContextUserIDKey, userID)
+
+	if err := partiesHandler.DeletePartyRule(dCtx); err != nil {
+		t.Fatalf("DeletePartyRule failed: %v", err)
+	}
+
+	var countCurr, countHist int
+	_ = tenantDB.QueryRow(`SELECT count(*) FROM matching_rules_current WHERE id = ?`, ruleID).Scan(&countCurr)
+	_ = tenantDB.QueryRow(`SELECT count(*) FROM matching_rules WHERE id = ?`, ruleID).Scan(&countHist)
+	if countCurr != 0 || countHist != 0 {
+		t.Fatalf("expected rule to be deleted from both tables, got curr=%d, hist=%d", countCurr, countHist)
+	}
+}
+
 
 
 
