@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/balance/balance/internal/auth"
+	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/logger"
@@ -250,6 +251,9 @@ func TenantAuthzMiddleware(tenantMgr *db.TenantDBManager, minRole string) echo.M
 			if err != nil {
 				return echo.NewHTTPError(http.StatusNotFound, "Tenant database not found")
 			}
+
+			tz, _ := tenantMgr.GetBudgetTimezone(c.Request().Context(), budgetID)
+			_, _ = budget.EnsureDailyTargetsEvaluated(c.Request().Context(), tenantDB, tz)
 
 			c.Set(ContextRoleKey, role)
 			c.Set(ContextBudgetDBKey, tenantDB)

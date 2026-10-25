@@ -940,6 +940,8 @@ type bucketViewData struct {
 	HealthBadge           string           `json:"HealthBadge"`
 	HealthBadgeClass      string           `json:"HealthBadgeClass"`
 	HasP3AtRisk           bool             `json:"HasP3AtRisk"`
+	HasFormulaError       bool             `json:"HasFormulaError"`
+	FormulaErrorMessage   string           `json:"FormulaErrorMessage"`
 	DefaultExpanded       bool             `json:"DefaultExpanded"`
 	ProgressPercent       int              `json:"ProgressPercent"`
 	Targets               []targetViewData `json:"Targets"`
@@ -956,6 +958,7 @@ type targetViewData struct {
 	AmountMinor         int64   `json:"AmountMinor"`
 	LuaScript           *string `json:"LuaScript"`
 	LastFormulaError    *string `json:"LastFormulaError"`
+	UsesRuntime         int     `json:"UsesRuntime"`
 	Currency            string  `json:"Currency"`
 	RecurrenceCadence   string  `json:"RecurrenceCadence"`
 	RecurrenceInterval  int     `json:"RecurrenceInterval"`
@@ -1304,6 +1307,11 @@ func renderBucketRowsDesktop(allBucketsCount int, bucketGroups []bucketGroupView
 				p3RiskBadge = `<span class="badge badge-error badge-outline badge-xs font-bold gap-1" title="Mandatory commitments are at risk"><span>⚠</span><span>P3 at risk</span></span>`
 			}
 
+			formulaErrorBadge := ""
+			if b.HasFormulaError {
+				formulaErrorBadge = fmt.Sprintf(`<span class="badge badge-error badge-outline badge-xs font-bold gap-1 cursor-pointer formula-error-badge" title="%s"><span>⚠</span><span>Formula Error</span></span>`, html.EscapeString(b.FormulaErrorMessage))
+			}
+
 			bufferBadge := ""
 			if b.UnassignedBufferMinor > 0 {
 				bufferBadge = fmt.Sprintf(`<span class="text-[11px] font-mono text-base-content/60">Buffer: <span class="text-success font-semibold">+%.2f %s</span></span>`, float64(b.UnassignedBufferMinor)/100.0, b.Currency)
@@ -1472,6 +1480,7 @@ func renderBucketRowsDesktop(allBucketsCount int, bucketGroups []bucketGroupView
 								<div class="font-bold text-sm flex items-center gap-1.5">
 									<span>%s</span>
 									%s
+									%s
 								</div>
 							</div>
 							<div class="pl-8 flex items-center gap-2 text-xs">
@@ -1515,7 +1524,7 @@ func renderBucketRowsDesktop(allBucketsCount int, bucketGroups []bucketGroupView
 				b.ID, bg.GroupID, b.ID, bg.GroupID, searchAttr,
 				b.ID, ariaExp, b.ID, html.EscapeString(b.Name),
 				b.ID, toggleIcon, statusDot,
-				html.EscapeString(b.Name), p3RiskBadge,
+				html.EscapeString(b.Name), p3RiskBadge, formulaErrorBadge,
 				bufferBadge,
 				b.ProgressPercent, float64(b.TotalFundedMinor)/100.0, float64(b.TotalRequiredMinor)/100.0,
 				bProgClass, b.ProgressPercent, b.ProgressPercent,
@@ -1559,6 +1568,11 @@ func renderBucketCardsMobile(allBucketsCount int, displayBuckets []bucketViewDat
 		p3RiskBadge := ""
 		if b.HasP3AtRisk {
 			p3RiskBadge = `<span class="badge badge-error badge-outline badge-xs font-bold gap-1" title="Mandatory commitments are at risk"><span>⚠</span><span>P3 at risk</span></span>`
+		}
+
+		formulaErrorBadge := ""
+		if b.HasFormulaError {
+			formulaErrorBadge = fmt.Sprintf(`<span class="badge badge-error badge-outline badge-xs font-bold gap-1 cursor-pointer formula-error-badge" title="%s"><span>⚠</span><span>Formula Error</span></span>`, html.EscapeString(b.FormulaErrorMessage))
 		}
 
 		bufferStr := fmt.Sprintf("Buffer: +%.2f %s", float64(b.UnassignedBufferMinor)/100.0, b.Currency)
@@ -1669,7 +1683,10 @@ func renderBucketCardsMobile(allBucketsCount int, displayBuckets []bucketViewDat
 						<div class="flex items-center gap-2 min-w-0">
 							<span class="w-2.5 h-2.5 rounded-full shrink-0 %s"></span>
 							<div>
-								<div class="font-bold text-sm truncate">%s</div>
+								<div class="font-bold text-sm truncate flex items-center gap-1.5">
+									<span>%s</span>
+									%s
+								</div>
 								<div class="text-[11px] text-base-content/50">%s</div>
 							</div>
 						</div>
@@ -1716,7 +1733,7 @@ func renderBucketCardsMobile(allBucketsCount int, displayBuckets []bucketViewDat
 			</div>
 		`,
 			b.ID, b.ID, searchAttr,
-			statusDot, html.EscapeString(b.Name), html.EscapeString(b.GroupName),
+			statusDot, html.EscapeString(b.Name), formulaErrorBadge, html.EscapeString(b.GroupName),
 			b.HealthBadgeClass, b.HealthBadge, p3RiskBadge,
 			availColor, float64(b.BalanceMinor)/100.0, b.Currency,
 			neededColor, float64(b.TotalNeededMinor)/100.0, b.Currency,
@@ -1797,7 +1814,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	targetRows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT id, bucket_id, name, target_type, priority, sort_order, amount_minor, currency,
 		       recurrence_cadence, recurrence_interval, due_date, non_spending_strategy,
-		       ceiling_amount_minor, current_funded_minor, amount_mode, lua_script, last_formula_error
+		       ceiling_amount_minor, current_funded_minor, amount_mode, lua_script, last_formula_error, uses_runtime
 		FROM targets_projection
 		WHERE is_archived = 0
 		ORDER BY priority DESC, due_date ASC, sort_order ASC`)
@@ -1814,7 +1831,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 			targetRows.Scan(&t.ID, &t.BucketID, &t.Name, &t.TargetType, &t.Priority, &t.SortOrder,
 				&t.AmountMinor, &t.Currency, &t.RecurrenceCadence, &rInterval,
 				&dueDate, &t.NonSpendingStrategy, &ceiling, &t.CurrentFundedMinor,
-				&t.AmountMode, &luaScriptNull, &lastErrNull)
+				&t.AmountMode, &luaScriptNull, &lastErrNull, &t.UsesRuntime)
 			if rInterval.Valid {
 				t.RecurrenceInterval = int(rInterval.Int64)
 				t.RecurrenceDays = t.RecurrenceInterval
@@ -1835,8 +1852,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 				t.LastFormulaError = &eVal
 			}
 
-			// Dynamic Lua formula evaluation
-			if snap != nil && t.AmountMode == "LUA_FORMULA" && t.LuaScript != nil && *t.LuaScript != "" {
+			// Dynamic Lua formula evaluation (only for formulas not using runtime, as runtime formulas are evaluated and persisted daily via EnsureDailyTargetsEvaluated)
+			if snap != nil && t.AmountMode == "LUA_FORMULA" && t.UsesRuntime == 0 && t.LuaScript != nil && *t.LuaScript != "" {
 				var anchorDueDateSec *int64
 				if dueDate.Valid && dueDate.Int64 > 0 {
 					sec := dueDate.Int64 / 1_000_000
@@ -1940,7 +1957,15 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		hasUnderfundedP1 := false
 		hasP3Targets := false
 
+		hasFormulaError := false
+		formulaErrMsg := ""
 		for _, t := range b.Targets {
+			if t.LastFormulaError != nil && *t.LastFormulaError != "" {
+				hasFormulaError = true
+				if formulaErrMsg == "" {
+					formulaErrMsg = *t.LastFormulaError
+				}
+			}
 			if t.Currency == defaultCurr {
 				totalReq += t.RequiredMinor
 				totalFunded += t.CurrentFundedMinor
@@ -1961,6 +1986,9 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 				}
 			}
 		}
+
+		b.HasFormulaError = hasFormulaError
+		b.FormulaErrorMessage = formulaErrMsg
 
 		b.TotalRequiredMinor = totalReq
 		b.TotalFundedMinor = totalFunded

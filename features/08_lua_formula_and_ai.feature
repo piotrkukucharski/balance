@@ -82,3 +82,45 @@ Feature: Sandboxed Lua Formula Engine and AI Formula Assistant
       """
     When the Lua sandbox evaluates the target formula with simulated today "2026-10-25"
     Then the result should be 333062 minor units ("3,330.62 PLN")
+
+  Scenario: Automatic daily evaluation of targets using runtime context with DAG ordering
+    Given an open budget "Daily Eval Budget" with timezone "Europe/Warsaw"
+    And an existing bucket "Loans" in group "Fixed"
+    And a target "Base Loan" in bucket "Loans" with Lua formula:
+      """
+      local diff = date.diff_months(self.anchor_due_date, runtime.today)
+      return money(diff * 100)
+      """
+    And anchor due date "2027-10-25"
+    And a dependent target "Loan Surcharge" in bucket "Loans" with Lua formula:
+      """
+      local base = target("Base Loan").required
+      return math.floor(base * 0.10)
+      """
+    When daily targets are evaluated for date "2026-10-25"
+    Then the target "Base Loan" in projections should have uses_runtime flag set to 1
+    And the target "Base Loan" in projections should have required amount "1,200.00 PLN"
+    And the target "Loan Surcharge" in projections should have required amount "120.00 PLN"
+    And the last evaluated timestamp for "Base Loan" should be recorded
+    When daily targets are re-evaluated on the same day "2026-10-25"
+    Then no targets should be recalculated
+    When a new calendar day arrives "2026-11-25"
+    And daily targets are evaluated for date "2026-11-25"
+    Then the target "Base Loan" in projections should have required amount "1,100.00 PLN"
+    And the target "Loan Surcharge" in projections should have required amount "110.00 PLN"
+
+  Scenario: Graceful error handling during daily evaluation and bucket UI error badge
+    Given an open budget "Error Eval Budget" with timezone "Europe/Warsaw"
+    And an existing bucket "Utilities" in group "Fixed"
+    And a target "Heating" in bucket "Utilities" with required amount "500.00 PLN"
+    And a target "Faulty Target" in bucket "Utilities" with initial amount "300.00 PLN" and Lua formula:
+      """
+      local t = runtime.today
+      return target("NonExistentTarget").required
+      """
+    When daily targets are evaluated for date "2026-10-25"
+    Then the target "Faulty Target" in projections should retain its previous amount
+    And the target "Faulty Target" in projections should record formula error "not found in budget"
+    And the last evaluated timestamp for "Faulty Target" should be recorded
+    And viewing the workspace should display a formula error badge on bucket "Utilities"
+

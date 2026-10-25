@@ -86,6 +86,8 @@ type bddTestContext struct {
 	activeTargetName       string
 	activeTargetBucketName string
 	activeTargetDueDate    string
+	lastEvaluatedCount     int
+	lastCreatedTargetID    string
 }
 
 func (tc *bddTestContext) setup() error {
@@ -824,6 +826,275 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		if strings.TrimSpace(script) != strings.TrimSpace(expectedScript.Content) {
 			return fmt.Errorf("expected script %q, got %q", expectedScript.Content, script)
+		}
+		return nil
+	})
+
+	ctx.Step(`^an open budget "([^"]*)" with timezone "([^"]*)"$`, func(budgetName, tz string) error {
+		now := time.Now().UTC().UnixMicro()
+		budgetID := domain.NewUUIDv7()
+		_, err := tc.mainDB.Exec(`
+			INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at)
+			VALUES ('user_1', 'user1@example.com', 'hash', 'User 1', ?, ?)
+			ON CONFLICT(id) DO NOTHING`, now, now)
+		if err != nil {
+			return err
+		}
+		_, err = tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at)
+			VALUES (?, ?, 'PLN', ?, 'user_1', ?, ?)`, budgetID, budgetName, tz, now, now)
+		if err != nil {
+			return err
+		}
+		_, err = tc.mainDB.Exec(`
+			INSERT INTO budget_members (budget_id, user_id, role, joined_at)
+			VALUES (?, 'user_1', 'OWNER', ?)`, budgetID, now)
+		if err != nil {
+			return err
+		}
+		tc.activeBudgetID = budgetID
+		tc.activeUserID = "user_1"
+
+		_, err = tc.tenantMgr.GetTenantDB(budgetID, true)
+		return err
+	})
+
+	createTargetFormulaFunc := func(targetName, bucketName string, formula *godog.DocString) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var bucketID string
+		err = bDB.QueryRow(`SELECT id FROM buckets_projection WHERE name = ?`, bucketName).Scan(&bucketID)
+		if err != nil {
+			return fmt.Errorf("bucket %s not found: %w", bucketName, err)
+		}
+		script := strings.TrimSpace(formula.Content)
+		tID, err := budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:      bucketID,
+			Name:          targetName,
+			Priority:      2,
+			AmountMode:    "LUA_FORMULA",
+			LuaScript:     &script,
+			Currency:      "PLN",
+			AgentID:       tc.activeUserID,
+			CorrelationID: domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		tc.lastCreatedTargetID = tID
+		return nil
+	}
+	ctx.Step(`^a target "([^"]*)" in bucket "([^"]*)" with Lua formula:$`, createTargetFormulaFunc)
+	ctx.Step(`^a dependent target "([^"]*)" in bucket "([^"]*)" with Lua formula:$`, createTargetFormulaFunc)
+	ctx.Step(`^a target "([^"]*)" in bucket "([^"]*)" with initial amount "([^"]*)" and Lua formula:$`, func(targetName, bucketName, amtStr string, formula *godog.DocString) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var bucketID string
+		err = bDB.QueryRow(`SELECT id FROM buckets_projection WHERE name = ?`, bucketName).Scan(&bucketID)
+		if err != nil {
+			return fmt.Errorf("bucket %s not found: %w", bucketName, err)
+		}
+		script := strings.TrimSpace(formula.Content)
+		amt := parseAmountStr(amtStr)
+		tID, err := budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:      bucketID,
+			Name:          targetName,
+			Priority:      2,
+			AmountMode:    "LUA_FORMULA",
+			AmountMinor:   amt,
+			LuaScript:     &script,
+			Currency:      "PLN",
+			AgentID:       tc.activeUserID,
+			CorrelationID: domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		tc.lastCreatedTargetID = tID
+		return nil
+	})
+
+	ctx.Step(`^anchor due date "([^"]*)"$`, func(dueDateStr string) error {
+		if tc.lastCreatedTargetID == "" {
+			return errors.New("no recently created target to set anchor due date")
+		}
+		t, err := time.Parse("2006-01-02", dueDateStr)
+		if err != nil {
+			return err
+		}
+		dueMicros := t.UnixMicro()
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		_, err = bDB.Exec(`UPDATE targets_projection SET due_date = ? WHERE id = ?`, dueMicros, tc.lastCreatedTargetID)
+		return err
+	})
+
+	ctx.Step(`^a target "([^"]*)" in bucket "([^"]*)" with required amount "([^"]*)"$`, func(targetName, bucketName, amtStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var bucketID string
+		err = bDB.QueryRow(`SELECT id FROM buckets_projection WHERE name = ?`, bucketName).Scan(&bucketID)
+		if err != nil {
+			return fmt.Errorf("bucket %s not found: %w", bucketName, err)
+		}
+		amt := parseAmountStr(amtStr)
+		tID, err := budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:      bucketID,
+			Name:          targetName,
+			Priority:      2,
+			AmountMode:    "FIXED",
+			AmountMinor:   amt,
+			Currency:      "PLN",
+			AgentID:       tc.activeUserID,
+			CorrelationID: domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		tc.lastCreatedTargetID = tID
+		return nil
+	})
+
+	evalDailyTargets := func(dateStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		tz, err := tc.tenantMgr.GetBudgetTimezone(context.Background(), tc.activeBudgetID)
+		if err != nil {
+			tz = "Europe/Warsaw"
+		}
+		t, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			return err
+		}
+		count, err := budget.EnsureDailyTargetsEvaluated(context.Background(), bDB, tz, t)
+		tc.lastEvaluatedCount = count
+		return err
+	}
+	ctx.Step(`^daily targets are evaluated for date "([^"]*)"$`, evalDailyTargets)
+	ctx.Step(`^daily targets are re-evaluated on the same day "([^"]*)"$`, evalDailyTargets)
+
+	ctx.Step(`^the target "([^"]*)" in projections should have uses_runtime flag set to (\d+)$`, func(targetName string, expectedUses int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var usesRuntime int
+		err = bDB.QueryRow(`SELECT uses_runtime FROM targets_projection WHERE name = ?`, targetName).Scan(&usesRuntime)
+		if err != nil {
+			return err
+		}
+		if usesRuntime != expectedUses {
+			return fmt.Errorf("expected uses_runtime=%d for target %s, got %d", expectedUses, targetName, usesRuntime)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the target "([^"]*)" in projections should have required amount "([^"]*)"$`, func(targetName, amtStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		expectedMinor := parseAmountStr(amtStr)
+		var actualMinor int64
+		err = bDB.QueryRow(`SELECT amount_minor FROM targets_projection WHERE name = ?`, targetName).Scan(&actualMinor)
+		if err != nil {
+			return err
+		}
+		if actualMinor != expectedMinor {
+			return fmt.Errorf("expected amount_minor=%d for target %s, got %d", expectedMinor, targetName, actualMinor)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the last evaluated timestamp for "([^"]*)" should be recorded$`, func(targetName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var lastEval sql.NullInt64
+		err = bDB.QueryRow(`SELECT last_evaluated_at FROM targets_projection WHERE name = ?`, targetName).Scan(&lastEval)
+		if err != nil {
+			return err
+		}
+		if !lastEval.Valid || lastEval.Int64 == 0 {
+			return fmt.Errorf("expected last_evaluated_at to be populated for %s", targetName)
+		}
+		return nil
+	})
+
+	ctx.Step(`^no targets should be recalculated$`, func() error {
+		if tc.lastEvaluatedCount != 0 {
+			return fmt.Errorf("expected 0 targets recalculated, got %d", tc.lastEvaluatedCount)
+		}
+		return nil
+	})
+
+	ctx.Step(`^a new calendar day arrives "([^"]*)"$`, func(dateStr string) error {
+		return nil
+	})
+
+	ctx.Step(`^the target "([^"]*)" in projections should retain its previous amount$`, func(targetName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var actualMinor int64
+		err = bDB.QueryRow(`SELECT amount_minor FROM targets_projection WHERE name = ?`, targetName).Scan(&actualMinor)
+		if err != nil {
+			return err
+		}
+		if actualMinor <= 0 {
+			return fmt.Errorf("expected target %s to retain positive previous amount, got %d", targetName, actualMinor)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the target "([^"]*)" in projections should record formula error "([^"]*)"$`, func(targetName, errSubstr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var lastErr sql.NullString
+		err = bDB.QueryRow(`SELECT last_formula_error FROM targets_projection WHERE name = ?`, targetName).Scan(&lastErr)
+		if err != nil {
+			return err
+		}
+		if !lastErr.Valid || !strings.Contains(lastErr.String, errSubstr) {
+			return fmt.Errorf("expected last_formula_error for %s to contain %q, got %q", targetName, errSubstr, lastErr.String)
+		}
+		return nil
+	})
+
+	ctx.Step(`^viewing the workspace should display a formula error badge on bucket "([^"]*)"$`, func(bucketName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		reqView := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/budgets/%s/budget", tc.activeBudgetID), nil)
+		recView := httptest.NewRecorder()
+		cView := tc.echoEngine.NewContext(reqView, recView)
+		cView.SetParamNames("budgetId")
+		cView.SetParamValues(tc.activeBudgetID)
+		cView.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		cView.Set(handlers.ContextRoleKey, "OWNER")
+		cView.Set(handlers.ContextBudgetDBKey, bDB)
+		if err := tc.workspaceHandler.BudgetView(cView); err != nil {
+			return err
+		}
+		tc.lastResponse = recView
+		body := recView.Body.String()
+		if !strings.Contains(body, "formula-error-badge") && !strings.Contains(body, "Formula Error") {
+			return fmt.Errorf("expected formula error badge in budget view for bucket %s", bucketName)
 		}
 		return nil
 	})

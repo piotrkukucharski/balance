@@ -237,11 +237,14 @@ CREATE TABLE IF NOT EXISTS targets_projection (
     is_archived INTEGER NOT NULL DEFAULT 0,
     version INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
+    last_evaluated_at INTEGER,
+    uses_runtime INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (bucket_id) REFERENCES buckets_projection(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_targets_proj_bucket ON targets_projection(bucket_id);
 CREATE INDEX IF NOT EXISTS idx_targets_proj_priority ON targets_projection(priority DESC, due_date ASC, sort_order ASC);
+CREATE INDEX IF NOT EXISTS idx_targets_runtime_eval ON targets_projection(uses_runtime, last_evaluated_at);
 
 -- 9. Synchronous *_current Read Projections for Append-Only Tables (10-Year Scale Optimization)
 CREATE TABLE IF NOT EXISTS parties_current (

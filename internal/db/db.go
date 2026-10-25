@@ -358,6 +358,25 @@ func (m *TenantDBManager) CloseAll() {
 	logger.Info(ctx, "All tenant database connections closed", "closed_count", count)
 }
 
+// GetBudgetTimezone retrieves the configured IANA timezone for a budget, or "UTC" as default.
+func (m *TenantDBManager) GetBudgetTimezone(ctx context.Context, budgetID string) (string, error) {
+	if m.mainDB == nil {
+		return "UTC", nil
+	}
+	var tz string
+	err := m.mainDB.QueryRowContext(ctx, "SELECT timezone FROM budgets WHERE id = ?", budgetID).Scan(&tz)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "UTC", nil
+		}
+		return "UTC", err
+	}
+	if tz == "" {
+		return "UTC", nil
+	}
+	return tz, nil
+}
+
 func ensureTenantSchemaCompat(ctx context.Context, db *sql.DB) error {
 	var tableCount int
 	_ = db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='raw_transactions_current'").Scan(&tableCount)
@@ -461,6 +480,24 @@ func ensureTenantSchemaCompat(ctx context.Context, db *sql.DB) error {
 				      WHERE COALESCE(bcb.balance_minor, 0) <= 0
 				  );
 			`)
+		}
+
+		var hasLastEvaluatedAt int
+		_ = db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('targets_projection') WHERE name = 'last_evaluated_at'").Scan(&hasLastEvaluatedAt)
+		if hasLastEvaluatedAt == 0 {
+			if _, err := db.ExecContext(ctx, "ALTER TABLE targets_projection ADD COLUMN last_evaluated_at INTEGER"); err != nil {
+				logger.Error(ctx, "Failed adding last_evaluated_at to targets_projection", "error", err.Error())
+			}
+		}
+
+		var hasUsesRuntime int
+		_ = db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('targets_projection') WHERE name = 'uses_runtime'").Scan(&hasUsesRuntime)
+		if hasUsesRuntime == 0 {
+			if _, err := db.ExecContext(ctx, "ALTER TABLE targets_projection ADD COLUMN uses_runtime INTEGER NOT NULL DEFAULT 0"); err != nil {
+				logger.Error(ctx, "Failed adding uses_runtime to targets_projection", "error", err.Error())
+			}
+			_, _ = db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_targets_runtime_eval ON targets_projection(uses_runtime, last_evaluated_at)")
+			_, _ = db.ExecContext(ctx, "UPDATE targets_projection SET uses_runtime = 1 WHERE (lua_script LIKE '%runtime.%' OR lua_script LIKE '%runtime%') AND uses_runtime = 0")
 		}
 	}
 

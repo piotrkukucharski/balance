@@ -291,6 +291,17 @@ func ArchiveBucket(ctx context.Context, tenantDB *sql.DB, bucketID, agentID, cor
 	return tx.Commit()
 }
 
+// DetectUsesRuntime analyzes lua script for references to runtime context (e.g. runtime.today).
+func DetectUsesRuntime(amountMode string, luaScript *string) int {
+	if amountMode != "LUA_FORMULA" || luaScript == nil || *luaScript == "" {
+		return 0
+	}
+	if strings.Contains(*luaScript, "runtime.") || strings.Contains(*luaScript, "runtime") {
+		return 1
+	}
+	return 0
+}
+
 // CreateTarget creates a new target within a bucket.
 func CreateTarget(ctx context.Context, tenantDB *sql.DB, input CreateTargetInput) (string, error) {
 	if input.AmountMode == "LUA_FORMULA" && input.LuaScript != nil && *input.LuaScript != "" {
@@ -401,6 +412,7 @@ func CreateTargetTx(ctx context.Context, tx *sql.Tx, input CreateTargetInput) (s
 	now := time.Now().UTC().UnixMicro()
 	targetID := domain.NewUUIDv7()
 	eventID := domain.NewUUIDv7()
+	usesRuntime := DetectUsesRuntime(input.AmountMode, input.LuaScript)
 
 	payload, err := json.Marshal(map[string]any{
 		"target_id":             targetID,
@@ -418,6 +430,7 @@ func CreateTargetTx(ctx context.Context, tx *sql.Tx, input CreateTargetInput) (s
 		"due_date":              input.DueDate,
 		"non_spending_strategy": input.NonSpendingStrategy,
 		"ceiling_amount_minor":  input.CeilingAmountMinor,
+		"uses_runtime":          usesRuntime,
 	})
 	if err != nil {
 		return "", err
@@ -436,11 +449,12 @@ func CreateTargetTx(ctx context.Context, tx *sql.Tx, input CreateTargetInput) (s
 		INSERT INTO targets_projection (
 			id, bucket_id, name, target_type, priority, sort_order, amount_mode, amount_minor,
 			lua_script, currency, recurrence_cadence, recurrence_interval, due_date, non_spending_strategy,
-			ceiling_amount_minor, current_funded_minor, is_archived, version, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?)`,
+			ceiling_amount_minor, current_funded_minor, is_archived, version, updated_at,
+			last_evaluated_at, uses_runtime
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?, NULL, ?)`,
 		targetID, input.BucketID, input.Name, input.TargetType, input.Priority, input.SortOrder,
 		input.AmountMode, input.AmountMinor, input.LuaScript, input.Currency, input.RecurrenceCadence,
-		rInterval, input.DueDate, input.NonSpendingStrategy, input.CeilingAmountMinor, now,
+		rInterval, input.DueDate, input.NonSpendingStrategy, input.CeilingAmountMinor, now, usesRuntime,
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed inserting targets_projection: %w", err)
@@ -538,6 +552,7 @@ func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput
 	now := time.Now().UTC().UnixMicro()
 	newVersion := currentVersion + 1
 	eventID := domain.NewUUIDv7()
+	usesRuntime := DetectUsesRuntime(input.AmountMode, input.LuaScript)
 
 	payload, err := json.Marshal(map[string]any{
 		"target_id":             input.ID,
@@ -553,6 +568,7 @@ func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput
 		"due_date":              input.DueDate,
 		"non_spending_strategy": input.NonSpendingStrategy,
 		"ceiling_amount_minor":  input.CeilingAmountMinor,
+		"uses_runtime":          usesRuntime,
 	})
 	if err != nil {
 		return err
@@ -571,11 +587,11 @@ func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput
 		UPDATE targets_projection
 		SET name = ?, target_type = ?, priority = ?, sort_order = ?, amount_mode = ?, amount_minor = ?,
 		    lua_script = ?, recurrence_cadence = ?, recurrence_interval = ?, due_date = ?, non_spending_strategy = ?,
-		    ceiling_amount_minor = ?, version = ?, updated_at = ?
+		    ceiling_amount_minor = ?, version = ?, updated_at = ?, uses_runtime = ?
 		WHERE id = ?`,
 		input.Name, input.TargetType, input.Priority, input.SortOrder, input.AmountMode, input.AmountMinor,
 		input.LuaScript, input.RecurrenceCadence, rInterval, input.DueDate, input.NonSpendingStrategy,
-		input.CeilingAmountMinor, newVersion, now, input.ID,
+		input.CeilingAmountMinor, newVersion, now, usesRuntime, input.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed updating targets_projection: %w", err)

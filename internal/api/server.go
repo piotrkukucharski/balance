@@ -122,6 +122,9 @@ func (s *Server) verifyBudgetAccess(ctx echo.Context, budgetID string, minRole s
 		return nil, "", echo.NewHTTPError(http.StatusInternalServerError, "Failed opening budget DB")
 	}
 
+	tz, _ := s.tenantMgr.GetBudgetTimezone(ctx.Request().Context(), budgetID)
+	_, _ = budget.EnsureDailyTargetsEvaluated(ctx.Request().Context(), tenantDB, tz)
+
 	return tenantDB, userID, nil
 }
 
