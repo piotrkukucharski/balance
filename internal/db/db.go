@@ -445,6 +445,23 @@ func ensureTenantSchemaCompat(ctx context.Context, db *sql.DB) error {
 				logger.Info(ctx, "Successfully migrated targets_projection schema to recurrence_interval")
 			}
 		}
+
+		// Reconcile targets whose envelope balance is zero or less.
+		// If an envelope has <= 0 balance in that currency, active targets cannot have positive current_funded_minor.
+		var hasBucketBalances int
+		_ = db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='bucket_currency_balances'").Scan(&hasBucketBalances)
+		if hasBucketBalances > 0 {
+			_, _ = db.ExecContext(ctx, `
+				UPDATE targets_projection
+				SET current_funded_minor = 0, updated_at = cast(strftime('%s', 'now') as integer) * 1000000
+				WHERE current_funded_minor > 0
+				  AND bucket_id IN (
+				      SELECT b.id FROM buckets_projection b
+				      LEFT JOIN bucket_currency_balances bcb ON b.id = bcb.bucket_id AND bcb.currency = targets_projection.currency
+				      WHERE COALESCE(bcb.balance_minor, 0) <= 0
+				  );
+			`)
+		}
 	}
 	return nil
 }

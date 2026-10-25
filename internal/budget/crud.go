@@ -648,38 +648,12 @@ func AssignFunds(ctx context.Context, tenantDB *sql.DB, input AssignFundsInput) 
 			return fmt.Errorf("failed updating target current_funded_minor: %w", err)
 		}
 	} else if input.AmountMinor > 0 {
-		// Waterfall funding over active targets of this bucket in matching currency
-		rows, err := tx.QueryContext(ctx, `
-			SELECT id, priority, sort_order, amount_minor, recurrence_cadence, recurrence_interval,
-			       due_date, non_spending_strategy, current_funded_minor
-			FROM targets_projection
-			WHERE bucket_id = ? AND currency = ? AND is_archived = 0
-			ORDER BY priority DESC, due_date ASC, sort_order ASC`, input.BucketID, input.Currency)
-		if err == nil {
-			var targets []*TargetDefinition
-			for rows.Next() {
-				var t TargetDefinition
-				var dueDate sql.NullInt64
-				var rInterval sql.NullInt64
-				rows.Scan(&t.ID, &t.Priority, &t.SortOrder, &t.AmountMinor, &t.RecurrenceCadence,
-					&rInterval, &dueDate, &t.NonSpendingStrategy, &t.CurrentFundedMinor)
-				if rInterval.Valid {
-					t.RecurrenceInterval = int(rInterval.Int64)
-				}
-				if dueDate.Valid {
-					t.DueDate = dueDate.Int64
-				}
-				targets = append(targets, &t)
-			}
-			rows.Close()
-
-			allocs, _ := PriorityAutoAssign(targets, 30, time.Now().UTC(), input.AmountMinor)
-			for _, alloc := range allocs {
-				_, _ = tx.ExecContext(ctx, `
-					UPDATE targets_projection
-					SET current_funded_minor = current_funded_minor + ?, updated_at = ?
-					WHERE id = ?`, alloc.Assigned, now, alloc.TargetID)
-			}
+		if err := waterfallAssignBucketTargetsTx(ctx, tx, input.BucketID, input.Currency, input.AmountMinor, now); err != nil {
+			return fmt.Errorf("failed waterfall assigning targets: %w", err)
+		}
+	} else if input.AmountMinor < 0 {
+		if err := unassignBucketTargetsTx(ctx, tx, input.BucketID, input.Currency, now); err != nil {
+			return fmt.Errorf("failed unassigning targets: %w", err)
 		}
 	}
 
@@ -706,6 +680,133 @@ func AssignFunds(ctx context.Context, tenantDB *sql.DB, input AssignFundsInput) 
 	_, _ = tx.ExecContext(ctx, `UPDATE buckets_projection SET version = ?, updated_at = ? WHERE id = ?`, nextVer, now, input.BucketID)
 
 	return tx.Commit()
+}
+
+// unassignBucketTargetsTx reduces current_funded_minor of targets in a bucket so that total funded <= max(0, bucketBalance).
+// Targets are defunded in reverse priority order (lowest priority / furthest due date first).
+func unassignBucketTargetsTx(ctx context.Context, tx *sql.Tx, bucketID, currency string, now int64) error {
+	var bal int64
+	err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(balance_minor, 0)
+		FROM bucket_currency_balances
+		WHERE bucket_id = ? AND currency = ?`, bucketID, currency).Scan(&bal)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if bal < 0 {
+		bal = 0
+	}
+
+	var totalFunded int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(current_funded_minor), 0)
+		FROM targets_projection
+		WHERE bucket_id = ? AND currency = ? AND is_archived = 0`, bucketID, currency).Scan(&totalFunded)
+	if err != nil {
+		return err
+	}
+
+	if totalFunded <= bal {
+		return nil
+	}
+
+	toDefund := totalFunded - bal
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, current_funded_minor
+		FROM targets_projection
+		WHERE bucket_id = ? AND currency = ? AND is_archived = 0 AND current_funded_minor > 0
+		ORDER BY priority ASC, due_date DESC, sort_order DESC`, bucketID, currency)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type targetItem struct {
+		id     string
+		funded int64
+	}
+	var items []targetItem
+	for rows.Next() {
+		var item targetItem
+		if err := rows.Scan(&item.id, &item.funded); err == nil {
+			items = append(items, item)
+		}
+	}
+	rows.Close()
+
+	for _, t := range items {
+		if toDefund <= 0 {
+			break
+		}
+		deduct := t.funded
+		if deduct > toDefund {
+			deduct = toDefund
+		}
+		if deduct > 0 {
+			_, err = tx.ExecContext(ctx, `
+				UPDATE targets_projection
+				SET current_funded_minor = current_funded_minor - ?, updated_at = ?
+				WHERE id = ?`, deduct, now, t.id)
+			if err != nil {
+				return err
+			}
+			toDefund -= deduct
+		}
+	}
+	return nil
+}
+
+// waterfallAssignBucketTargetsTx waterfall-funds active targets in a bucket up to amountMinor.
+func waterfallAssignBucketTargetsTx(ctx context.Context, tx *sql.Tx, bucketID, currency string, amountMinor int64, now int64) error {
+	if amountMinor <= 0 {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, priority, sort_order, amount_minor, recurrence_cadence, recurrence_interval,
+		       due_date, non_spending_strategy, current_funded_minor
+		FROM targets_projection
+		WHERE bucket_id = ? AND currency = ? AND is_archived = 0
+		ORDER BY priority DESC, due_date ASC, sort_order ASC`, bucketID, currency)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var targets []*TargetDefinition
+	for rows.Next() {
+		var t TargetDefinition
+		var dueDate sql.NullInt64
+		var rInterval sql.NullInt64
+		rows.Scan(&t.ID, &t.Priority, &t.SortOrder, &t.AmountMinor, &t.RecurrenceCadence,
+			&rInterval, &dueDate, &t.NonSpendingStrategy, &t.CurrentFundedMinor)
+		if rInterval.Valid {
+			t.RecurrenceInterval = int(rInterval.Int64)
+		}
+		if dueDate.Valid {
+			t.DueDate = dueDate.Int64
+		}
+		targets = append(targets, &t)
+	}
+	rows.Close()
+
+	if len(targets) == 0 {
+		return nil
+	}
+
+	allocs, _ := PriorityAutoAssign(targets, 30, time.Now().UTC(), amountMinor)
+	for _, alloc := range allocs {
+		if alloc.Assigned <= 0 {
+			continue
+		}
+		_, err = tx.ExecContext(ctx, `
+			UPDATE targets_projection
+			SET current_funded_minor = current_funded_minor + ?, updated_at = ?
+			WHERE id = ?`, alloc.Assigned, now, alloc.TargetID)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // MoveFunds transfers funds directly between two envelopes.
@@ -766,6 +867,16 @@ func MoveFunds(ctx context.Context, tenantDB *sql.DB, input MoveFundsInput) erro
 		return err
 	}
 
+	// Defund source targets if source bucket balance fell below total target funding
+	if err := unassignBucketTargetsTx(ctx, tx, input.SourceBucketID, input.Currency, now); err != nil {
+		return fmt.Errorf("failed unassigning source bucket targets: %w", err)
+	}
+
+	// Waterfall fund destination targets with the incoming money
+	if err := waterfallAssignBucketTargetsTx(ctx, tx, input.DestBucketID, input.Currency, input.AmountMinor, now); err != nil {
+		return fmt.Errorf("failed assigning dest bucket targets: %w", err)
+	}
+
 	payload, _ := json.Marshal(map[string]any{
 		"source_bucket_id": input.SourceBucketID,
 		"dest_bucket_id":   input.DestBucketID,
@@ -787,6 +898,10 @@ func MoveFunds(ctx context.Context, tenantDB *sql.DB, input MoveFundsInput) erro
 	}
 
 	_, _ = tx.ExecContext(ctx, `UPDATE buckets_projection SET version = ?, updated_at = ? WHERE id = ?`, nextVer, now, input.SourceBucketID)
+
+	var dstVer int
+	_ = tx.QueryRowContext(ctx, `SELECT version FROM buckets_projection WHERE id = ?`, input.DestBucketID).Scan(&dstVer)
+	_, _ = tx.ExecContext(ctx, `UPDATE buckets_projection SET version = ?, updated_at = ? WHERE id = ?`, dstVer+1, now, input.DestBucketID)
 
 	return tx.Commit()
 }

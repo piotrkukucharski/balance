@@ -2770,6 +2770,25 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return err
 	})
 
+	ctx.Step(`^I add an optional target "([^"]*)" with priority (\d+), cadence "([^"]*)", amount "([^"]*)"$`, func(name string, prio int, cadence, amt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		_, err = budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:          activeBucketID,
+			Name:              name,
+			TargetType:        "EXPENSE",
+			Priority:          prio,
+			AmountMinor:       parseAmountStr(amt),
+			Currency:          "PLN",
+			RecurrenceCadence: cadence,
+			AgentID:           tc.activeUserID,
+			CorrelationID:     domain.NewUUIDv7(),
+		})
+		return err
+	})
+
 	ctx.Step(`^I add a target "([^"]*)" with priority (\d+), cadence "([^"]*)", recurrence days (\d+), amount "([^"]*)"$`, func(name string, prio int, cadence string, rDays int, amt string) error {
 		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
 		if err != nil {
@@ -3008,14 +3027,64 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 			return err
 		}
 		amt := parseAmountStr(amtStr)
+		bID := activeBucketID
+		if bucketName != "" {
+			var resolvedID string
+			if err := bDB.QueryRow(`SELECT id FROM buckets_projection WHERE name = ? AND is_archived = 0`, bucketName).Scan(&resolvedID); err == nil && resolvedID != "" {
+				bID = resolvedID
+			}
+		}
 		// Returning funds from bucket to pool is negative assignment
 		return budget.AssignFunds(context.Background(), bDB, budget.AssignFundsInput{
-			BucketID:      activeBucketID,
+			BucketID:      bID,
 			Currency:      "PLN",
 			AmountMinor:   -amt,
 			AgentID:       tc.activeUserID,
 			CorrelationID: domain.NewUUIDv7(),
 		})
+	})
+
+	ctx.Step(`^I move "([^"]*)" from bucket "([^"]*)" to bucket "([^"]*)"$`, func(amtStr, srcName, dstName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		amt := parseAmountStr(amtStr)
+		var srcID, dstID string
+		if err := bDB.QueryRow(`SELECT id FROM buckets_projection WHERE name = ? AND is_archived = 0`, srcName).Scan(&srcID); err != nil {
+			return fmt.Errorf("source bucket %s not found: %w", srcName, err)
+		}
+		if err := bDB.QueryRow(`SELECT id FROM buckets_projection WHERE name = ? AND is_archived = 0`, dstName).Scan(&dstID); err != nil {
+			return fmt.Errorf("dest bucket %s not found: %w", dstName, err)
+		}
+		return budget.MoveFunds(context.Background(), bDB, budget.MoveFundsInput{
+			SourceBucketID: srcID,
+			DestBucketID:   dstID,
+			Currency:       "PLN",
+			AmountMinor:    amt,
+			AgentID:        tc.activeUserID,
+			CorrelationID:  domain.NewUUIDv7(),
+		})
+	})
+
+	ctx.Step(`^target "([^"]*)" in bucket "([^"]*)" should have funded amount "([^"]*)"$`, func(targetName, bucketName, expectedAmt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var funded int64
+		err = bDB.QueryRow(`
+			SELECT t.current_funded_minor
+			FROM targets_projection t
+			JOIN buckets_projection b ON t.bucket_id = b.id
+			WHERE t.name = ? AND b.name = ? AND t.is_archived = 0 AND b.is_archived = 0`, targetName, bucketName).Scan(&funded)
+		if err != nil {
+			return fmt.Errorf("failed fetching funded amount for target %s in bucket %s: %w", targetName, bucketName, err)
+		}
+		if funded != parseAmountStr(expectedAmt) {
+			return fmt.Errorf("expected target %s in bucket %s to have funded %d, got %d", targetName, bucketName, parseAmountStr(expectedAmt), funded)
+		}
+		return nil
 	})
 
 	ctx.Step(`^I archive bucket "([^"]*)"$`, func(bucketName string) error {
@@ -3200,16 +3269,24 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 			return err
 		}
 		amt := parseAmountStr(amtStr)
+		bID := activeBucketID
+		if bucketName != "" {
+			var resolvedID string
+			if err := bDB.QueryRow(`SELECT id FROM buckets_projection WHERE name = ? AND is_archived = 0`, bucketName).Scan(&resolvedID); err == nil && resolvedID != "" {
+				bID = resolvedID
+				activeBucketID = resolvedID
+			}
+		}
 		form := url.Values{}
 		form.Set("currency", "PLN")
 		form.Set("amount", fmt.Sprintf("%.2f", float64(amt)/100.0))
 
-		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/buckets/%s/assign", tc.activeBudgetID, activeBucketID), strings.NewReader(form.Encode()))
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/buckets/%s/assign", tc.activeBudgetID, bID), strings.NewReader(form.Encode()))
 		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
 		rec := httptest.NewRecorder()
 		c := tc.echoEngine.NewContext(req, rec)
 		c.SetParamNames("budgetId", "id")
-		c.SetParamValues(tc.activeBudgetID, activeBucketID)
+		c.SetParamValues(tc.activeBudgetID, bID)
 		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
 		c.Set("correlationID", domain.NewUUIDv7())
 		c.Set(handlers.ContextBudgetDBKey, bDB)
@@ -3238,13 +3315,20 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		if err != nil {
 			return err
 		}
+		bID := activeBucketID
+		if bucketName != "" {
+			var resolvedID string
+			if err := bDB.QueryRow(`SELECT id FROM buckets_projection WHERE name = ? AND is_archived = 0`, bucketName).Scan(&resolvedID); err == nil && resolvedID != "" {
+				bID = resolvedID
+			}
+		}
 		var bal int64
-		err = bDB.QueryRow(`SELECT balance_minor FROM bucket_currency_balances WHERE bucket_id = ? AND currency = 'PLN'`, activeBucketID).Scan(&bal)
-		if err != nil {
+		err = bDB.QueryRow(`SELECT COALESCE(balance_minor, 0) FROM bucket_currency_balances WHERE bucket_id = ? AND currency = 'PLN'`, bID).Scan(&bal)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		if bal != parseAmountStr(expectedAmt) {
-			return fmt.Errorf("expected bucket balance %d, got %d", parseAmountStr(expectedAmt), bal)
+			return fmt.Errorf("expected bucket %s balance %d, got %d", bucketName, parseAmountStr(expectedAmt), bal)
 		}
 		return nil
 	})

@@ -216,3 +216,150 @@ func TestReadyToAssignAndFunding(t *testing.T) {
 		t.Fatalf("archiving bucket failed: %v", err)
 	}
 }
+
+func TestAssignFundsReverseWaterfallAndMoveFunds(t *testing.T) {
+	ctx := context.Background()
+	tenantDB := setupTestTenantDB(t)
+	defer tenantDB.Close()
+
+	agentID := domain.NewUUIDv7()
+	correlationID := domain.NewUUIDv7()
+
+	b1, err := CreateBucket(ctx, tenantDB, CreateBucketInput{
+		GroupName:     "Needs",
+		Name:          "Insurance & Bills",
+		AgentID:       agentID,
+		CorrelationID: correlationID,
+	})
+	if err != nil {
+		t.Fatalf("failed creating bucket 1: %v", err)
+	}
+
+	tMandatory, err := CreateTarget(ctx, tenantDB, CreateTargetInput{
+		BucketID:          b1,
+		Name:              "Home Insurance",
+		Priority:          3,
+		AmountMinor:       60000, // 600.00 PLN
+		Currency:          "PLN",
+		RecurrenceCadence: CadenceAnnual,
+		AgentID:           agentID,
+		CorrelationID:     correlationID,
+	})
+	if err != nil {
+		t.Fatalf("failed creating mandatory target: %v", err)
+	}
+
+	tOptional, err := CreateTarget(ctx, tenantDB, CreateTargetInput{
+		BucketID:          b1,
+		Name:              "Gadget Insurance",
+		Priority:          1,
+		AmountMinor:       20000, // 200.00 PLN
+		Currency:          "PLN",
+		RecurrenceCadence: CadenceMonthly,
+		AgentID:           agentID,
+		CorrelationID:     correlationID,
+	})
+	if err != nil {
+		t.Fatalf("failed creating optional target: %v", err)
+	}
+
+	// 1. Assign 800 PLN to bucket
+	err = AssignFunds(ctx, tenantDB, AssignFundsInput{
+		BucketID:      b1,
+		Currency:      "PLN",
+		AmountMinor:   80000,
+		AgentID:       agentID,
+		CorrelationID: correlationID,
+	})
+	if err != nil {
+		t.Fatalf("failed assigning 800 PLN: %v", err)
+	}
+
+	var mFunded, oFunded int64
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, tMandatory).Scan(&mFunded)
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, tOptional).Scan(&oFunded)
+	if mFunded != 60000 || oFunded != 20000 {
+		t.Fatalf("expected 60000 & 20000, got %d & %d", mFunded, oFunded)
+	}
+
+	// 2. Unassign 200 PLN (negative AssignFunds) -> lower priority target should lose funding first
+	err = AssignFunds(ctx, tenantDB, AssignFundsInput{
+		BucketID:      b1,
+		Currency:      "PLN",
+		AmountMinor:   -20000,
+		AgentID:       agentID,
+		CorrelationID: correlationID,
+	})
+	if err != nil {
+		t.Fatalf("failed unassigning 200 PLN: %v", err)
+	}
+
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, tMandatory).Scan(&mFunded)
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, tOptional).Scan(&oFunded)
+	if mFunded != 60000 || oFunded != 0 {
+		t.Fatalf("expected mandatory=60000 & optional=0 after 200 PLN unassign, got mandatory=%d & optional=%d", mFunded, oFunded)
+	}
+
+	// 3. Unassign remaining 600 PLN -> mandatory target should become 0
+	err = AssignFunds(ctx, tenantDB, AssignFundsInput{
+		BucketID:      b1,
+		Currency:      "PLN",
+		AmountMinor:   -60000,
+		AgentID:       agentID,
+		CorrelationID: correlationID,
+	})
+	if err != nil {
+		t.Fatalf("failed unassigning 600 PLN: %v", err)
+	}
+
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, tMandatory).Scan(&mFunded)
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, tOptional).Scan(&oFunded)
+	if mFunded != 0 || oFunded != 0 {
+		t.Fatalf("expected both 0 after full unassign, got mandatory=%d & optional=%d", mFunded, oFunded)
+	}
+
+	// 4. Test MoveFunds: assign 500 PLN to b1, then move to b2
+	_ = AssignFunds(ctx, tenantDB, AssignFundsInput{
+		BucketID:      b1,
+		Currency:      "PLN",
+		AmountMinor:   50000,
+		AgentID:       agentID,
+		CorrelationID: correlationID,
+	})
+
+	b2, _ := CreateBucket(ctx, tenantDB, CreateBucketInput{
+		GroupName:     "Needs",
+		Name:          "Emergency",
+		AgentID:       agentID,
+		CorrelationID: correlationID,
+	})
+	tDest, _ := CreateTarget(ctx, tenantDB, CreateTargetInput{
+		BucketID:          b2,
+		Name:              "Buffer",
+		Priority:          3,
+		AmountMinor:       50000,
+		Currency:          "PLN",
+		RecurrenceCadence: CadenceMonthly,
+		AgentID:           agentID,
+		CorrelationID:     correlationID,
+	})
+
+	err = MoveFunds(ctx, tenantDB, MoveFundsInput{
+		SourceBucketID: b1,
+		DestBucketID:   b2,
+		Currency:       "PLN",
+		AmountMinor:    50000,
+		AgentID:        agentID,
+		CorrelationID:  correlationID,
+	})
+	if err != nil {
+		t.Fatalf("failed moving funds: %v", err)
+	}
+
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, tMandatory).Scan(&mFunded)
+	var dFunded int64
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, tDest).Scan(&dFunded)
+	if mFunded != 0 || dFunded != 50000 {
+		t.Fatalf("expected source target=0, dest target=50000, got src=%d dst=%d", mFunded, dFunded)
+	}
+}

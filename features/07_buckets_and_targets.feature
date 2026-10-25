@@ -81,3 +81,41 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     And target "Dining Out" should receive "0.00 PLN"
     And target "Gadgets" should receive "0.00 PLN"
     And the unallocated pool should be reduced to "0.00 PLN"
+
+  Scenario: Reverse-waterfall unassigning funds from bucket reduces target funded amount
+    Given an open budget "Family Home" with "5,000.00 PLN" in checking account
+    When I create a bucket "Home Insurance" in group "Needs"
+    And I add a mandatory target "Home Coverage" with priority 3, cadence "ANNUAL", amount "600.00 PLN"
+    And I assign "600.00 PLN" from ready to assign to bucket "Home Insurance"
+    Then the bucket "Home Insurance" balance should be "600.00 PLN"
+    And target "Home Coverage" in bucket "Home Insurance" should have funded amount "600.00 PLN"
+    When I move "600.00 PLN" from bucket "Home Insurance" to ready to assign
+    Then the bucket "Home Insurance" balance should be "0.00 PLN"
+    And target "Home Coverage" in bucket "Home Insurance" should have funded amount "0.00 PLN"
+
+  Scenario: Reverse-waterfall unassigning funds defunds lower priority targets first
+    Given an open budget "Family Home" with "5,000.00 PLN" in checking account
+    When I create a bucket "Leisure" in group "Wants"
+    And I add a mandatory target "Gym" with priority 3, cadence "MONTHLY", amount "400.00 PLN"
+    And I add an optional target "Cinema" with priority 1, cadence "MONTHLY", amount "200.00 PLN"
+    And I assign "600.00 PLN" from ready to assign to bucket "Leisure"
+    Then target "Gym" in bucket "Leisure" should have funded amount "400.00 PLN"
+    And target "Cinema" in bucket "Leisure" should have funded amount "200.00 PLN"
+    When I move "200.00 PLN" from bucket "Leisure" to ready to assign
+    Then the bucket "Leisure" balance should be "400.00 PLN"
+    And target "Cinema" in bucket "Leisure" should have funded amount "0.00 PLN"
+    And target "Gym" in bucket "Leisure" should have funded amount "400.00 PLN"
+
+  Scenario: Moving funds between buckets updates target funding
+    Given an open budget "Family Home" with "5,000.00 PLN" in checking account
+    When I create a bucket "Source Envelope" in group "Needs"
+    And I add a mandatory target "Source Target" with priority 3, cadence "MONTHLY", amount "500.00 PLN"
+    And I create a bucket "Dest Envelope" in group "Needs"
+    And I add a mandatory target "Dest Target" with priority 3, cadence "MONTHLY", amount "500.00 PLN"
+    And I assign "500.00 PLN" from ready to assign to bucket "Source Envelope"
+    Then target "Source Target" in bucket "Source Envelope" should have funded amount "500.00 PLN"
+    When I move "500.00 PLN" from bucket "Source Envelope" to bucket "Dest Envelope"
+    Then the bucket "Source Envelope" balance should be "0.00 PLN"
+    And target "Source Target" in bucket "Source Envelope" should have funded amount "0.00 PLN"
+    And the bucket "Dest Envelope" balance should be "500.00 PLN"
+    And target "Dest Target" in bucket "Dest Envelope" should have funded amount "500.00 PLN"
