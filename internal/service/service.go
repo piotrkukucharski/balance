@@ -19,11 +19,12 @@ import (
 )
 
 var (
-	ErrUserAlreadyExists = errors.New("user already exists")
-	ErrUserNotFound      = errors.New("user not found")
-	ErrBudgetNotFound    = errors.New("budget not found")
-	ErrInvalidInput      = errors.New("invalid input")
-	ErrUnauthorized      = errors.New("unauthorized")
+	ErrUserAlreadyExists        = errors.New("user already exists")
+	ErrUserNotFound             = errors.New("user not found")
+	ErrBudgetNotFound           = errors.New("budget not found")
+	ErrInvalidInput             = errors.New("invalid input")
+	ErrUnauthorized             = errors.New("unauthorized")
+	ErrRegistrationDisabled     = errors.New("user registration is disabled")
 )
 
 // AppService coordinates domain actions for both HTTP handlers and CLI operations.

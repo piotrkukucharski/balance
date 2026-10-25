@@ -134,6 +134,10 @@ func (s *Server) verifyBudgetAccess(ctx echo.Context, budgetID string, minRole s
 
 // RegisterUser (POST /auth/register)
 func (s *Server) RegisterUser(ctx echo.Context) error {
+	if !auth.IsRegistrationAllowed() {
+		return sendError(ctx, http.StatusForbidden, "User registration is currently disabled", "REGISTRATION_DISABLED", nil)
+	}
+
 	var req RegisterRequest
 	if err := ctx.Bind(&req); err != nil {
 		return sendError(ctx, http.StatusBadRequest, "Invalid request payload", "INVALID_INPUT", nil)

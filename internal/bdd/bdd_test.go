@@ -91,6 +91,7 @@ type bddTestContext struct {
 }
 
 func (tc *bddTestContext) setup() error {
+	os.Setenv("ALLOW_REGISTRATION", "true")
 	tmpDir, err := os.MkdirTemp("", "balance_bdd_*")
 	if err != nil {
 		return err
@@ -245,6 +246,14 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		c := tc.echoEngine.NewContext(req, rec)
 
 		err := tc.authHandler.HandleRegister(c)
+		if err != nil {
+			if httpErr, ok := err.(*echo.HTTPError); ok {
+				rec.WriteHeader(httpErr.Code)
+				rec.WriteString(fmt.Sprintf("%v", httpErr.Message))
+			} else {
+				return err
+			}
+		}
 		tc.lastResponse = rec
 		for _, cookie := range rec.Result().Cookies() {
 			if cookie.Name == handlers.SessionCookieName {
@@ -252,7 +261,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 				break
 			}
 		}
-		return err
+		return nil
 	})
 	ctx.Step(`^the response status should be (\d+) Redirect to "([^"]*)"$`, func(code int, loc string) error {
 		if tc.lastResponse.Code != code {
@@ -453,6 +462,77 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		expectedTAttr := fmt.Sprintf(`data-time-format="%s"`, expectedTime)
 		if !strings.Contains(body, expectedDAttr) || !strings.Contains(body, expectedTAttr) {
 			return fmt.Errorf("expected attributes %s and %s in html, got: %s", expectedDAttr, expectedTAttr, body)
+		}
+		return nil
+	})
+
+	ctx.Step(`^user registration is disabled via environment variable "([^"]*)"$`, func(envPair string) error {
+		parts := strings.SplitN(envPair, "=", 2)
+		if len(parts) == 2 {
+			os.Setenv(parts[0], parts[1])
+		}
+		return nil
+	})
+
+	ctx.Step(`^I navigate to the login page$`, func() error {
+		req := httptest.NewRequest(http.MethodGet, "/login", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		if err := tc.authHandler.LoginPage(c); err != nil {
+			return err
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^the login page should not display a link to create an account$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if strings.Contains(body, `<a href="/register"`) {
+			return fmt.Errorf("expected login page not to contain link to /register, got: %s", body)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the login page should inform that registration is disabled$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "Public registration is currently disabled") {
+			return fmt.Errorf("expected login page to inform that registration is disabled, got: %s", body)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I request the registration page "([^"]*)"$`, func(path string) error {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		err := tc.authHandler.RegisterPage(c)
+		if err != nil {
+			if httpErr, ok := err.(*echo.HTTPError); ok {
+				rec.WriteHeader(httpErr.Code)
+				rec.WriteString(fmt.Sprintf("%v", httpErr.Message))
+			} else {
+				return err
+			}
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^the response status should be (\d+) Forbidden$`, func(code int) error {
+		if tc.lastResponse.Code != code {
+			return fmt.Errorf("expected status %d Forbidden, got %d", code, tc.lastResponse.Code)
+		}
+		return nil
+	})
+
+	ctx.Step(`^user "([^"]*)" should not exist in "([^"]*)"$`, func(email, dbName string) error {
+		var exists int
+		err := tc.mainDB.QueryRow("SELECT count(*) FROM users WHERE email = ?", email).Scan(&exists)
+		if err != nil {
+			return err
+		}
+		if exists != 0 {
+			return fmt.Errorf("expected user %s not to exist in %s, but found %d record(s)", email, dbName, exists)
 		}
 		return nil
 	})

@@ -10,6 +10,7 @@ services:
     environment:
       - PORT=8080
       - DATA_DIR=/app/data
+      - ALLOW_REGISTRATION=${ALLOW_REGISTRATION:-true}
       - ALLOW_MOCK_PROVIDERS=false
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.8-flash}

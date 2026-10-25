@@ -86,6 +86,7 @@ The primary UX benchmark for **Balance** is **YNAB (You Need A Budget)** — pri
 
 1. **Authentication (`/login` & `/register`)**:
    - Dedicated **Login** (`GET /login`, `POST /login`) and **Registration** (`GET /register`, `POST /register`) screens with server-side validation, IP/account rate-limiting (token bucket throttling against brute-force attacks), and automatic session initialization in `main.db`.
+   - Public user registration can be disabled via environment variable `ALLOW_REGISTRATION=false`. When disabled, registration endpoints (`GET/POST /register` and `POST /api/v1/auth/register`) return `403 Forbidden`, and registration links/callouts are hidden on the login page.
 2. **Post-Login Landing: Budget Selector (`/budgets`) & Top Navigation Bar**:
    - Immediately after logging in, the user lands on the **Budget List (`/budgets`)** screen displaying cards for all budgets the user owns or is an accepted member of (showing budget name, timezone, member count, and last activity), plus a **"+ New Budget"** button and pending **Budget Invitations** banner.
    - **Global Top Bar (Header)**: Always visible across `/budgets` and inside active budget views. Contains:

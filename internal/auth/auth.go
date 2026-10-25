@@ -7,10 +7,21 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
 )
+
+// IsRegistrationAllowed checks if user registration is enabled via ALLOW_REGISTRATION environment variable.
+// Defaults to true when not set. Only returns false if explicitly set to "false" or "0".
+func IsRegistrationAllowed() bool {
+	val := strings.TrimSpace(os.Getenv("ALLOW_REGISTRATION"))
+	if val == "false" || val == "0" {
+		return false
+	}
+	return true
+}
 
 // Argon2id parameters as strictly mandated in spec 3.1:
 // memory = 64 MiB (64 * 1024 KiB), iterations = 3, parallelism = 2, salt = 16 bytes CSPRNG, keyLen = 32 bytes

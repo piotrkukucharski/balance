@@ -64,6 +64,18 @@ Feature: User Authentication and Stateful Browser Sessions
     And my user profile in "main.db" should store date format "DD.MM.YYYY" and time format "12h"
     And subsequent HTML pages should render "data-date-format" as "DD.MM.YYYY" and "data-time-format" as "12h"
 
+  Scenario: Disabling user registration blocks registration endpoint and hides registration links
+    Given user registration is disabled via environment variable "ALLOW_REGISTRATION=false"
+    When I navigate to the login page
+    Then the login page should not display a link to create an account
+    And the login page should inform that registration is disabled
+    When I request the registration page "/register"
+    Then the response status should be 403 Forbidden
+    When I submit a registration request with display name "Blocked User", email "blocked@example.com" and password "Pass12345!"
+    Then the response status should be 403 Forbidden
+    And user "blocked@example.com" should not exist in "main.db"
+
+
 
 
 

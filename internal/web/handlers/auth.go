@@ -16,6 +16,12 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// IsRegistrationAllowed checks if user registration is enabled via ALLOW_REGISTRATION environment variable.
+// Delegates to auth.IsRegistrationAllowed().
+func IsRegistrationAllowed() bool {
+	return auth.IsRegistrationAllowed()
+}
+
 type AuthHandler struct {
 	mainDB     *sql.DB
 	tenantMgr  *db.TenantDBManager
@@ -35,6 +41,9 @@ func (h *AuthHandler) SetService(svc *service.AppService) {
 
 // RegisterPage renders the registration HTML page with DaisyUI 5 styling.
 func (h *AuthHandler) RegisterPage(c echo.Context) error {
+	if !IsRegistrationAllowed() {
+		return echo.NewHTTPError(http.StatusForbidden, "User registration is currently disabled.")
+	}
 	html := `<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -97,6 +106,11 @@ func (h *AuthHandler) RegisterPage(c echo.Context) error {
 // HandleRegister processes user signup and initializes stateful session.
 func (h *AuthHandler) HandleRegister(c echo.Context) error {
 	ctx := logger.WithComponent(c.Request().Context(), "biz:auth")
+
+	if !IsRegistrationAllowed() {
+		logger.Warn(ctx, "Registration attempt blocked: registration is disabled via ALLOW_REGISTRATION")
+		return echo.NewHTTPError(http.StatusForbidden, "User registration is currently disabled.")
+	}
 
 	email := c.FormValue("email")
 	password := c.FormValue("password")
@@ -163,6 +177,18 @@ func (h *AuthHandler) renderLoginPage(c echo.Context, status int, errMsg string,
             </div>`, html.EscapeString(errMsg))
 	}
 
+	registrationSection := `
+            <div class="text-center pt-2">
+                <span class="text-xs text-base-content/60">Don't have an account?</span>
+                <a href="/register" class="link link-primary link-hover text-xs font-bold ml-1">Create one here</a>
+            </div>`
+	if !IsRegistrationAllowed() {
+		registrationSection = `
+            <div class="text-center pt-2">
+                <span class="text-xs text-base-content/50">Public registration is currently disabled by administrator.</span>
+            </div>`
+	}
+
 	pageHTML := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -204,15 +230,11 @@ func (h *AuthHandler) renderLoginPage(c echo.Context, status int, errMsg string,
                     Sign In
                 </button>
             </form>
-
-            <div class="text-center pt-2">
-                <span class="text-xs text-base-content/60">Don't have an account?</span>
-                <a href="/register" class="link link-primary link-hover text-xs font-bold ml-1">Create one here</a>
-            </div>
+            %s
         </div>
     </div>
 </body>
-</html>`, errorBanner, html.EscapeString(emailVal))
+</html>`, errorBanner, html.EscapeString(emailVal), registrationSection)
 	return c.HTML(status, pageHTML)
 }
 

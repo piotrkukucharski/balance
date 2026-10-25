@@ -586,6 +586,56 @@ func TestFaviconServingAndViews(t *testing.T) {
 		}
 	})
 
+	t.Run("Registration disabled via ALLOW_REGISTRATION=false", func(t *testing.T) {
+		t.Setenv("ALLOW_REGISTRATION", "false")
+
+		// 1. Register page should return 403 Forbidden
+		reqReg := httptest.NewRequest(http.MethodGet, "/register", nil)
+		recReg := httptest.NewRecorder()
+		cReg := e.NewContext(reqReg, recReg)
+		err := authHandler.RegisterPage(cReg)
+		if err == nil {
+			t.Fatalf("expected error from RegisterPage when registration disabled")
+		}
+		httpErr, ok := err.(*echo.HTTPError)
+		if !ok || httpErr.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 HTTPError, got %v", err)
+		}
+
+		// 2. HandleRegister should return 403 Forbidden
+		form := url.Values{}
+		form.Set("email", "forbidden@example.com")
+		form.Set("password", "Pass12345678")
+		form.Set("display_name", "Forbidden User")
+		reqPost := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
+		reqPost.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		recPost := httptest.NewRecorder()
+		cPost := e.NewContext(reqPost, recPost)
+		errPost := authHandler.HandleRegister(cPost)
+		if errPost == nil {
+			t.Fatalf("expected error from HandleRegister when registration disabled")
+		}
+		httpErrPost, ok := errPost.(*echo.HTTPError)
+		if !ok || httpErrPost.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 HTTPError, got %v", errPost)
+		}
+
+		// 3. Login page should not show registration link
+		reqLogin := httptest.NewRequest(http.MethodGet, "/login", nil)
+		recLogin := httptest.NewRecorder()
+		cLogin := e.NewContext(reqLogin, recLogin)
+		if err := authHandler.LoginPage(cLogin); err != nil {
+			t.Fatalf("LoginPage failed: %v", err)
+		}
+		bodyLogin := recLogin.Body.String()
+		if strings.Contains(bodyLogin, `<a href="/register"`) {
+			t.Fatalf("login page should not contain registration link when disabled")
+		}
+		if !strings.Contains(bodyLogin, "Public registration is currently disabled") {
+			t.Fatalf("login page should inform that registration is disabled")
+		}
+	})
+
 	t.Run("HandleLogin renders login page with error alert when user does not exist", func(t *testing.T) {
 		form := url.Values{}
 		form.Set("email", "missing@example.com")

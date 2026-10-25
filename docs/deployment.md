@@ -12,6 +12,7 @@ When running in production mode, Balance uses the following environment variable
 |---|---|---|---|
 | `PORT` | No | `8080` | HTTP server listening port inside the container. |
 | `DATA_DIR` | No | `/app/data` | Path to the directory housing SQLite databases (`main.db` and the `budgets/` tenant subdirectory). |
+| `ALLOW_REGISTRATION` | No | `true` | Public registration toggle. Set to `false` to restrict access and block new user account registrations. |
 | `ALLOW_MOCK_PROVIDERS` | No | `false` | Security guard preventing mock banking adapters in production builds (`false` for live environments). |
 | `GEMINI_API_KEY` | Yes (for AI) | - | Google Gemini API key used by the Lua formula assistant and structuring assistant. |
 | `GEMINI_MODEL` | No | `gemini-3.8-flash` | Gemini model variant used for formula generation. |
@@ -42,6 +43,7 @@ services:
     environment:
       - PORT=8080
       - DATA_DIR=/app/data
+      - ALLOW_REGISTRATION=${ALLOW_REGISTRATION:-true}
       - ALLOW_MOCK_PROVIDERS=false
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.8-flash}
