@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	htmlPkg "html"
 	"net/http"
@@ -81,9 +82,17 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
         </aside>
 
         <main class="flex-1 p-6 md:p-8 overflow-y-auto">
-            <div class="mb-8">
-                <h1 class="text-3xl font-black tracking-tight">Reports & Analytics</h1>
-                <p class="text-sm text-base-content/60 mt-1">10 interactive financial insights, forecasting models, and Monte Carlo longevity simulations.</p>
+            <div class="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                    <h1 class="text-3xl font-black tracking-tight">Reports & Analytics</h1>
+                    <p class="text-sm text-base-content/60 mt-1">10 interactive financial insights, forecasting models, and Monte Carlo longevity simulations.</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button type="button" id="btn-recalculate-all" class="btn btn-sm btn-outline gap-1.5" onclick="recalculateAllReports()">
+                        <span id="recalc-all-icon">🔄</span>
+                        <span>Przelicz wszystkie</span>
+                    </button>
+                </div>
             </div>
 
             %s
@@ -98,7 +107,11 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                                 <span>1. Age of Money</span>
                                 <span class="text-xs text-base-content/40">↗</span>
                             </a>
-                            <span id="badge_aom" class="badge badge-accent badge-soft font-bold">%d days</span>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_aom" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('aom', true)">🔄</button>
+                                <span id="badge_aom" class="badge badge-accent badge-soft font-bold">%d days</span>
+                            </div>
                         </div>
                         <p class="text-xs text-base-content/60 mb-4">Weighted average age of money spent across liquid outflows.</p>
                         <div id="chart_aom" style="height: 200px; width: 100%%;"></div>
@@ -113,7 +126,11 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                                 <span>2. Income v. Expense</span>
                                 <span class="text-xs text-base-content/40">↗</span>
                             </a>
-                            <span id="badge_ive" class="badge badge-success badge-soft font-bold">--</span>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_ive" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('ive', true)">🔄</button>
+                                <span id="badge_ive" class="badge badge-success badge-soft font-bold">--</span>
+                            </div>
                         </div>
                         <p class="text-xs text-base-content/60 mb-4">Monthly cashflow P&L comparison.</p>
                         <div id="chart_ive" style="height: 200px; width: 100%%;"></div>
@@ -128,6 +145,10 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                                 <span>3. Spending Trends</span>
                                 <span class="text-xs text-base-content/40">↗</span>
                             </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_trends" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('trends', true)">🔄</button>
+                            </div>
                         </div>
                         <p class="text-xs text-base-content/60 mb-4">Category drift and monthly moving average.</p>
                         <div id="chart_trends" style="height: 200px; width: 100%%;"></div>
@@ -142,6 +163,10 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                                 <span>4. Spending Breakdown</span>
                                 <span class="text-xs text-base-content/40">↗</span>
                             </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_breakdown" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('breakdown', true)">🔄</button>
+                            </div>
                         </div>
                         <p class="text-xs text-base-content/60 mb-4">Proportional category composition.</p>
                         <div id="chart_breakdown" style="height: 200px; width: 100%%;"></div>
@@ -156,6 +181,10 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                                 <span>5. Net Worth</span>
                                 <span class="text-xs text-base-content/40">↗</span>
                             </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_nw" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('nw', true)">🔄</button>
+                            </div>
                         </div>
                         <p class="text-xs text-base-content/60 mb-4">Assets minus liabilities trajectory over time.</p>
                         <div id="chart_networth" style="height: 200px; width: 100%%;"></div>
@@ -170,6 +199,10 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                                 <span>6. Sankey Flow</span>
                                 <span class="text-xs text-base-content/40">↗</span>
                             </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_sankey" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('sankey', true)">🔄</button>
+                            </div>
                         </div>
                         <p class="text-xs text-base-content/60 mb-4">Visual multi-layer cash movement from income to envelopes.</p>
                         <div id="chart_sankey" style="height: 200px; width: 100%%;"></div>
@@ -184,6 +217,10 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                                 <span>7. Balance Forecast</span>
                                 <span class="text-xs text-base-content/40">↗</span>
                             </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_forecast" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('forecast', true)">🔄</button>
+                            </div>
                         </div>
                         <p class="text-xs text-base-content/60 mb-4">365-day cashflow runway with scheduled recurrences.</p>
                         <div id="chart_forecast" style="height: 200px; width: 100%%;"></div>
@@ -198,6 +235,10 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                                 <span>8. Budget Analysis</span>
                                 <span class="text-xs text-base-content/40">↗</span>
                             </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_analysis" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('analysis', true)">🔄</button>
+                            </div>
                         </div>
                         <p class="text-xs text-base-content/60 mb-4">Envelope rollover mechanics and strategy tracking.</p>
                         <div id="chart_analysis" style="height: 200px; width: 100%%;"></div>
@@ -215,7 +256,11 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                                 </a>
                                 <p class="text-xs text-base-content/60">5,000 multi-pot stochastic runs with Guyton-Klinger dynamic withdrawal rules.</p>
                             </div>
-                            <span id="badge_mc" class="badge badge-success badge-soft font-bold text-sm py-3 px-4">--%% Success Rate</span>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_mc" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('mc', true)">🔄</button>
+                                <span id="badge_mc" class="badge badge-success badge-soft font-bold text-sm py-3 px-4">--%% Success Rate</span>
+                            </div>
                         </div>
                         <div id="chart_mc" style="height: 260px; width: 100%%;"></div>
                     </div>
@@ -229,6 +274,10 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                                 <span>10. Counterparty Cashflow</span>
                                 <span class="text-xs text-base-content/40">↗</span>
                             </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_party" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('party', true)">🔄</button>
+                            </div>
                         </div>
                         <p class="text-xs text-base-content/60 mb-4">Net cashflow and volume aggregated per merchant (Żabka, Employer, Landlord).</p>
                         <div id="chart_party" style="height: 220px; width: 100%%;"></div>
@@ -262,12 +311,54 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
             }
         }
 
+        function updateCacheBadge(id, isCached, calculatedAt) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (isCached) {
+                el.className = 'badge badge-xs badge-neutral';
+                el.innerText = 'Cached';
+                if (calculatedAt) {
+                    const dt = new Date(calculatedAt / 1000);
+                    el.title = 'Zbuforowano: ' + dt.toLocaleTimeString();
+                }
+            } else {
+                el.className = 'badge badge-xs badge-success';
+                el.innerText = 'Live';
+                if (calculatedAt) {
+                    const dt = new Date(calculatedAt / 1000);
+                    el.title = 'Przeliczono na żywo: ' + dt.toLocaleTimeString();
+                }
+            }
+        }
+
+        const reportLoaders = {};
+        const charts = {};
+
+        async function reloadReport(key, force) {
+            if (reportLoaders[key]) {
+                await reportLoaders[key](!!force);
+            }
+        }
+
+        async function recalculateAllReports() {
+            const icon = document.getElementById('recalc-all-icon');
+            if (icon) icon.classList.add('animate-spin');
+            for (const key of Object.keys(reportLoaders)) {
+                await reportLoaders[key](true);
+            }
+            if (icon) icon.classList.remove('animate-spin');
+        }
+
         // 1. Age of Money
-        (async () => {
-            const chart = echarts.init(document.getElementById('chart_aom'));
+        reportLoaders['aom'] = async (force) => {
+            const dom = document.getElementById('chart_aom');
+            if (!dom) return;
+            if (!charts['aom']) charts['aom'] = echarts.init(dom);
+            const chart = charts['aom'];
             chart.showLoading({ color: '#06b6d4' });
-            const data = await fetchJSON('/budgets/' + budgetId + '/reports/age-of-money/data');
+            const data = await fetchJSON('/budgets/' + budgetId + '/reports/age-of-money/data' + (force ? '?force=true' : ''));
             chart.hideLoading();
+            updateCacheBadge('cache_status_aom', data && data.is_cached, data && data.calculated_at);
 
             const history = (data && data.history && data.history.length > 0) ? data.history : [];
             const xData = history.map((h, i) => 'P' + (i + 1));
@@ -287,14 +378,18 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                 yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
                 series: [{ data: yData.length ? yData : [0], type: 'line', smooth: true, color: '#06b6d4', areaStyle: { opacity: 0.1 } }]
             });
-        })();
+        };
 
         // 2. Income vs Expense
-        (async () => {
-            const chart = echarts.init(document.getElementById('chart_ive'));
+        reportLoaders['ive'] = async (force) => {
+            const dom = document.getElementById('chart_ive');
+            if (!dom) return;
+            if (!charts['ive']) charts['ive'] = echarts.init(dom);
+            const chart = charts['ive'];
             chart.showLoading({ color: '#22c55e' });
-            const data = await fetchJSON('/budgets/' + budgetId + '/reports/income-expense/data');
+            const data = await fetchJSON('/budgets/' + budgetId + '/reports/income-expense/data' + (force ? '?force=true' : ''));
             chart.hideLoading();
+            updateCacheBadge('cache_status_ive', data && data.is_cached, data && data.calculated_at);
 
             const months = (data && data.months) ? data.months : [];
             const xData = months.map(m => m.month_key);
@@ -322,14 +417,18 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                     { name: 'Expense', type: 'bar', data: expenseData, color: '#ef4444', borderRadius: [4, 4, 0, 0] }
                 ]
             });
-        })();
+        };
 
         // 3. Spending Trends
-        (async () => {
-            const chart = echarts.init(document.getElementById('chart_trends'));
+        reportLoaders['trends'] = async (force) => {
+            const dom = document.getElementById('chart_trends');
+            if (!dom) return;
+            if (!charts['trends']) charts['trends'] = echarts.init(dom);
+            const chart = charts['trends'];
             chart.showLoading({ color: '#a855f7' });
-            const data = await fetchJSON('/budgets/' + budgetId + '/reports/spending-trends/data');
+            const data = await fetchJSON('/budgets/' + budgetId + '/reports/spending-trends/data' + (force ? '?force=true' : ''));
             chart.hideLoading();
+            updateCacheBadge('cache_status_trends', data && data.is_cached, data && data.calculated_at);
 
             const pts = (data && data.points) ? data.points : [];
             const xData = pts.map(p => p.month_key);
@@ -349,14 +448,18 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                     { name: '3M Avg', type: 'line', smooth: true, data: avgData, color: '#eab308' }
                 ]
             });
-        })();
+        };
 
         // 4. Spending Breakdown
-        (async () => {
-            const chart = echarts.init(document.getElementById('chart_breakdown'));
+        reportLoaders['breakdown'] = async (force) => {
+            const dom = document.getElementById('chart_breakdown');
+            if (!dom) return;
+            if (!charts['breakdown']) charts['breakdown'] = echarts.init(dom);
+            const chart = charts['breakdown'];
             chart.showLoading({ color: '#f97316' });
-            const data = await fetchJSON('/budgets/' + budgetId + '/reports/spending-breakdown/data');
+            const data = await fetchJSON('/budgets/' + budgetId + '/reports/spending-breakdown/data' + (force ? '?force=true' : ''));
             chart.hideLoading();
+            updateCacheBadge('cache_status_breakdown', data && data.is_cached, data && data.calculated_at);
 
             const items = (data && data.items) ? data.items : [];
             const pieData = items.map(it => ({
@@ -378,14 +481,18 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                     data: pieData.length ? pieData : [{ name: 'No Spending', value: 0 }]
                 }]
             });
-        })();
+        };
 
         // 5. Net Worth
-        (async () => {
-            const chart = echarts.init(document.getElementById('chart_networth'));
+        reportLoaders['nw'] = async (force) => {
+            const dom = document.getElementById('chart_networth');
+            if (!dom) return;
+            if (!charts['nw']) charts['nw'] = echarts.init(dom);
+            const chart = charts['nw'];
             chart.showLoading({ color: '#3b82f6' });
-            const data = await fetchJSON('/budgets/' + budgetId + '/reports/net-worth/data');
+            const data = await fetchJSON('/budgets/' + budgetId + '/reports/net-worth/data' + (force ? '?force=true' : ''));
             chart.hideLoading();
+            updateCacheBadge('cache_status_nw', data && data.is_cached, data && data.calculated_at);
 
             const pts = (data && data.points) ? data.points : [];
             const xData = pts.map(p => p.month_key);
@@ -406,14 +513,18 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                     { name: 'Liabilities', type: 'line', smooth: true, data: liabData, color: '#ef4444', lineStyle: { type: 'dashed' } }
                 ]
             });
-        })();
+        };
 
         // 6. Sankey Flow
-        (async () => {
-            const chart = echarts.init(document.getElementById('chart_sankey'));
+        reportLoaders['sankey'] = async (force) => {
+            const dom = document.getElementById('chart_sankey');
+            if (!dom) return;
+            if (!charts['sankey']) charts['sankey'] = echarts.init(dom);
+            const chart = charts['sankey'];
             chart.showLoading({ color: '#10b981' });
-            const data = await fetchJSON('/budgets/' + budgetId + '/reports/sankey/data');
+            const data = await fetchJSON('/budgets/' + budgetId + '/reports/sankey/data' + (force ? '?force=true' : ''));
             chart.hideLoading();
+            updateCacheBadge('cache_status_sankey', data && data.is_cached, data && data.calculated_at);
 
             const nodes = (data && data.nodes) ? data.nodes.map(n => ({ name: n.name })) : [];
             const links = (data && data.links) ? data.links.map(l => ({
@@ -440,14 +551,18 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                     links: links
                 }]
             });
-        })();
+        };
 
         // 7. Balance Forecast
-        (async () => {
-            const chart = echarts.init(document.getElementById('chart_forecast'));
+        reportLoaders['forecast'] = async (force) => {
+            const dom = document.getElementById('chart_forecast');
+            if (!dom) return;
+            if (!charts['forecast']) charts['forecast'] = echarts.init(dom);
+            const chart = charts['forecast'];
             chart.showLoading({ color: '#6366f1' });
-            const data = await fetchJSON('/budgets/' + budgetId + '/reports/forecast/data');
+            const data = await fetchJSON('/budgets/' + budgetId + '/reports/forecast/data' + (force ? '?force=true' : ''));
             chart.hideLoading();
+            updateCacheBadge('cache_status_forecast', data && data.is_cached, data && data.calculated_at);
 
             const pts = (data && data.points) ? data.points : [];
             const xData = pts.map(p => p.date);
@@ -462,14 +577,18 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                 yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
                 series: [{ data: yData.length ? yData : [0], type: 'line', smooth: true, color: '#6366f1', areaStyle: { opacity: 0.1 } }]
             });
-        })();
+        };
 
         // 8. Budget Analysis
-        (async () => {
-            const chart = echarts.init(document.getElementById('chart_analysis'));
+        reportLoaders['analysis'] = async (force) => {
+            const dom = document.getElementById('chart_analysis');
+            if (!dom) return;
+            if (!charts['analysis']) charts['analysis'] = echarts.init(dom);
+            const chart = charts['analysis'];
             chart.showLoading({ color: '#14b8a6' });
-            const data = await fetchJSON('/budgets/' + budgetId + '/reports/budget-analysis/data');
+            const data = await fetchJSON('/budgets/' + budgetId + '/reports/budget-analysis/data' + (force ? '?force=true' : ''));
             chart.hideLoading();
+            updateCacheBadge('cache_status_analysis', data && data.is_cached, data && data.calculated_at);
 
             const pts = (data && data.points) ? data.points : [];
             const xData = pts.map(p => p.period_key);
@@ -491,14 +610,18 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                     { name: 'Cumulative Balance', type: 'line', smooth: true, data: cumData, color: '#10b981' }
                 ]
             });
-        })();
+        };
 
         // 9. Monte Carlo
-        (async () => {
-            const chart = echarts.init(document.getElementById('chart_mc'));
+        reportLoaders['mc'] = async (force) => {
+            const dom = document.getElementById('chart_mc');
+            if (!dom) return;
+            if (!charts['mc']) charts['mc'] = echarts.init(dom);
+            const chart = charts['mc'];
             chart.showLoading({ color: '#22c55e' });
-            const data = await fetchJSON('/budgets/' + budgetId + '/reports/monte-carlo/data');
+            const data = await fetchJSON('/budgets/' + budgetId + '/reports/monte-carlo/data' + (force ? '?force=true' : ''));
             chart.hideLoading();
+            updateCacheBadge('cache_status_mc', data && data.is_cached, data && data.calculated_at);
 
             const p10 = (data && data.p10_trajectory) ? data.p10_trajectory.map(v => v / 100) : [];
             const p50 = (data && data.p50_trajectory) ? data.p50_trajectory.map(v => v / 100) : [];
@@ -525,14 +648,18 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                     { name: 'P10 Conservative', type: 'line', data: p10, color: '#f59e0b', smooth: true }
                 ]
             });
-        })();
+        };
 
         // 10. Counterparty Cashflow
-        (async () => {
-            const chart = echarts.init(document.getElementById('chart_party'));
+        reportLoaders['party'] = async (force) => {
+            const dom = document.getElementById('chart_party');
+            if (!dom) return;
+            if (!charts['party']) charts['party'] = echarts.init(dom);
+            const chart = charts['party'];
             chart.showLoading({ color: '#8b5cf6' });
-            const data = await fetchJSON('/budgets/' + budgetId + '/reports/party-cashflow/data');
+            const data = await fetchJSON('/budgets/' + budgetId + '/reports/party-cashflow/data' + (force ? '?force=true' : ''));
             chart.hideLoading();
+            updateCacheBadge('cache_status_party', data && data.is_cached, data && data.calculated_at);
 
             const parties = (data && data.parties) ? data.parties.slice(0, 10) : [];
             const yAxisData = parties.map(p => p.party_name);
@@ -557,6 +684,13 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
                     }
                 }]
             });
+        };
+
+        // Initial load of all 10 reports
+        (async () => {
+            for (const key of Object.keys(reportLoaders)) {
+                reportLoaders[key](false);
+            }
         })();
 
         window.addEventListener('resize', () => {
@@ -650,11 +784,11 @@ func (h *ReportsHandler) GetAgeOfMoneyData(c echo.Context) error {
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	currency := h.getBudgetCurrency(c.Request().Context(), budgetID)
 	filter := parseReportFilter(c, currency)
-	res, err := h.CalculateAgeOfMoneyForBudget(c.Request().Context(), tenantDB, filter)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	}
-	return c.JSON(http.StatusOK, res)
+	filterKey := buildReportFilterKey(c, filter)
+
+	return h.serveCachedReport(c, "age-of-money", filterKey, func() (any, error) {
+		return h.CalculateAgeOfMoneyForBudget(c.Request().Context(), tenantDB, filter)
+	})
 }
 
 // 2. Income vs. Expense Data
@@ -663,12 +797,11 @@ func (h *ReportsHandler) GetIncomeExpenseData(c echo.Context) error {
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	currency := h.getBudgetCurrency(c.Request().Context(), budgetID)
 	filter := parseReportFilter(c, currency)
+	filterKey := buildReportFilterKey(c, filter)
 
-	res, err := report.CalculateIncomeVsExpense(c.Request().Context(), tenantDB, h.mainDB, filter)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	}
-	return c.JSON(http.StatusOK, res)
+	return h.serveCachedReport(c, "income-expense", filterKey, func() (any, error) {
+		return report.CalculateIncomeVsExpense(c.Request().Context(), tenantDB, h.mainDB, filter)
+	})
 }
 
 // 3. Spending Trends Data
@@ -677,12 +810,11 @@ func (h *ReportsHandler) GetSpendingTrendsData(c echo.Context) error {
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	currency := h.getBudgetCurrency(c.Request().Context(), budgetID)
 	filter := parseReportFilter(c, currency)
+	filterKey := buildReportFilterKey(c, filter)
 
-	res, err := report.CalculateSpendingTrends(c.Request().Context(), tenantDB, h.mainDB, filter)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	}
-	return c.JSON(http.StatusOK, res)
+	return h.serveCachedReport(c, "spending-trends", filterKey, func() (any, error) {
+		return report.CalculateSpendingTrends(c.Request().Context(), tenantDB, h.mainDB, filter)
+	})
 }
 
 // 4. Spending Breakdown Data
@@ -691,12 +823,11 @@ func (h *ReportsHandler) GetSpendingBreakdownData(c echo.Context) error {
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	currency := h.getBudgetCurrency(c.Request().Context(), budgetID)
 	filter := parseReportFilter(c, currency)
+	filterKey := buildReportFilterKey(c, filter)
 
-	res, err := report.CalculateSpendingBreakdown(c.Request().Context(), tenantDB, h.mainDB, filter)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	}
-	return c.JSON(http.StatusOK, res)
+	return h.serveCachedReport(c, "spending-breakdown", filterKey, func() (any, error) {
+		return report.CalculateSpendingBreakdown(c.Request().Context(), tenantDB, h.mainDB, filter)
+	})
 }
 
 // 5. Net Worth Data
@@ -705,12 +836,11 @@ func (h *ReportsHandler) GetNetWorthData(c echo.Context) error {
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	currency := h.getBudgetCurrency(c.Request().Context(), budgetID)
 	filter := parseReportFilter(c, currency)
+	filterKey := buildReportFilterKey(c, filter)
 
-	res, err := report.CalculateNetWorth(c.Request().Context(), tenantDB, h.mainDB, filter)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	}
-	return c.JSON(http.StatusOK, res)
+	return h.serveCachedReport(c, "net-worth", filterKey, func() (any, error) {
+		return report.CalculateNetWorth(c.Request().Context(), tenantDB, h.mainDB, filter)
+	})
 }
 
 // 6. Sankey Flow Data
@@ -719,12 +849,11 @@ func (h *ReportsHandler) GetSankeyData(c echo.Context) error {
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	currency := h.getBudgetCurrency(c.Request().Context(), budgetID)
 	filter := parseReportFilter(c, currency)
+	filterKey := buildReportFilterKey(c, filter)
 
-	res, err := report.CalculateSankeyFlow(c.Request().Context(), tenantDB, h.mainDB, filter)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	}
-	return c.JSON(http.StatusOK, res)
+	return h.serveCachedReport(c, "sankey", filterKey, func() (any, error) {
+		return report.CalculateSankeyFlow(c.Request().Context(), tenantDB, h.mainDB, filter)
+	})
 }
 
 // 7. Balance Forecast Data
@@ -736,12 +865,11 @@ func (h *ReportsHandler) GetForecastData(c echo.Context) error {
 			days = d
 		}
 	}
+	filterKey := fmt.Sprintf(`{"days":%d}`, days)
 
-	res, err := report.CalculateBalanceForecast(c.Request().Context(), tenantDB, days)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	}
-	return c.JSON(http.StatusOK, res)
+	return h.serveCachedReport(c, "forecast", filterKey, func() (any, error) {
+		return report.CalculateBalanceForecast(c.Request().Context(), tenantDB, days)
+	})
 }
 
 // 8. Budget Analysis Data
@@ -750,12 +878,11 @@ func (h *ReportsHandler) GetBudgetAnalysisData(c echo.Context) error {
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	currency := h.getBudgetCurrency(c.Request().Context(), budgetID)
 	filter := parseReportFilter(c, currency)
+	filterKey := buildReportFilterKey(c, filter)
 
-	res, err := report.CalculateBudgetAnalysis(c.Request().Context(), tenantDB, h.mainDB, filter)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	}
-	return c.JSON(http.StatusOK, res)
+	return h.serveCachedReport(c, "budget-analysis", filterKey, func() (any, error) {
+		return report.CalculateBudgetAnalysis(c.Request().Context(), tenantDB, h.mainDB, filter)
+	})
 }
 
 // 9. Monte Carlo Data
@@ -881,11 +1008,12 @@ func (h *ReportsHandler) GetMonteCarloData(c echo.Context) error {
 		}
 	}
 
-	res, err := report.RunMonteCarloSimulation(c.Request().Context(), cfg)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	}
-	return c.JSON(http.StatusOK, res)
+	cfgBytes, _ := json.Marshal(cfg)
+	filterKey := string(cfgBytes)
+
+	return h.serveCachedReport(c, "monte-carlo", filterKey, func() (any, error) {
+		return report.RunMonteCarloSimulation(c.Request().Context(), cfg)
+	})
 }
 
 // 10. Counterparty Cashflow Data
@@ -894,12 +1022,11 @@ func (h *ReportsHandler) GetPartyCashflowData(c echo.Context) error {
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	currency := h.getBudgetCurrency(c.Request().Context(), budgetID)
 	filter := parseReportFilter(c, currency)
+	filterKey := buildReportFilterKey(c, filter)
 
-	res, err := report.CalculatePartyCashflow(c.Request().Context(), tenantDB, h.mainDB, filter)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	}
-	return c.JSON(http.StatusOK, res)
+	return h.serveCachedReport(c, "party-cashflow", filterKey, func() (any, error) {
+		return report.CalculatePartyCashflow(c.Request().Context(), tenantDB, h.mainDB, filter)
+	})
 }
 
 // CalculateAgeOfMoneyForBudget calculates headline and history Age of Money for tenant DB.
@@ -1280,6 +1407,10 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
                 <div>
                     <h1 class="text-2xl md:text-3xl font-black tracking-tight">%s</h1>
                     <p class="text-sm text-base-content/60 mt-1">%s</p>
+                    <div class="flex items-center gap-2 mt-2">
+                        <span id="cache-status-pill" class="badge badge-xs badge-neutral">Checking...</span>
+                        <span id="cache-calc-time" class="text-xs text-base-content/60 font-mono"></span>
+                    </div>
                 </div>
 
                 <!-- Filters Form -->
@@ -1324,6 +1455,14 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
                             <span class="label-text text-xs">Exclude Internal</span>
                             <input type="checkbox" name="exclude_internal" value="true" class="checkbox checkbox-sm checkbox-primary" %s />
                         </label>
+                    </div>
+
+                    <!-- Recalculate Button -->
+                    <div class="form-control self-end">
+                        <button type="button" id="btn-recalculate-report" class="btn btn-outline btn-sm gap-1.5" onclick="updateReport(true)">
+                            <span id="recalc-detail-icon">🔄</span>
+                            <span>Przelicz</span>
+                        </button>
                     </div>
 
                     <!-- Save Report Modal Trigger -->
@@ -1757,7 +1896,7 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
             }
         }
 
-        async function updateReport() {
+        async function updateReport(force) {
             const form = document.getElementById('report-filters-form');
             if (!form) return;
             const range = form.elements['range'] ? form.elements['range'].value : '30d';
@@ -1765,6 +1904,9 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
             const excludeInternal = form.elements['exclude_internal'] ? form.elements['exclude_internal'].checked : true;
 
             const params = new URLSearchParams({ range: range, currency: curr, exclude_internal: excludeInternal });
+            if (force) {
+                params.set('force', 'true');
+            }
 
             const saveCfg = { range: range, currency: curr, exclude_internal: excludeInternal };
             if (type === 'monte-carlo') {
@@ -1805,10 +1947,29 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
                 saveCfgInput.value = JSON.stringify(saveCfg);
             }
 
+            const recalcIcon = document.getElementById('recalc-detail-icon');
+            if (recalcIcon) recalcIcon.classList.add('animate-spin');
             if (chart) chart.showLoading({ color: '#3b82f6' });
             const dataUrl = '/budgets/' + budgetId + '/reports/' + endpoint + '?' + params.toString();
             const data = await fetchJSON(dataUrl);
             if (chart) chart.hideLoading();
+            if (recalcIcon) recalcIcon.classList.remove('animate-spin');
+
+            const pill = document.getElementById('cache-status-pill');
+            const timeEl = document.getElementById('cache-calc-time');
+            if (pill && timeEl) {
+                if (data && data.is_cached) {
+                    pill.className = 'badge badge-xs badge-neutral';
+                    pill.innerText = 'Cached';
+                    const dt = data.calculated_at ? new Date(data.calculated_at / 1000) : new Date();
+                    timeEl.innerText = 'Ostatnie przeliczenie: ' + dt.toLocaleTimeString() + ' (z pamięci podręcznej)';
+                } else {
+                    pill.className = 'badge badge-xs badge-success';
+                    pill.innerText = 'Live';
+                    const dt = (data && data.calculated_at) ? new Date(data.calculated_at / 1000) : new Date();
+                    timeEl.innerText = 'Przeliczono na żywo: ' + dt.toLocaleTimeString();
+                }
+            }
 
             renderChart(type, data, curr);
             updateKPICards(type, data, curr);
@@ -1817,14 +1978,14 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
         const chartDom = document.getElementById(chartId);
         if (chartDom) {
             chart = echarts.init(chartDom);
-            updateReport();
+            updateReport(false);
         }
 
         const runSimBtn = document.getElementById('btn-run-simulation');
         if (runSimBtn) {
             runSimBtn.addEventListener('click', (e) => {
                 e.preventDefault();
-                updateReport();
+                updateReport(true);
             });
         }
 

@@ -463,6 +463,20 @@ func ensureTenantSchemaCompat(ctx context.Context, db *sql.DB) error {
 			`)
 		}
 	}
+
+	_, _ = db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS report_cache (
+			cache_key TEXT PRIMARY KEY,
+			report_type TEXT NOT NULL,
+			filter_json TEXT NOT NULL,
+			calc_date TEXT NOT NULL,
+			data_json TEXT NOT NULL,
+			calculated_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_report_cache_type_date ON report_cache(report_type, calc_date);
+	`)
+
 	return nil
 }
 

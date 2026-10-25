@@ -55,3 +55,14 @@ Feature: Comprehensive Reporting, Age of Money and Monte Carlo Simulation
     Then the saved report widget should be updated with pinned status "0"
     When I delete the saved report "My Custom Spending"
     Then the saved report should be removed from "saved_reports_current"
+
+  Scenario: Caching report results with daily validity and on-demand recalculation
+    Given an authenticated user on budget "Family Home"
+    When I request data for report "age-of-money"
+    Then the response header "X-Report-Cached" should be "false"
+    And the report result should be cached in "report_cache"
+    When I request data for report "age-of-money" again
+    Then the response header "X-Report-Cached" should be "true"
+    When I request data for report "age-of-money" with force recalculation
+    Then the response header "X-Report-Cached" should be "false"
+

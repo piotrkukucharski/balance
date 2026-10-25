@@ -222,6 +222,12 @@ func TestReportDetailView(t *testing.T) {
 			if !strings.Contains(body, "saved-presets-select") {
 				t.Errorf("expected presets select in %s detail view", rt)
 			}
+			if !strings.Contains(body, "btn-recalculate-report") {
+				t.Errorf("expected recalculate button in %s detail view", rt)
+			}
+			if !strings.Contains(body, "cache-status-pill") {
+				t.Errorf("expected cache status pill in %s detail view", rt)
+			}
 		})
 	}
 
@@ -546,5 +552,233 @@ func TestCalculateAgeOfMoney_LiquidScopeAndDeployments(t *testing.T) {
 	}
 	if filteredRes.HeadlineDays != 40 {
 		t.Errorf("expected headline 40 for filtered range, got %d", filteredRes.HeadlineDays)
+	}
+}
+
+func TestReportCachingAndRecalculation(t *testing.T) {
+	logger.BindTestLogger(t)
+
+	tmpDir, err := os.MkdirTemp("", "balance_cache_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mainPath := filepath.Join(tmpDir, "main.db")
+	mainDB, err := db.OpenDB(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tmpDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+	e := echo.New()
+
+	userID := domain.NewUUIDv7()
+	budgetID := domain.NewUUIDv7()
+	now := time.Now().UTC()
+	nowMicros := now.UnixMicro()
+
+	_, _ = mainDB.Exec(`INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, 'user@test.com', 'h', 'User', ?, ?)`, userID, nowMicros, nowMicros)
+	_, _ = mainDB.Exec(`INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at) VALUES (?, 'Cache Test Budget', 'PLN', 'Europe/Warsaw', ?, ?, ?)`, budgetID, userID, nowMicros, nowMicros)
+
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. First call to Age of Money -> Miss (fresh calculation)
+	req1 := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/reports/age-of-money/data", nil)
+	rec1 := httptest.NewRecorder()
+	c1 := e.NewContext(req1, rec1)
+	c1.SetParamNames("budgetId")
+	c1.SetParamValues(budgetID)
+	c1.Set(ContextUserIDKey, userID)
+	c1.Set(ContextBudgetDBKey, tenantDB)
+
+	if err := reportsHandler.GetAgeOfMoneyData(c1); err != nil {
+		t.Fatalf("first GetAgeOfMoneyData failed: %v", err)
+	}
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rec1.Code)
+	}
+	if cachedHeader := rec1.Header().Get("X-Report-Cached"); cachedHeader != "false" {
+		t.Errorf("expected X-Report-Cached false on first call, got %s", cachedHeader)
+	}
+
+	var body1 map[string]any
+	if err := json.Unmarshal(rec1.Body.Bytes(), &body1); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if isCached, ok := body1["is_cached"].(bool); !ok || isCached {
+		t.Errorf("expected is_cached false in body, got %v", body1["is_cached"])
+	}
+	firstCalcAt := int64(body1["calculated_at"].(float64))
+
+	// Verify persistence in report_cache
+	var count int
+	_ = tenantDB.QueryRow("SELECT COUNT(*) FROM report_cache WHERE report_type = 'age-of-money'").Scan(&count)
+	if count != 1 {
+		t.Fatalf("expected 1 entry in report_cache, got %d", count)
+	}
+
+	// 2. Second call on same day -> Hit (served from cache)
+	req2 := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/reports/age-of-money/data", nil)
+	rec2 := httptest.NewRecorder()
+	c2 := e.NewContext(req2, rec2)
+	c2.SetParamNames("budgetId")
+	c2.SetParamValues(budgetID)
+	c2.Set(ContextUserIDKey, userID)
+	c2.Set(ContextBudgetDBKey, tenantDB)
+
+	if err := reportsHandler.GetAgeOfMoneyData(c2); err != nil {
+		t.Fatalf("second GetAgeOfMoneyData failed: %v", err)
+	}
+	if cachedHeader := rec2.Header().Get("X-Report-Cached"); cachedHeader != "true" {
+		t.Errorf("expected X-Report-Cached true on second call, got %s", cachedHeader)
+	}
+
+	var body2 map[string]any
+	if err := json.Unmarshal(rec2.Body.Bytes(), &body2); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if isCached, ok := body2["is_cached"].(bool); !ok || !isCached {
+		t.Errorf("expected is_cached true in body, got %v", body2["is_cached"])
+	}
+	secondCalcAt := int64(body2["calculated_at"].(float64))
+	if secondCalcAt != firstCalcAt {
+		t.Errorf("expected matching calculated_at (%d), got %d", firstCalcAt, secondCalcAt)
+	}
+
+	// 3. Third call with ?force=true -> Recalculation forced
+	req3 := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/reports/age-of-money/data?force=true", nil)
+	rec3 := httptest.NewRecorder()
+	c3 := e.NewContext(req3, rec3)
+	c3.SetParamNames("budgetId")
+	c3.SetParamValues(budgetID)
+	c3.Set(ContextUserIDKey, userID)
+	c3.Set(ContextBudgetDBKey, tenantDB)
+
+	if err := reportsHandler.GetAgeOfMoneyData(c3); err != nil {
+		t.Fatalf("third GetAgeOfMoneyData (force) failed: %v", err)
+	}
+	if cachedHeader := rec3.Header().Get("X-Report-Cached"); cachedHeader != "false" {
+		t.Errorf("expected X-Report-Cached false with force=true, got %s", cachedHeader)
+	}
+
+	var body3 map[string]any
+	if err := json.Unmarshal(rec3.Body.Bytes(), &body3); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if isCached, ok := body3["is_cached"].(bool); !ok || isCached {
+		t.Errorf("expected is_cached false with force=true, got %v", body3["is_cached"])
+	}
+
+	// 4. Simulate previous day's cache -> Expired cache automatically recalculates on new day
+	_, err = tenantDB.Exec("UPDATE report_cache SET calc_date = '2020-01-01' WHERE report_type = 'age-of-money'")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req4 := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/reports/age-of-money/data", nil)
+	rec4 := httptest.NewRecorder()
+	c4 := e.NewContext(req4, rec4)
+	c4.SetParamNames("budgetId")
+	c4.SetParamValues(budgetID)
+	c4.Set(ContextUserIDKey, userID)
+	c4.Set(ContextBudgetDBKey, tenantDB)
+
+	if err := reportsHandler.GetAgeOfMoneyData(c4); err != nil {
+		t.Fatalf("fourth GetAgeOfMoneyData failed: %v", err)
+	}
+	if cachedHeader := rec4.Header().Get("X-Report-Cached"); cachedHeader != "false" {
+		t.Errorf("expected X-Report-Cached false when viewing first time on new day, got %s", cachedHeader)
+	}
+
+	var updatedCalcDate string
+	_ = tenantDB.QueryRow("SELECT calc_date FROM report_cache WHERE report_type = 'age-of-money'").Scan(&updatedCalcDate)
+	todayStr := time.Now().In(time.FixedZone("Europe/Warsaw", 3600)).Format("2006-01-02")
+	if updatedCalcDate != todayStr {
+		t.Errorf("expected updated calc_date %s, got %s", todayStr, updatedCalcDate)
+	}
+}
+
+func TestReportsView_DashboardRecalculateControls(t *testing.T) {
+	logger.BindTestLogger(t)
+
+	tmpDir, err := os.MkdirTemp("", "balance_dash_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mainPath := filepath.Join(tmpDir, "main.db")
+	mainDB, err := db.OpenDB(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tmpDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+	e := echo.New()
+
+	userID := domain.NewUUIDv7()
+	budgetID := domain.NewUUIDv7()
+	now := time.Now().UTC().UnixMicro()
+
+	_, _ = mainDB.Exec(`INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, 'user@test.com', 'h', 'User', ?, ?)`, userID, now, now)
+	_, _ = mainDB.Exec(`INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at) VALUES (?, 'Dash Budget', 'PLN', 'UTC', ?, ?, ?)`, budgetID, userID, now, now)
+
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/reports", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("budgetId")
+	c.SetParamValues(budgetID)
+	c.Set(ContextUserIDKey, userID)
+	c.Set(ContextBudgetDBKey, tenantDB)
+	c.Set("csrfToken", "test_csrf")
+
+	if err := reportsHandler.ReportsView(c); err != nil {
+		t.Fatalf("ReportsView failed: %v", err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "btn-recalculate-all") {
+		t.Errorf("expected btn-recalculate-all in reports dashboard view")
+	}
+	if !strings.Contains(body, "cache_status_aom") {
+		t.Errorf("expected cache_status_aom in reports dashboard view")
+	}
+	if !strings.Contains(body, "cache_status_ive") {
+		t.Errorf("expected cache_status_ive in reports dashboard view")
 	}
 }
