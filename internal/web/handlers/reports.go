@@ -600,7 +600,8 @@ func (h *ReportsHandler) getBudgetCurrency(ctx context.Context, budgetID string)
 
 func parseReportFilter(c echo.Context, defaultCurrency string) report.ReportFilter {
 	filter := report.ReportFilter{
-		TargetCurrency: defaultCurrency,
+		TargetCurrency:  defaultCurrency,
+		ExcludeInternal: true,
 	}
 	if startStr := c.QueryParam("start_date"); startStr != "" {
 		if val, err := strconv.ParseInt(startStr, 10, 64); err == nil {
@@ -612,8 +613,32 @@ func parseReportFilter(c echo.Context, defaultCurrency string) report.ReportFilt
 			filter.EndDateMicros = val
 		}
 	}
+	rangeStr := c.QueryParam("range")
+	filter.Range = rangeStr
+	if rangeStr != "" && filter.StartDateMicros == 0 {
+		now := time.Now().UTC()
+		filter.EndDateMicros = now.UnixMicro()
+		switch rangeStr {
+		case "30d":
+			filter.StartDateMicros = now.AddDate(0, 0, -30).UnixMicro()
+		case "90d":
+			filter.StartDateMicros = now.AddDate(0, 0, -90).UnixMicro()
+		case "180d":
+			filter.StartDateMicros = now.AddDate(0, 0, -180).UnixMicro()
+		case "YTD":
+			filter.StartDateMicros = time.Date(now.Year(), 1, 1, 0, 0, 0, 0, time.UTC).UnixMicro()
+		case "1y":
+			filter.StartDateMicros = now.AddDate(-1, 0, 0).UnixMicro()
+		case "all":
+			filter.StartDateMicros = 0
+			filter.EndDateMicros = 0
+		}
+	}
 	if curr := c.QueryParam("currency"); curr != "" {
 		filter.TargetCurrency = curr
+	}
+	if excl := c.QueryParam("exclude_internal"); excl != "" {
+		filter.ExcludeInternal = (excl != "false")
 	}
 	return filter
 }
@@ -1003,7 +1028,7 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
                     <!-- Date Range Selector -->
                     <div class="form-control">
                         <label class="label py-1"><span class="label-text text-xs font-semibold">Range</span></label>
-                        <select name="range" class="select select-bordered select-sm font-medium" onchange="this.form.submit()">
+                        <select name="range" class="select select-bordered select-sm font-medium">
                             <option value="30d" %s>Last 30 Days</option>
                             <option value="90d" %s>Last 90 Days</option>
                             <option value="180d" %s>Last 180 Days</option>
@@ -1016,7 +1041,7 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
                     <!-- Display Currency Selector -->
                     <div class="form-control">
                         <label class="label py-1"><span class="label-text text-xs font-semibold">Currency</span></label>
-                        <select name="currency" class="select select-bordered select-sm font-medium" onchange="this.form.submit()">
+                        <select name="currency" class="select select-bordered select-sm font-medium">
                             <option value="PLN" %s>PLN</option>
                             <option value="EUR" %s>EUR</option>
                             <option value="USD" %s>USD</option>
@@ -1029,7 +1054,7 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
                         <label class="label py-1"><span class="label-text text-xs font-semibold">Transfers</span></label>
                         <label class="label cursor-pointer gap-2 border border-base-300 px-3 py-1.5 rounded-lg bg-base-200">
                             <span class="label-text text-xs">Exclude Internal</span>
-                            <input type="checkbox" name="exclude_internal" value="true" class="checkbox checkbox-sm checkbox-primary" %s onchange="this.form.submit()" />
+                            <input type="checkbox" name="exclude_internal" value="true" class="checkbox checkbox-sm checkbox-primary" %s />
                         </label>
                     </div>
 
@@ -1053,7 +1078,7 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
                     <form method="POST" action="/budgets/%s/reports/saved" class="flex flex-col gap-4">
                         <input type="hidden" name="csrf_token" value="%s" />
                         <input type="hidden" name="report_type" value="%s" />
-                        <input type="hidden" name="config_json" value='{"range":"%s","currency":"%s","exclude_internal":%t}' />
+                        <input type="hidden" id="save_config_json" name="config_json" value='{"range":"%s","currency":"%s","exclude_internal":%t}' />
                         
                         <div class="form-control">
                             <label class="label"><span class="label-text font-semibold">Report Name</span></label>
@@ -1095,11 +1120,11 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
         const budgetId = '%s';
         const endpoint = '%s';
         const chartId = '%s';
-        const curr = '%s';
-        const excludeInternal = %t;
+        const type = '%s';
 
-        function formatMoney(minor) {
-            return (minor / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + curr;
+        function formatMoney(minor, c) {
+            if (isNaN(minor)) minor = 0;
+            return (minor / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + (c || 'PLN');
         }
 
         async function fetchJSON(url) {
@@ -1113,17 +1138,11 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
             }
         }
 
-        (async () => {
-            const chartDom = document.getElementById(chartId);
-            if (!chartDom) return;
-            const chart = echarts.init(chartDom);
-            chart.showLoading({ color: '#3b82f6' });
+        let chart = null;
 
-            const dataUrl = '/budgets/' + budgetId + '/reports/' + endpoint + '?currency=' + curr + '&exclude_internal=' + excludeInternal;
-            const data = await fetchJSON(dataUrl);
-            chart.hideLoading();
+        function renderChart(type, data, curr) {
+            if (!chart) return;
 
-            const type = '%s';
             if (type === 'age-of-money') {
                 const history = (data && data.history && data.history.length > 0) ? data.history : [];
                 const xData = history.map((h, i) => 'P' + (i + 1));
@@ -1332,9 +1351,52 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
                     }]
                 });
             }
+        }
 
-            window.addEventListener('resize', () => chart.resize());
-        })();
+        async function updateReport() {
+            const form = document.getElementById('report-filters-form');
+            if (!form) return;
+            const range = form.elements['range'] ? form.elements['range'].value : '30d';
+            const curr = form.elements['currency'] ? form.elements['currency'].value : 'PLN';
+            const excludeInternal = form.elements['exclude_internal'] ? form.elements['exclude_internal'].checked : true;
+
+            const params = new URLSearchParams({ range: range, currency: curr, exclude_internal: excludeInternal });
+            window.history.replaceState(null, '', '?' + params.toString());
+
+            const saveCfgInput = document.getElementById('save_config_json');
+            if (saveCfgInput) {
+                saveCfgInput.value = JSON.stringify({ range: range, currency: curr, exclude_internal: excludeInternal });
+            }
+
+            if (chart) chart.showLoading({ color: '#3b82f6' });
+            const dataUrl = '/budgets/' + budgetId + '/reports/' + endpoint + '?' + params.toString();
+            const data = await fetchJSON(dataUrl);
+            if (chart) chart.hideLoading();
+
+            renderChart(type, data, curr);
+        }
+
+        const chartDom = document.getElementById(chartId);
+        if (chartDom) {
+            chart = echarts.init(chartDom);
+            updateReport();
+        }
+
+        const filterForm = document.getElementById('report-filters-form');
+        if (filterForm) {
+            filterForm.addEventListener('change', (e) => {
+                e.preventDefault();
+                updateReport();
+            });
+            filterForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                updateReport();
+            });
+        }
+
+        window.addEventListener('resize', () => {
+            if (chart) chart.resize();
+        });
     </script>
 </body>
 </html>`,
@@ -1368,8 +1430,6 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
 		budgetID,
 		meta.Endpoint,
 		meta.ChartID,
-		selectedCurrency,
-		excludeInternal,
 		meta.Type)
 
 	return c.HTML(http.StatusOK, html)

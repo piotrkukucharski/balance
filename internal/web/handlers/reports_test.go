@@ -100,6 +100,49 @@ func TestReportsDataEndpoints(t *testing.T) {
 	}
 }
 
+func TestParseReportFilter(t *testing.T) {
+	e := echo.New()
+
+	t.Run("Range30d", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/?range=30d&currency=EUR", nil)
+		c := e.NewContext(req, httptest.NewRecorder())
+		f := parseReportFilter(c, "PLN")
+		if f.TargetCurrency != "EUR" {
+			t.Errorf("expected currency EUR, got %s", f.TargetCurrency)
+		}
+		if f.StartDateMicros == 0 || f.EndDateMicros == 0 {
+			t.Errorf("expected non-zero start and end date for 30d range")
+		}
+		if f.EndDateMicros <= f.StartDateMicros {
+			t.Errorf("expected end date > start date")
+		}
+		if !f.ExcludeInternal {
+			t.Errorf("expected exclude internal default true")
+		}
+	})
+
+	t.Run("RangeYTD", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/?range=YTD&exclude_internal=false", nil)
+		c := e.NewContext(req, httptest.NewRecorder())
+		f := parseReportFilter(c, "PLN")
+		if f.StartDateMicros == 0 {
+			t.Errorf("expected non-zero start date for YTD")
+		}
+		if f.ExcludeInternal {
+			t.Errorf("expected exclude internal false")
+		}
+	})
+
+	t.Run("RangeAll", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/?range=all", nil)
+		c := e.NewContext(req, httptest.NewRecorder())
+		f := parseReportFilter(c, "PLN")
+		if f.StartDateMicros != 0 || f.EndDateMicros != 0 {
+			t.Errorf("expected zero start and end date for all range")
+		}
+	})
+}
+
 func TestReportDetailView(t *testing.T) {
 	logger.BindTestLogger(t)
 

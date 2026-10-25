@@ -12,6 +12,8 @@ type ReportFilter struct {
 	StartDateMicros int64  // Optional inclusive UTC microsecond start
 	EndDateMicros   int64  // Optional inclusive UTC microsecond end
 	TargetCurrency  string // Base currency of the budget (defaults to 'PLN' if empty)
+	Range           string // "30d", "90d", "180d", "YTD", "1y", "all"
+	ExcludeInternal bool   // Default true: exclude transactions between user-owned accounts
 }
 
 // IncomeVsExpenseMonthly holds monthly aggregated income and expense numbers.
