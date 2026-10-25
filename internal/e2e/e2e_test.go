@@ -242,6 +242,9 @@ func (tc *e2eScenarioContext) setup() error {
 	tenantEditor.POST("/targets", workspaceHandler.CreateTarget)
 	tenantEditor.POST("/targets/:id/update", workspaceHandler.UpdateTarget)
 	tenantEditor.POST("/targets/:id/delete", workspaceHandler.DeleteTarget)
+	tenantEditor.POST("/structure/generate-ai-preview", workspaceHandler.GenerateStructurePreview)
+	tenantEditor.GET("/structure/preview-source", workspaceHandler.PreviewSourceStructure)
+	tenantEditor.POST("/structure/apply", workspaceHandler.ApplyStructure)
 
 	tenantAdmin := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "ADMIN"))
 	tenantAdmin.POST("/settings/members/invite", membersHandler.InviteMember)
@@ -1995,6 +1998,142 @@ func InitializeE2EScenario(ctx *godog.ScenarioContext) {
 			return fmt.Errorf("expected token %q to display status badge %q", tokenName, badge)
 		}
 		return nil
+	})
+
+	// =========================================================================
+	// AI & Import Structure Steps (BALANCE-31)
+	// =========================================================================
+
+	ctx.Step(`^bucket "([^"]*)" has target "([^"]*)" of "([^"]*)"$`, func(bucketName, targetName, amtStr string) error {
+		bID, err := tc.seedBucket(bucketName, "Needs")
+		if err != nil {
+			return err
+		}
+		tenantDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, false)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		tID := domain.NewUUIDv7()
+		minor := parseMajorToMinor(amtStr)
+		_, err = tenantDB.Exec(`
+			INSERT INTO targets_projection (
+				id, version, bucket_id, name, target_type, priority, sort_order,
+				amount_minor, currency, recurrence_cadence, recurrence_days,
+				non_spending_strategy, current_funded_minor, is_archived, updated_at
+			) VALUES (?, 1, ?, ?, 'EXPENSE', 2, 1, ?, 'PLN', 'MONTHLY', 0, 'RETURN_TO_POOL', 0, 0, ?)`,
+			tID, bID, targetName, minor, now,
+		)
+		return err
+	})
+
+	ctx.Step(`^the budget table should display the empty structure state card$`, func() error {
+		txt, err := tc.bodyText()
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(txt, "No Envelopes Created Yet") {
+			return fmt.Errorf("expected empty structure state card with 'No Envelopes Created Yet', got: %s", txt)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I open the AI Structure generator modal$`, func() error {
+		_, err := tc.page.Eval(`() => openStructureModal('ai')`)
+		return err
+	})
+
+	ctx.Step(`^I enter budget prompt "([^"]*)" and click "Generate Preview"$`, func(prompt string) error {
+		if err := tc.page.MustElement(`#structure_ai_prompt`).Input(prompt); err != nil {
+			return err
+		}
+		if err := tc.page.MustElement(`#btn_generate_preview`).Click(proto.InputMouseButtonLeft, 1); err != nil {
+			return err
+		}
+		return rod.Try(func() {
+			tc.page.MustElement(`#structure_preview_wrapper:not(.hidden)`).MustWaitVisible()
+		})
+	})
+
+	ctx.Step(`^the structure preview should list proposed envelopes "([^"]*)", "([^"]*)", and "([^"]*)"$`, func(e1, e2, e3 string) error {
+		res, err := tc.page.Eval(`() => {
+			const wrapper = document.getElementById('structure_preview_wrapper');
+			if (!wrapper) return '';
+			const inputs = Array.from(wrapper.querySelectorAll('input[type="text"]')).map(i => i.value);
+			return wrapper.innerText + ' ' + inputs.join(' ');
+		}`)
+		if err != nil {
+			return err
+		}
+		txt := strings.ToLower(res.Value.Str())
+		if !strings.Contains(txt, strings.ToLower(e1)) || !strings.Contains(txt, strings.ToLower(e2)) || !strings.Contains(txt, strings.ToLower(e3)) {
+			return fmt.Errorf("expected proposed envelopes %q, %q, %q in preview, got: %s", e1, e2, e3, txt)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the structure preview should list proposed envelopes "([^"]*)" and "([^"]*)"$`, func(e1, e2 string) error {
+		res, err := tc.page.Eval(`() => {
+			const wrapper = document.getElementById('structure_preview_wrapper');
+			if (!wrapper) return '';
+			const inputs = Array.from(wrapper.querySelectorAll('input[type="text"]')).map(i => i.value);
+			return wrapper.innerText + ' ' + inputs.join(' ');
+		}`)
+		if err != nil {
+			return err
+		}
+		txt := strings.ToLower(res.Value.Str())
+		if !strings.Contains(txt, strings.ToLower(e1)) || !strings.Contains(txt, strings.ToLower(e2)) {
+			return fmt.Errorf("expected proposed envelopes %q, %q in preview, got: %s", e1, e2, txt)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I click "Apply Selected Structure"$`, func() error {
+		wait := tc.page.WaitNavigation(proto.PageLifecycleEventNameLoad)
+		if err := tc.page.MustElement(`#btn_apply_structure`).Click(proto.InputMouseButtonLeft, 1); err != nil {
+			return err
+		}
+		wait()
+		return tc.page.WaitLoad()
+	})
+
+	ctx.Step(`^the budget table should list buckets "([^"]*)", "([^"]*)", and "([^"]*)"$`, func(b1, b2, b3 string) error {
+		txt, err := tc.bodyText()
+		if err != nil {
+			return err
+		}
+		lower := strings.ToLower(txt)
+		if !strings.Contains(lower, strings.ToLower(b1)) || !strings.Contains(lower, strings.ToLower(b2)) || !strings.Contains(lower, strings.ToLower(b3)) {
+			return fmt.Errorf("expected buckets %q, %q, %q in budget table, got: %s", b1, b2, b3, txt)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I open the Structure Import modal$`, func() error {
+		_, err := tc.page.Eval(`() => openStructureModal('import')`)
+		return err
+	})
+
+	ctx.Step(`^I select source budget "([^"]*)" and click "Load Structure"$`, func(sourceBudgetName string) error {
+		_, err := tc.page.Eval(`(name) => {
+			const sel = document.getElementById('source_budget_select');
+			for (let i = 0; i < sel.options.length; i++) {
+				if (sel.options[i].text.includes(name)) {
+					sel.selectedIndex = i;
+					break;
+				}
+			}
+		}`, sourceBudgetName)
+		if err != nil {
+			return err
+		}
+		if err := tc.page.MustElement(`#btn_load_source`).Click(proto.InputMouseButtonLeft, 1); err != nil {
+			return err
+		}
+		return rod.Try(func() {
+			tc.page.MustElement(`#structure_preview_wrapper:not(.hidden)`).MustWaitVisible()
+		})
 	})
 }
 

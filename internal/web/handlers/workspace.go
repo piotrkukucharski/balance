@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/balance/balance/internal/ai"
 	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
@@ -24,6 +25,7 @@ type WorkspaceHandler struct {
 	tenantMgr      *db.TenantDBManager
 	reportsHandler *ReportsHandler
 	appService     *service.AppService
+	structureAI    ai.BudgetStructureAIProvider
 }
 
 func NewWorkspaceHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager, reportsHandler *ReportsHandler) *WorkspaceHandler {
@@ -31,11 +33,16 @@ func NewWorkspaceHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager, reportsH
 		mainDB:         mainDB,
 		tenantMgr:      tenantMgr,
 		reportsHandler: reportsHandler,
+		structureAI:    ai.NewBudgetStructureProvider(),
 	}
 }
 
 func (h *WorkspaceHandler) SetService(svc *service.AppService) {
 	h.appService = svc
+}
+
+func (h *WorkspaceHandler) SetStructureAIProvider(p ai.BudgetStructureAIProvider) {
+	h.structureAI = p
 }
 
 // BudgetsList renders the post-login budget selection dashboard with DaisyUI 5.
@@ -54,12 +61,14 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 	defer rows.Close()
 
 	var budgetCards strings.Builder
+	var existingBudgetsOptions strings.Builder
 	hasBudgets := false
 	hasOwnerBudget := false
 	for rows.Next() {
 		hasBudgets = true
 		var id, name, curr, tz, role string
 		rows.Scan(&id, &name, &curr, &tz, &role)
+		existingBudgetsOptions.WriteString(fmt.Sprintf(`<option value="%s">%s (%s)</option>`, id, html.EscapeString(name), html.EscapeString(curr)))
 
 		var ownerControls string
 		if role == "OWNER" {
@@ -135,7 +144,10 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 					<h3 class="font-bold text-lg">No Budgets Found</h3>
 					<p class="text-xs text-base-content/60 max-w-sm mt-1">Create your first budget envelope workspace to begin tracking your cashflow and targets.</p>
 				</div>
-				<button class="btn btn-primary btn-sm shadow" onclick="new_budget_modal.showModal()">+ Create Budget</button>
+				<div class="flex flex-wrap items-center justify-center gap-2">
+					<button class="btn btn-primary btn-sm shadow font-semibold" onclick="openNewBudgetModal('empty')">+ Create Budget</button>
+					<button class="btn btn-outline btn-primary btn-sm shadow font-semibold gap-1.5" onclick="openNewBudgetModal('ai')"><span>✨</span><span>Create with AI</span></button>
+				</div>
 			</div>
 		`)
 	}
@@ -178,6 +190,17 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 `, csrfToken)
 	}
 
+	copyDisabledClass := ""
+	copyDisabledAttr := ""
+	if !hasBudgets {
+		copyDisabledClass = "opacity-50 cursor-not-allowed"
+		copyDisabledAttr = "disabled"
+	}
+	copyOptionsHTML := existingBudgetsOptions.String()
+	if copyOptionsHTML == "" {
+		copyOptionsHTML = `<option value="" disabled selected>No existing budgets available</option>`
+	}
+
 	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -215,7 +238,7 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
                 <h1 class="text-3xl font-black tracking-tight">Your Budgets</h1>
                 <p class="text-sm text-base-content/60 mt-1">Select an active budget or create a new envelope workspace.</p>
             </div>
-            <button class="btn btn-primary shadow-md font-semibold gap-2" onclick="new_budget_modal.showModal()">
+            <button class="btn btn-primary shadow-md font-semibold gap-2" onclick="openNewBudgetModal('empty')">
                 <span>+</span>
                 <span>New Budget</span>
             </button>
@@ -256,6 +279,38 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
                         <input type="text" name="timezone" value="Europe/Warsaw" required class="input input-bordered w-full input-md focus:input-primary" />
                     </div>
                 </div>
+
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Initial Structure</span></label>
+                    <div class="grid grid-cols-3 gap-2">
+                        <label class="cursor-pointer label border border-base-300 rounded-lg p-2 flex items-center gap-2 hover:bg-base-200">
+                            <input type="radio" name="creation_mode" value="empty" class="radio radio-xs radio-primary" checked onchange="toggleCreationMode('empty')" />
+                            <span class="label-text text-xs font-semibold">Empty</span>
+                        </label>
+                        <label class="cursor-pointer label border border-base-300 rounded-lg p-2 flex items-center gap-2 hover:bg-base-200">
+                            <input type="radio" name="creation_mode" value="ai" class="radio radio-xs radio-primary" id="creation_mode_ai" onchange="toggleCreationMode('ai')" />
+                            <span class="label-text text-xs font-semibold">✨ AI Gen</span>
+                        </label>
+                        <label class="cursor-pointer label border border-base-300 rounded-lg p-2 flex items-center gap-2 hover:bg-base-200 %s">
+                            <input type="radio" name="creation_mode" value="copy" class="radio radio-xs radio-primary" id="creation_mode_copy" onchange="toggleCreationMode('copy')" %s />
+                            <span class="label-text text-xs font-semibold">📥 Copy</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div id="ai_prompt_container" class="hidden form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">AI Budget Description</span></label>
+                    <textarea name="ai_prompt" id="ai_prompt_input" rows="3" placeholder="e.g. Rodzina 2+1, mieszkanie i kredyt 2500 PLN, jedzenie 1600 PLN, rachunki 400 PLN, oszczędności 500 PLN..." class="textarea textarea-bordered w-full text-xs focus:textarea-primary"></textarea>
+                    <span class="text-[10px] text-base-content/50 mt-1">AI will automatically create envelopes, calculate targets and assign priority rules.</span>
+                </div>
+
+                <div id="copy_budget_container" class="hidden form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Source Budget to Copy From</span></label>
+                    <select name="source_budget_id" class="select select-bordered w-full select-sm focus:select-primary">
+                        %s
+                    </select>
+                </div>
+
                 <div class="modal-action mt-6 gap-2">
                     <button type="button" class="btn btn-ghost" onclick="new_budget_modal.close()">Cancel</button>
                     <button type="submit" class="btn btn-primary font-semibold shadow-md">Create Budget</button>
@@ -264,8 +319,30 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
         </div>
         <form method="dialog" class="modal-backdrop"><button>close</button></form>
     </dialog>
+    <script>
+        function openNewBudgetModal(mode) {
+            if (mode === 'ai') {
+                const aiRadio = document.getElementById('creation_mode_ai');
+                if (aiRadio) { aiRadio.checked = true; toggleCreationMode('ai'); }
+            } else if (mode === 'copy') {
+                const copyRadio = document.getElementById('creation_mode_copy');
+                if (copyRadio && !copyRadio.disabled) { copyRadio.checked = true; toggleCreationMode('copy'); }
+            } else {
+                const emptyRadio = document.querySelector('input[name="creation_mode"][value="empty"]');
+                if (emptyRadio) { emptyRadio.checked = true; toggleCreationMode('empty'); }
+            }
+            new_budget_modal.showModal();
+        }
+
+        function toggleCreationMode(mode) {
+            const aiCont = document.getElementById('ai_prompt_container');
+            const copyCont = document.getElementById('copy_budget_container');
+            if (aiCont) aiCont.classList.toggle('hidden', mode !== 'ai');
+            if (copyCont) copyCont.classList.toggle('hidden', mode !== 'copy');
+        }
+    </script>
 </body>
-</html>`, csrfToken, budgetCards.String(), editBudgetModalHTML, csrfToken)
+</html>`, csrfToken, budgetCards.String(), editBudgetModalHTML, csrfToken, copyDisabledClass, copyDisabledAttr, copyOptionsHTML)
 
 	return c.HTML(http.StatusOK, htmlContent)
 }
@@ -575,6 +652,30 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 			logger.Error(ctx, "Failed creating budget via service", "error", err.Error())
 			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create budget")
 		}
+
+		creationMode := c.FormValue("creation_mode")
+		aiPrompt := strings.TrimSpace(c.FormValue("ai_prompt"))
+		sourceBudgetID := strings.TrimSpace(c.FormValue("source_budget_id"))
+		correlationID := c.Response().Header().Get("X-Correlation-ID")
+
+		if creationMode == "ai" && aiPrompt != "" {
+			if h.structureAI == nil {
+				h.structureAI = ai.NewBudgetStructureProvider()
+			}
+			structRes, err := h.structureAI.GenerateBudgetStructure(c.Request().Context(), ai.BudgetStructurePromptRequest{
+				Prompt:          aiPrompt,
+				DefaultCurrency: curr,
+			})
+			if err == nil && structRes != nil {
+				_, _, _ = h.appService.ApplyBudgetStructure(c.Request().Context(), id, structRes, userID, correlationID)
+			}
+		} else if creationMode == "copy" && sourceBudgetID != "" {
+			exported, err := h.appService.ExportBudgetStructure(c.Request().Context(), sourceBudgetID)
+			if err == nil && exported != nil {
+				_, _, _ = h.appService.ApplyBudgetStructure(c.Request().Context(), id, exported, userID, correlationID)
+			}
+		}
+
 		logger.Info(ctx, "New budget provisioned successfully", "budget_id", id, "name", name, "currency", curr, "timezone", tz, "owner_id", userID)
 		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", id))
 	}
@@ -658,6 +759,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	budgetID := c.Param("budgetId")
 	role := c.Get(ContextRoleKey).(string)
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID, _ := c.Get(ContextUserIDKey).(string)
 
 	var budgetName, defaultCurr, tz string
 	h.mainDB.QueryRowContext(c.Request().Context(), `SELECT name, default_currency, timezone FROM budgets WHERE id = ?`, budgetID).
@@ -903,8 +1005,28 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	if len(buckets) == 0 {
 		bucketRows.WriteString(`
 			<tr>
-				<td colspan="4" class="text-center py-8 text-base-content/50">
-					No buckets created yet. Create groups and envelopes to assign income.
+				<td colspan="4" class="p-8">
+					<div class="card card-border bg-base-100 border-dashed border-base-300 p-8 text-center flex flex-col items-center justify-center gap-4">
+						<div class="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-3xl font-bold">✨</div>
+						<div>
+							<h3 class="font-extrabold text-lg tracking-tight">No Envelopes Created Yet</h3>
+							<p class="text-xs text-base-content/60 max-w-md mx-auto mt-1">Get started quickly by generating a complete envelope structure with AI, importing from another budget, or adding envelopes manually.</p>
+						</div>
+						<div class="flex flex-wrap items-center justify-center gap-2 mt-2">
+							<button type="button" class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('ai')">
+								<span>✨</span>
+								<span>Create from Description (AI)</span>
+							</button>
+							<button type="button" class="btn btn-outline btn-secondary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('import')">
+								<span>📥</span>
+								<span>Import from Another Budget</span>
+							</button>
+							<button type="button" class="btn btn-ghost btn-sm" onclick="new_bucket_modal.showModal()">
+								<span>+</span>
+								<span>New Bucket Manually</span>
+							</button>
+						</div>
+					</div>
 				</td>
 			</tr>
 		`)
@@ -981,6 +1103,118 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	for _, b := range buckets {
 		bucketSelectOptions.WriteString(fmt.Sprintf(`<option value="%s">%s (%s)</option>`, b.ID, html.EscapeString(b.Name), html.EscapeString(b.GroupName)))
 	}
+
+	// Query user's other accessible budgets for Structure Import dropdown
+	otherBudgetRows, err := h.mainDB.QueryContext(c.Request().Context(), `
+		SELECT b.id, b.name, b.default_currency
+		FROM budgets b
+		JOIN budget_members bm ON b.id = bm.budget_id
+		WHERE bm.user_id = ? AND b.id != ?
+		ORDER BY b.name ASC`, userID, budgetID)
+	var otherBudgetOptions strings.Builder
+	hasOtherBudgets := false
+	if err == nil {
+		defer otherBudgetRows.Close()
+		for otherBudgetRows.Next() {
+			hasOtherBudgets = true
+			var oID, oName, oCurr string
+			if err := otherBudgetRows.Scan(&oID, &oName, &oCurr); err == nil {
+				otherBudgetOptions.WriteString(fmt.Sprintf(`<option value="%s">%s (%s)</option>`, oID, html.EscapeString(oName), html.EscapeString(oCurr)))
+			}
+		}
+	}
+	otherBudgetSelectDisabled := ""
+	if !hasOtherBudgets {
+		otherBudgetSelectDisabled = "disabled"
+		otherBudgetOptions.WriteString(`<option value="" disabled selected>No other budgets available to import from</option>`)
+	}
+
+	structureModalHTML := fmt.Sprintf(`
+    <!-- Budget Structure Generator & Import Modal -->
+    <dialog id="structure_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6 max-w-3xl w-11/12 max-h-[90vh] flex flex-col">
+            <div class="flex justify-between items-center mb-4 shrink-0">
+                <div class="flex items-center gap-2">
+                    <span class="text-xl">✨</span>
+                    <h3 class="font-extrabold text-xl tracking-tight">Envelope Structure Assistant</h3>
+                </div>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+
+            <!-- Tabs -->
+            <div role="tablist" class="tabs tabs-lift mb-4 shrink-0">
+                <button type="button" id="tab_btn_ai" role="tab" class="tab tab-active font-semibold text-xs" onclick="switchStructureTab('ai')">
+                    ✨ Generate with AI
+                </button>
+                <button type="button" id="tab_btn_import" role="tab" class="tab font-semibold text-xs" onclick="switchStructureTab('import')">
+                    📥 Import from Budget
+                </button>
+            </div>
+
+            <!-- Tab 1: AI Prompt -->
+            <div id="structure_tab_ai" class="flex flex-col gap-3 shrink-0">
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Describe your budget in natural language</span></label>
+                    <textarea id="structure_ai_prompt" rows="3" placeholder="e.g. Rodzina 2+1, wynajem mieszkania 2800 PLN, rachunki i internet 350 PLN, zakupy spożywcze 1600 PLN, paliwo 400 PLN, poduszka finansowa 500 PLN, wakacje 300 PLN..." class="textarea textarea-bordered w-full text-xs focus:textarea-primary"></textarea>
+                    <div class="text-[10px] text-base-content/50 mt-1">Our AI assistant will propose organized envelope groups, buckets, and monthly targets.</div>
+                </div>
+                <button type="button" id="btn_generate_preview" class="btn btn-primary btn-sm self-start font-semibold shadow gap-2" onclick="runAIGeneration()">
+                    <span>✨</span>
+                    <span>Generate Preview</span>
+                </button>
+            </div>
+
+            <!-- Tab 2: Import from Budget -->
+            <div id="structure_tab_import" class="hidden flex flex-col gap-3 shrink-0">
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Select source budget to copy from</span></label>
+                    <select id="source_budget_select" class="select select-bordered w-full select-sm focus:select-primary" %s>
+                        %s
+                    </select>
+                </div>
+                <button type="button" id="btn_load_source" class="btn btn-secondary btn-sm self-start font-semibold shadow gap-2" onclick="runSourceImport()" %s>
+                    <span>📥</span>
+                    <span>Load Structure</span>
+                </button>
+            </div>
+
+            <!-- Loading Spinner -->
+            <div id="structure_loading" class="hidden flex flex-col items-center justify-center p-8 gap-3 shrink-0">
+                <span class="loading loading-spinner loading-md text-primary"></span>
+                <span class="text-xs text-base-content/60" id="structure_loading_text">Analyzing description and generating budget envelopes...</span>
+            </div>
+
+            <!-- Error Banner -->
+            <div id="structure_error" class="hidden alert alert-error text-xs mt-3 shrink-0">
+                <span id="structure_error_text"></span>
+            </div>
+
+            <!-- Interactive Hierarchical Preview -->
+            <div id="structure_preview_wrapper" class="hidden flex-1 overflow-y-auto mt-4 border border-base-300 rounded-box p-4 bg-base-200/40">
+                <div class="flex items-center justify-between pb-3 border-b border-base-300 mb-3">
+                    <div class="flex items-center gap-2">
+                        <input type="checkbox" id="structure_select_all" class="checkbox checkbox-primary checkbox-xs" checked onchange="toggleSelectAllStructure(this.checked)" />
+                        <label for="structure_select_all" class="text-xs font-bold cursor-pointer">Select All Items</label>
+                    </div>
+                    <span id="structure_stats_badge" class="badge badge-neutral badge-xs font-mono">0 envelopes, 0 targets</span>
+                </div>
+
+                <div id="structure_preview_list" class="space-y-4 text-xs">
+                    <!-- Populated dynamically via JS -->
+                </div>
+            </div>
+
+            <div class="modal-action mt-4 pt-3 border-t border-base-300 flex justify-between items-center shrink-0">
+                <button type="button" class="btn btn-ghost btn-sm" onclick="structure_modal.close()">Cancel</button>
+                <button type="button" id="btn_apply_structure" class="btn btn-primary btn-sm font-semibold shadow gap-2 hidden" onclick="applyStructureConfirmed()">
+                    <span>✓</span>
+                    <span>Apply Selected Structure</span>
+                </button>
+            </div>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+`, otherBudgetSelectDisabled, otherBudgetOptions.String(), otherBudgetSelectDisabled)
 
 	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en" data-theme="dark">
@@ -1077,10 +1311,16 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             <!-- Buckets Table Header Toolbar -->
             <div class="flex justify-between items-center mb-4">
                 <h2 class="text-xl font-bold tracking-tight">Envelopes & Categories</h2>
-                <button class="btn btn-primary btn-sm gap-1.5 shadow font-semibold" onclick="new_bucket_modal.showModal()">
-                    <span>+</span>
-                    <span>New Bucket</span>
-                </button>
+                <div class="flex items-center gap-2">
+                    <button type="button" class="btn btn-outline btn-primary btn-sm gap-1.5 shadow-xs font-semibold" onclick="openStructureModal('ai')">
+                        <span>✨</span>
+                        <span>AI / Import Structure</span>
+                    </button>
+                    <button class="btn btn-primary btn-sm gap-1.5 shadow font-semibold" onclick="new_bucket_modal.showModal()">
+                        <span>+</span>
+                        <span>New Bucket</span>
+                    </button>
+                </div>
             </div>
 
             <!-- Buckets Table Card -->
@@ -1105,6 +1345,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             </div>
         </main>
     </div>
+
+    %s
 
     %s
 
@@ -1343,6 +1585,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
     <script>
         const currentBudgetID = '%s';
         const csrfTokenVal = '%s';
+        const currentCurrency = '%s';
         const bucketsData = %s;
 
         function openEditBucketModal(id, name, group) {
@@ -1418,6 +1661,269 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             document.getElementById('target_ceiling').value = '';
             target_modal.showModal();
         }
+
+        function openStructureModal(tab) {
+            document.getElementById('structure_error').classList.add('hidden');
+            document.getElementById('structure_preview_wrapper').classList.add('hidden');
+            document.getElementById('btn_apply_structure').classList.add('hidden');
+            switchStructureTab(tab || 'ai');
+            structure_modal.showModal();
+        }
+
+        function switchStructureTab(tab) {
+            const isAI = tab === 'ai';
+            document.getElementById('tab_btn_ai').className = isAI ? 'tab tab-active font-semibold text-xs' : 'tab font-semibold text-xs';
+            document.getElementById('tab_btn_import').className = !isAI ? 'tab tab-active font-semibold text-xs' : 'tab font-semibold text-xs';
+            document.getElementById('structure_tab_ai').classList.toggle('hidden', !isAI);
+            document.getElementById('structure_tab_import').classList.toggle('hidden', isAI);
+        }
+
+        let loadedStructureData = null;
+
+        function runAIGeneration() {
+            const prompt = document.getElementById('structure_ai_prompt').value.trim();
+            if (!prompt) {
+                showStructureError('Please enter a budget description.');
+                return;
+            }
+            showStructureLoading(true, 'Analyzing description and generating budget envelopes with AI...');
+            fetch('/budgets/' + currentBudgetID + '/structure/generate-ai-preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfTokenVal },
+                body: JSON.stringify({ prompt: prompt, currency: currentCurrency })
+            })
+            .then(res => res.json())
+            .then(data => {
+                showStructureLoading(false);
+                if (data.error) {
+                    showStructureError(data.error);
+                } else {
+                    renderPreviewData(data);
+                }
+            })
+            .catch(err => {
+                showStructureLoading(false);
+                showStructureError(err.message || 'Generation failed');
+            });
+        }
+
+        function runSourceImport() {
+            const sel = document.getElementById('source_budget_select');
+            if (!sel || !sel.value) {
+                showStructureError('Please select a source budget.');
+                return;
+            }
+            showStructureLoading(true, 'Loading envelopes and targets from source budget...');
+            fetch('/budgets/' + currentBudgetID + '/structure/preview-source?source_budget_id=' + encodeURIComponent(sel.value))
+            .then(res => res.json())
+            .then(data => {
+                showStructureLoading(false);
+                if (data.error) {
+                    showStructureError(data.error);
+                } else {
+                    renderPreviewData(data);
+                }
+            })
+            .catch(err => {
+                showStructureLoading(false);
+                showStructureError(err.message || 'Import failed');
+            });
+        }
+
+        function showStructureLoading(show, text) {
+            document.getElementById('structure_loading').classList.toggle('hidden', !show);
+            document.getElementById('structure_error').classList.add('hidden');
+            if (show) {
+                document.getElementById('structure_preview_wrapper').classList.add('hidden');
+                document.getElementById('btn_apply_structure').classList.add('hidden');
+                if (text) document.getElementById('structure_loading_text').innerText = text;
+            }
+        }
+
+        function showStructureError(msg) {
+            const el = document.getElementById('structure_error');
+            document.getElementById('structure_error_text').innerText = msg;
+            el.classList.remove('hidden');
+        }
+
+        function renderPreviewData(data) {
+            loadedStructureData = data;
+            const container = document.getElementById('structure_preview_list');
+            container.innerHTML = '';
+
+            let totalBuckets = 0;
+            let totalTargets = 0;
+
+            if (!data.groups || data.groups.length === 0) {
+                showStructureError('No envelopes or categories could be generated.');
+                return;
+            }
+
+            data.groups.forEach((g, gIdx) => {
+                const groupEl = document.createElement('div');
+                groupEl.className = 'border border-base-300 rounded-lg p-3 bg-base-100 shadow-xs flex flex-col gap-2';
+
+                let bucketsHtml = '';
+                if (g.buckets) {
+                    g.buckets.forEach((b, bIdx) => {
+                        totalBuckets++;
+                        let targetsHtml = '';
+                        if (b.targets) {
+                            b.targets.forEach((t, tIdx) => {
+                                totalTargets++;
+                                const prioText = t.priority === 3 ? 'Mandatory' : (t.priority === 2 ? 'Recommended' : 'Optional');
+                                const prioBadgeClass = t.priority === 3 ? 'badge-error' : (t.priority === 2 ? 'badge-primary' : 'badge-ghost');
+                                const amtVal = (t.amount_minor / 100).toFixed(2);
+
+                                targetsHtml += 
+                                    '<div class="flex items-center gap-2 pl-6 py-1 border-t border-base-200">' +
+                                        '<input type="checkbox" class="checkbox checkbox-primary checkbox-xs target-chk" checked data-group="' + gIdx + '" data-bucket="' + bIdx + '" data-target="' + tIdx + '" onchange="updateCountsBadge()">' +
+                                        '<input type="text" class="input input-bordered input-xs flex-1 target-name-input" value="' + escapeHtml(t.name) + '" data-group="' + gIdx + '" data-bucket="' + bIdx + '" data-target="' + tIdx + '">' +
+                                        '<div class="flex items-center gap-1 shrink-0">' +
+                                            '<input type="number" step="0.01" class="input input-bordered input-xs w-20 text-right font-mono target-amount-input" value="' + amtVal + '" data-group="' + gIdx + '" data-bucket="' + bIdx + '" data-target="' + tIdx + '">' +
+                                            '<span class="text-[10px] font-bold text-base-content/60">' + (t.currency || currentCurrency) + '</span>' +
+                                        '</div>' +
+                                        '<span class="badge ' + prioBadgeClass + ' badge-xs shrink-0">' + prioText + '</span>' +
+                                    '</div>';
+                            });
+                        }
+
+                        bucketsHtml += 
+                            '<div class="border border-base-200 rounded p-2 bg-base-200/30 flex flex-col gap-1.5">' +
+                                '<div class="flex items-center gap-2">' +
+                                    '<input type="checkbox" class="checkbox checkbox-primary checkbox-xs bucket-chk" checked data-group="' + gIdx + '" data-bucket="' + bIdx + '" onchange="onBucketCheckboxToggle(' + gIdx + ', ' + bIdx + ', this.checked)">' +
+                                    '<span class="text-xs font-bold text-primary">📁</span>' +
+                                    '<input type="text" class="input input-bordered input-xs font-bold flex-1 bucket-name-input" value="' + escapeHtml(b.name) + '" data-group="' + gIdx + '" data-bucket="' + bIdx + '">' +
+                                '</div>' +
+                                (targetsHtml ? '<div class="flex flex-col">' + targetsHtml + '</div>' : '') +
+                            '</div>';
+                    });
+                }
+
+                groupEl.innerHTML = 
+                    '<div class="flex items-center justify-between pb-1">' +
+                        '<span class="font-extrabold text-xs uppercase tracking-wider text-base-content/70">' + escapeHtml(g.group_name || 'General') + '</span>' +
+                    '</div>' +
+                    '<div class="flex flex-col gap-2">' + bucketsHtml + '</div>';
+
+                container.appendChild(groupEl);
+            });
+
+            document.getElementById('structure_stats_badge').innerText = totalBuckets + ' envelopes, ' + totalTargets + ' targets';
+            document.getElementById('structure_select_all').checked = true;
+            document.getElementById('structure_preview_wrapper').classList.remove('hidden');
+            document.getElementById('btn_apply_structure').classList.remove('hidden');
+        }
+
+        function escapeHtml(str) {
+            return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        function onBucketCheckboxToggle(gIdx, bIdx, checked) {
+            const targets = document.querySelectorAll('.target-chk[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
+            targets.forEach(t => t.checked = checked);
+            updateCountsBadge();
+        }
+
+        function toggleSelectAllStructure(checked) {
+            document.querySelectorAll('.bucket-chk, .target-chk').forEach(c => c.checked = checked);
+            updateCountsBadge();
+        }
+
+        function updateCountsBadge() {
+            const bChecked = document.querySelectorAll('.bucket-chk:checked').length;
+            const tChecked = document.querySelectorAll('.target-chk:checked').length;
+            document.getElementById('structure_stats_badge').innerText = bChecked + ' envelopes, ' + tChecked + ' targets selected';
+        }
+
+        function applyStructureConfirmed() {
+            if (!loadedStructureData) return;
+
+            const finalGroups = [];
+            loadedStructureData.groups.forEach((g, gIdx) => {
+                const finalBuckets = [];
+                g.buckets.forEach((b, bIdx) => {
+                    const bChk = document.querySelector('.bucket-chk[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
+                    if (bChk && bChk.checked) {
+                        const nameInput = document.querySelector('.bucket-name-input[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
+                        const bucketName = nameInput ? nameInput.value.trim() : b.name;
+
+                        const finalTargets = [];
+                        if (b.targets) {
+                            b.targets.forEach((t, tIdx) => {
+                                const tChk = document.querySelector('.target-chk[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"][data-target="' + tIdx + '"]');
+                                if (tChk && tChk.checked) {
+                                    const tNameInput = document.querySelector('.target-name-input[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"][data-target="' + tIdx + '"]');
+                                    const tAmtInput = document.querySelector('.target-amount-input[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"][data-target="' + tIdx + '"]');
+                                    const tName = tNameInput ? tNameInput.value.trim() : t.name;
+                                    let amtMinor = t.amount_minor;
+                                    if (tAmtInput) {
+                                        const parsed = parseFloat(tAmtInput.value);
+                                        if (!isNaN(parsed) && parsed >= 0) {
+                                            amtMinor = Math.round(parsed * 100);
+                                        }
+                                    }
+                                    finalTargets.push({
+                                        name: tName,
+                                        target_type: t.target_type || 'EXPENSE',
+                                        priority: t.priority || 2,
+                                        amount_minor: amtMinor,
+                                        currency: t.currency || currentCurrency,
+                                        recurrence_cadence: t.recurrence_cadence || 'MONTHLY',
+                                        non_spending_strategy: t.non_spending_strategy || 'RETURN_TO_POOL'
+                                    });
+                                }
+                            });
+                        }
+
+                        finalBuckets.push({
+                            name: bucketName,
+                            targets: finalTargets
+                        });
+                    }
+                });
+
+                if (finalBuckets.length > 0) {
+                    finalGroups.push({
+                        group_name: g.group_name || 'Default',
+                        buckets: finalBuckets
+                    });
+                }
+            });
+
+            if (finalGroups.length === 0) {
+                showStructureError('No envelopes or targets selected.');
+                return;
+            }
+
+            const btn = document.getElementById('btn_apply_structure');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading loading-spinner loading-xs"></span> Applying...';
+
+            fetch('/budgets/' + currentBudgetID + '/structure/apply', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': csrfTokenVal
+                },
+                body: JSON.stringify({ groups: finalGroups })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.error) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<span>✓</span><span>Apply Selected Structure</span>';
+                    showStructureError(data.error);
+                } else {
+                    window.location.reload();
+                }
+            })
+            .catch(err => {
+                btn.disabled = false;
+                btn.innerHTML = '<span>✓</span><span>Apply Selected Structure</span>';
+                showStructureError(err.message || 'Failed applying structure');
+            });
+        }
     </script>
 </body>
 </html>`,
@@ -1429,12 +1935,13 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		budgetID, csrfToken, defaultCurr, horizonParam,
 		bucketRows.String(),
 		RenderBottomDock(budgetID, "budget"),
+		structureModalHTML,
 		budgetID, csrfToken,
 		csrfToken,
 		csrfToken, defaultCurr, defaultCurr,
 		budgetID, csrfToken, defaultCurr, bucketSelectOptions.String(), defaultCurr,
 		budgetID, csrfToken, defaultCurr,
-		budgetID, csrfToken, toJSONString(buckets))
+		budgetID, csrfToken, defaultCurr, toJSONString(buckets))
 
 	return c.HTML(http.StatusOK, htmlContent)
 }
@@ -1793,4 +2300,84 @@ func (h *WorkspaceHandler) DeleteTarget(c echo.Context) error {
 	}
 
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+}
+
+// GenerateStructurePreview produces a proposed budget structure from an AI prompt.
+func (h *WorkspaceHandler) GenerateStructurePreview(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	var req struct {
+		Prompt   string `json:"prompt"`
+		Currency string `json:"currency"`
+	}
+	if err := c.Bind(&req); err != nil || strings.TrimSpace(req.Prompt) == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Budget description is required"})
+	}
+
+	curr := strings.TrimSpace(req.Currency)
+	if curr == "" {
+		_ = h.mainDB.QueryRowContext(c.Request().Context(), `SELECT default_currency FROM budgets WHERE id = ?`, budgetID).Scan(&curr)
+	}
+	if curr == "" {
+		curr = "PLN"
+	}
+
+	if h.structureAI == nil {
+		h.structureAI = ai.NewBudgetStructureProvider()
+	}
+
+	res, err := h.structureAI.GenerateBudgetStructure(c.Request().Context(), ai.BudgetStructurePromptRequest{
+		Prompt:          req.Prompt,
+		DefaultCurrency: curr,
+	})
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	return c.JSON(http.StatusOK, res)
+}
+
+// PreviewSourceStructure reads and returns the existing structure of a source budget.
+func (h *WorkspaceHandler) PreviewSourceStructure(c echo.Context) error {
+	sourceBudgetID := c.QueryParam("source_budget_id")
+	if sourceBudgetID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "source_budget_id is required"})
+	}
+
+	userID := c.Get(ContextUserIDKey).(string)
+	var memberCount int
+	err := h.mainDB.QueryRowContext(c.Request().Context(), `SELECT count(*) FROM budget_members WHERE budget_id = ? AND user_id = ?`, sourceBudgetID, userID).Scan(&memberCount)
+	if err != nil || memberCount == 0 {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "Access denied to source budget"})
+	}
+
+	exported, err := h.appService.ExportBudgetStructure(c.Request().Context(), sourceBudgetID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed loading source structure"})
+	}
+
+	return c.JSON(http.StatusOK, exported)
+}
+
+// ApplyStructure applies a selected budget structure to the target budget.
+func (h *WorkspaceHandler) ApplyStructure(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID, _ := c.Get("correlationID").(string)
+
+	var structure ai.BudgetStructure
+	if err := c.Bind(&structure); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid structure payload"})
+	}
+
+	bCount, tCount, err := h.appService.ApplyBudgetStructure(c.Request().Context(), budgetID, &structure, userID, corrID)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{
+		"success":         true,
+		"buckets_created": bCount,
+		"targets_created": tCount,
+		"redirect":        fmt.Sprintf("/budgets/%s/budget", budgetID),
+	})
 }

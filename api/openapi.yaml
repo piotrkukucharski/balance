@@ -1018,6 +1018,58 @@ paths:
         '403':
           $ref: '#/components/responses/ForbiddenError'
 
+  /budgets/{budgetId}/structure/generate-ai:
+    post:
+      summary: Generate proposed budget structure (groups, buckets, targets) from text description using AI (EDITOR+ required)
+      operationId: generateBudgetStructureAI
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateBudgetStructureRequest'
+      responses:
+        '200':
+          description: Proposed budget structure generated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetStructureResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /budgets/{budgetId}/structure/import:
+    post:
+      summary: Import budget structure from another budget or apply proposed structure (EDITOR+ required)
+      operationId: importBudgetStructure
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportBudgetStructureRequest'
+      responses:
+        '200':
+          description: Budget structure applied successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyBudgetStructureResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
   /budgets/{budgetId}/view/horizon:
     get:
       summary: Get rolling horizon envelope funding view
@@ -2768,6 +2820,106 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PartyCashflowSummary'
+
+    GenerateBudgetStructureRequest:
+      type: object
+      required:
+        - prompt
+      properties:
+        prompt:
+          type: string
+        currency:
+          type: string
+
+    ImportBudgetStructureRequest:
+      type: object
+      properties:
+        source_budget_id:
+          type: string
+        structure:
+          $ref: '#/components/schemas/BudgetStructureResponse'
+
+    ProposedTarget:
+      type: object
+      required:
+        - name
+        - target_type
+        - priority
+        - amount_minor
+        - currency
+        - recurrence_cadence
+        - non_spending_strategy
+      properties:
+        name:
+          type: string
+        target_type:
+          type: string
+          enum: [EXPENSE, SAVINGS, DEBT_PAYMENT]
+        priority:
+          type: integer
+        amount_minor:
+          type: integer
+          format: int64
+        currency:
+          type: string
+        recurrence_cadence:
+          type: string
+          enum: [ONE_OFF, WEEKLY, MONTHLY, ANNUAL, CUSTOM_DAYS]
+        non_spending_strategy:
+          type: string
+          enum: [ROLL_OVER, RETURN_TO_POOL, ARREARS_CUMULATIVE, CAP_AND_HOLD, PRORATE_FUTURE]
+        due_date_day:
+          type: integer
+
+    ProposedBucket:
+      type: object
+      required:
+        - name
+        - targets
+      properties:
+        name:
+          type: string
+        targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProposedTarget'
+
+    ProposedGroup:
+      type: object
+      required:
+        - group_name
+        - buckets
+      properties:
+        group_name:
+          type: string
+        buckets:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProposedBucket'
+
+    BudgetStructureResponse:
+      type: object
+      required:
+        - groups
+      properties:
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProposedGroup'
+
+    ApplyBudgetStructureResponse:
+      type: object
+      required:
+        - buckets_created
+        - targets_created
+        - message
+      properties:
+        buckets_created:
+          type: integer
+        targets_created:
+          type: integer
+        message:
+          type: string
 
 security:
   - bearerAuth: []

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/balance/balance/internal/ai"
 	"github.com/balance/balance/internal/auth"
 	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/clock"
@@ -639,3 +640,22 @@ func (s *AppService) CheckOwnerMembership(ctx context.Context, budgetID, userID 
 	}
 	return role == "OWNER", nil
 }
+
+// ApplyBudgetStructure applies an entire budget structure to the tenant database.
+func (s *AppService) ApplyBudgetStructure(ctx context.Context, budgetID string, structure *ai.BudgetStructure, agentID, correlationID string) (int, int, error) {
+	tenantDB, err := s.tenantMgr.GetTenantDB(budgetID, false)
+	if err != nil {
+		return 0, 0, err
+	}
+	return budget.ApplyBudgetStructure(ctx, tenantDB, structure, agentID, correlationID)
+}
+
+// ExportBudgetStructure exports an existing budget structure from the tenant database.
+func (s *AppService) ExportBudgetStructure(ctx context.Context, budgetID string) (*ai.BudgetStructure, error) {
+	tenantDB, err := s.tenantMgr.GetTenantDB(budgetID, true)
+	if err != nil {
+		return nil, err
+	}
+	return budget.ExportBudgetStructure(ctx, tenantDB)
+}
+

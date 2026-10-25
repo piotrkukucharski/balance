@@ -25,23 +25,31 @@ import (
 
 // Server implements api.ServerInterface providing JSON REST controllers.
 type Server struct {
-	mainDB     *sql.DB
-	tenantMgr  *db.TenantDBManager
-	appService *service.AppService
-	aiService  *ai.FormulaAssistantService
+	mainDB      *sql.DB
+	tenantMgr   *db.TenantDBManager
+	appService  *service.AppService
+	aiService   *ai.FormulaAssistantService
+	structureAI ai.BudgetStructureAIProvider
 }
 
 // NewServer creates a new API Server instance.
 func NewServer(mainDB *sql.DB, tenantMgr *db.TenantDBManager, appService *service.AppService) *Server {
 	mockAI := ai.NewMockFormulaAIProvider()
 	aiService := ai.NewFormulaAssistantService(mockAI)
+	structureAI := ai.NewBudgetStructureProvider()
 
 	return &Server{
-		mainDB:     mainDB,
-		tenantMgr:  tenantMgr,
-		appService: appService,
-		aiService:  aiService,
+		mainDB:      mainDB,
+		tenantMgr:   tenantMgr,
+		appService:  appService,
+		aiService:   aiService,
+		structureAI: structureAI,
 	}
+}
+
+// SetStructureAIProvider overrides structure AI provider (useful for tests).
+func (s *Server) SetStructureAIProvider(p ai.BudgetStructureAIProvider) {
+	s.structureAI = p
 }
 
 // Ensure Server implements ServerInterface.
@@ -1234,6 +1242,140 @@ func (s *Server) ValidateFormula(ctx echo.Context, budgetId BudgetIdPathParam) e
 		Error:        nil,
 		Valid:        true,
 		Dependencies: &deps,
+	})
+}
+
+// GenerateBudgetStructureAI (POST /budgets/{budgetId}/structure/generate-ai)
+func (s *Server) GenerateBudgetStructureAI(ctx echo.Context, budgetId BudgetIdPathParam) error {
+	budgetID := budgetId.String()
+	_, _, err := s.verifyBudgetAccess(ctx, budgetID, "EDITOR")
+	if err != nil {
+		return err
+	}
+
+	var req GenerateBudgetStructureRequest
+	if err := ctx.Bind(&req); err != nil || strings.TrimSpace(req.Prompt) == "" {
+		return sendError(ctx, http.StatusBadRequest, "prompt is required", "INVALID_INPUT", nil)
+	}
+
+	curr := "PLN"
+	if req.Currency != nil && strings.TrimSpace(*req.Currency) != "" {
+		curr = strings.ToUpper(strings.TrimSpace(*req.Currency))
+	} else {
+		_ = s.mainDB.QueryRowContext(ctx.Request().Context(), `SELECT default_currency FROM budgets WHERE id = ?`, budgetID).Scan(&curr)
+	}
+
+	structRes, err := s.structureAI.GenerateBudgetStructure(ctx.Request().Context(), ai.BudgetStructurePromptRequest{
+		Prompt:          req.Prompt,
+		DefaultCurrency: curr,
+	})
+	if err != nil {
+		return sendError(ctx, http.StatusBadRequest, err.Error(), "STRUCTURE_GEN_FAILED", nil)
+	}
+
+	var groups []ProposedGroup
+	for _, g := range structRes.Groups {
+		var buckets []ProposedBucket
+		for _, b := range g.Buckets {
+			var targets []ProposedTarget
+			for _, t := range b.Targets {
+				targets = append(targets, ProposedTarget{
+					AmountMinor:         t.AmountMinor,
+					Currency:            t.Currency,
+					DueDateDay:          t.DueDateDay,
+					Name:                t.Name,
+					NonSpendingStrategy: ProposedTargetNonSpendingStrategy(t.NonSpendingStrategy),
+					Priority:            t.Priority,
+					RecurrenceCadence:   ProposedTargetRecurrenceCadence(t.RecurrenceCadence),
+					TargetType:          ProposedTargetTargetType(t.TargetType),
+				})
+			}
+			buckets = append(buckets, ProposedBucket{
+				Name:    b.Name,
+				Targets: targets,
+			})
+		}
+		groups = append(groups, ProposedGroup{
+			GroupName: g.GroupName,
+			Buckets:   buckets,
+		})
+	}
+
+	return ctx.JSON(http.StatusOK, BudgetStructureResponse{
+		Groups: groups,
+	})
+}
+
+// ImportBudgetStructure (POST /budgets/{budgetId}/structure/import)
+func (s *Server) ImportBudgetStructure(ctx echo.Context, budgetId BudgetIdPathParam) error {
+	budgetID := budgetId.String()
+	_, _, err := s.verifyBudgetAccess(ctx, budgetID, "EDITOR")
+	if err != nil {
+		return err
+	}
+	userID, _ := getUserID(ctx)
+
+	var req ImportBudgetStructureRequest
+	if err := ctx.Bind(&req); err != nil {
+		return sendError(ctx, http.StatusBadRequest, "invalid request body", "INVALID_INPUT", nil)
+	}
+
+	var structureToApply *ai.BudgetStructure
+
+	if req.Structure != nil && len(req.Structure.Groups) > 0 {
+		var groups []ai.ProposedGroup
+		for _, g := range req.Structure.Groups {
+			var buckets []ai.ProposedBucket
+			for _, b := range g.Buckets {
+				var targets []ai.ProposedTarget
+				for _, t := range b.Targets {
+					targets = append(targets, ai.ProposedTarget{
+						Name:                t.Name,
+						TargetType:          string(t.TargetType),
+						Priority:            t.Priority,
+						AmountMinor:         t.AmountMinor,
+						Currency:            t.Currency,
+						RecurrenceCadence:   string(t.RecurrenceCadence),
+						NonSpendingStrategy: string(t.NonSpendingStrategy),
+						DueDateDay:          t.DueDateDay,
+					})
+				}
+				buckets = append(buckets, ai.ProposedBucket{
+					Name:    b.Name,
+					Targets: targets,
+				})
+			}
+			groups = append(groups, ai.ProposedGroup{
+				GroupName: g.GroupName,
+				Buckets:   buckets,
+			})
+		}
+		structureToApply = &ai.BudgetStructure{Groups: groups}
+	} else if req.SourceBudgetId != nil && strings.TrimSpace(*req.SourceBudgetId) != "" {
+		sourceID := strings.TrimSpace(*req.SourceBudgetId)
+		_, _, err := s.verifyBudgetAccess(ctx, sourceID, "VIEWER")
+		if err != nil {
+			return sendError(ctx, http.StatusForbidden, "access denied to source budget", "FORBIDDEN", nil)
+		}
+		exported, err := s.appService.ExportBudgetStructure(ctx.Request().Context(), sourceID)
+		if err != nil {
+			return sendError(ctx, http.StatusInternalServerError, "failed reading source budget structure", "EXPORT_FAILED", nil)
+		}
+		structureToApply = exported
+	} else {
+		return sendError(ctx, http.StatusBadRequest, "either structure or source_budget_id must be provided", "INVALID_INPUT", nil)
+	}
+
+	correlationID := ctx.Response().Header().Get("X-Correlation-ID")
+	bCount, tCount, err := s.appService.ApplyBudgetStructure(ctx.Request().Context(), budgetID, structureToApply, userID, correlationID)
+	if err != nil {
+		return sendError(ctx, http.StatusInternalServerError, fmt.Sprintf("failed applying budget structure: %v", err), "APPLY_FAILED", nil)
+	}
+
+	return ctx.JSON(http.StatusOK, ApplyBudgetStructureResponse{
+		BucketsCreated: bCount,
+		TargetsCreated: tCount,
+		Message:        fmt.Sprintf("Successfully applied %d buckets and %d targets", bCount, tCount),
 	})
 }
 
