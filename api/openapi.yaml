@@ -2768,6 +2768,16 @@ components:
           type: string
         validation_error:
           type: string
+        target_name:
+          type: string
+          description: Optional name of the target being edited
+        due_date:
+          type: string
+          description: Optional anchor due date string YYYY-MM-DD
+        anchor_due_date:
+          type: integer
+          format: int64
+          description: Optional anchor due date timestamp in seconds or microseconds
 
     GenerateFormulaResponse:
       type: object

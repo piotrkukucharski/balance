@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/balance/balance/internal/ai"
 	"github.com/balance/balance/internal/auth"
 	openapi "github.com/balance/balance/internal/api"
 	"github.com/balance/balance/internal/budget"
@@ -82,6 +83,9 @@ type bddTestContext struct {
 	validateError          error
 	aiGeneratedScript      string
 	aiGeneratedExplanation string
+	activeTargetName       string
+	activeTargetBucketName string
+	activeTargetDueDate    string
 }
 
 func (tc *bddTestContext) setup() error {
@@ -136,6 +140,7 @@ func (tc *bddTestContext) setup() error {
 		{BaseCurrency: "USD", TargetCurrency: "PLN", RateDate: tToday, RateMicros: 3985000, Source: "NBP"},
 	}
 	apiServer.SetFXService(fx.NewService(mainDB, &bddMockECBClient{quotes: defaultECBQuotes}, &bddMockNBPClient{quotes: defaultNBPQuotes}))
+	apiServer.SetFormulaAIProvider(ai.NewMockFormulaAIProvider())
 	tc.fxService = fx.NewService(mainDB, &bddMockECBClient{quotes: defaultECBQuotes}, &bddMockNBPClient{quotes: defaultNBPQuotes})
 
 	apiGroup := tc.echoEngine.Group("/api/v1", func(next echo.HandlerFunc) echo.HandlerFunc {
@@ -610,6 +615,39 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 	ctx.Step(`^an authenticated user editing target "([^"]*)" in bucket "([^"]*)"$`, func(targetName, bucketName string) error {
+		tc.activeTargetName = targetName
+		tc.activeTargetBucketName = bucketName
+		tc.activeTargetDueDate = ""
+		now := time.Now().UTC().UnixMicro()
+		if tc.activeUserID == "" {
+			tc.activeUserID = domain.NewUUIDv7()
+			_, err := tc.mainDB.Exec(`INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, 'aiuser@example.com', 'h', 'AI User', ?, ?)`, tc.activeUserID, now, now)
+			if err != nil {
+				return err
+			}
+		}
+		if tc.activeBudgetID == "" {
+			bID := domain.NewUUIDv7()
+			_, err := tc.mainDB.Exec(`INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at) VALUES (?, 'AI Test Budget', 'PLN', 'Europe/Warsaw', ?, ?, ?)`, bID, tc.activeUserID, now, now)
+			if err != nil {
+				return err
+			}
+			_, err = tc.mainDB.Exec(`INSERT INTO budget_members (budget_id, user_id, role, joined_at) VALUES (?, ?, 'EDITOR', ?)`, bID, tc.activeUserID, now)
+			if err != nil {
+				return err
+			}
+			tc.activeBudgetID = bID
+			_, err = tc.tenantMgr.GetTenantDB(bID, true)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	ctx.Step(`^an authenticated user editing target "([^"]*)" with anchor due date "([^"]*)" in bucket "([^"]*)"$`, func(targetName, dueDateStr, bucketName string) error {
+		tc.activeTargetName = targetName
+		tc.activeTargetBucketName = bucketName
+		tc.activeTargetDueDate = dueDateStr
 		now := time.Now().UTC().UnixMicro()
 		if tc.activeUserID == "" {
 			tc.activeUserID = domain.NewUUIDv7()
@@ -637,12 +675,23 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 	ctx.Step(`^I request AI formula generation with prompt "([^"]*)"$`, func(prompt string) error {
-		reqBody, _ := json.Marshal(map[string]interface{}{
-			"current_bucket_name": "Savings",
+		bName := "Savings"
+		if tc.activeTargetBucketName != "" {
+			bName = tc.activeTargetBucketName
+		}
+		payload := map[string]interface{}{
+			"current_bucket_name": bName,
 			"target_currency":    "PLN",
 			"user_prompt":        prompt,
 			"window_days":        30,
-		})
+		}
+		if tc.activeTargetName != "" {
+			payload["target_name"] = tc.activeTargetName
+		}
+		if tc.activeTargetDueDate != "" {
+			payload["due_date"] = tc.activeTargetDueDate
+		}
+		reqBody, _ := json.Marshal(payload)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/budgets/"+tc.activeBudgetID+"/targets/generate-formula", bytes.NewReader(reqBody))
 		req.Header.Set("Content-Type", "application/json")
 		if tc.activeBearer == "" {
@@ -684,9 +733,13 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 	ctx.Step(`^a live calculated preview badge should be displayed in the UI$`, func() error {
-		valBody, _ := json.Marshal(map[string]interface{}{
+		valMap := map[string]interface{}{
 			"lua_script": tc.aiGeneratedScript,
-		})
+		}
+		if tc.activeTargetDueDate != "" {
+			valMap["due_date"] = tc.activeTargetDueDate
+		}
+		valBody, _ := json.Marshal(valMap)
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/budgets/"+tc.activeBudgetID+"/targets/validate-formula", bytes.NewReader(valBody))
 		req.Header.Set("Authorization", "Bearer "+tc.activeBearer)
 		req.Header.Set("Content-Type", "application/json")

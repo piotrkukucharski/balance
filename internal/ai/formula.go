@@ -34,14 +34,18 @@ type TargetContextMeta struct {
 }
 
 type FormulaGenerationRequest struct {
-	UserPrompt        string              `json:"user_prompt"`
-	CurrentBucketName string              `json:"current_bucket_name"`
-	TargetCurrency    string              `json:"target_currency"`
-	WindowDays        int                 `json:"window_days"`
-	AvailableBuckets  []BucketContextMeta `json:"available_buckets"`
-	AvailableTargets  []TargetContextMeta `json:"available_targets"`
-	PreviousAttempt   string              `json:"previous_attempt,omitempty"`
-	ValidationError   string              `json:"validation_error,omitempty"`
+	UserPrompt        string                    `json:"user_prompt"`
+	CurrentBucketName string                    `json:"current_bucket_name"`
+	TargetCurrency    string                    `json:"target_currency"`
+	WindowDays        int                       `json:"window_days"`
+	AvailableBuckets  []BucketContextMeta       `json:"available_buckets"`
+	AvailableTargets  []TargetContextMeta       `json:"available_targets"`
+	PreviousAttempt   string                    `json:"previous_attempt,omitempty"`
+	ValidationError   string                    `json:"validation_error,omitempty"`
+	TargetName        string                    `json:"target_name,omitempty"`
+	AnchorDueDate     *int64                    `json:"anchor_due_date,omitempty"`
+	DueDate           string                    `json:"due_date,omitempty"`
+	TargetCtx         *lua.TargetFormulaContext `json:"target_ctx,omitempty"`
 }
 
 type FormulaGenerationResult struct {
@@ -78,15 +82,52 @@ func (m *MockFormulaAIProvider) ProviderName() string {
 	return "MOCK"
 }
 
-var reAmountOnly = regexp.MustCompile(`(?i)(\d+(?:[.,]\d+)?)\s*(?:zł|pln|eur|usd)?`)
+var reAmountOnly = regexp.MustCompile(`(?i)(\d+(?:[\s.,]\d+)*)\s*(?:zł|pln|eur|usd)?`)
 
 func (m *MockFormulaAIProvider) GenerateLuaFormula(ctx context.Context, req FormulaGenerationRequest) (*FormulaGenerationResult, error) {
 	promptLower := strings.ToLower(req.UserPrompt)
 
-	if strings.Contains(promptLower, "mortgage") || strings.Contains(promptLower, "overpayment") || strings.Contains(promptLower, "kredyt") || strings.Contains(promptLower, "nadpłat") {
+	if strings.Contains(promptLower, "overpayment") || strings.Contains(promptLower, "nadpłat") {
 		return &FormulaGenerationResult{
 			LuaScript:   `return math.max(0, money(2000) - target("Required Mortgage Installment").required)`,
 			Explanation: "Deduct the required mortgage installment from 2,000 PLN.",
+		}, nil
+	}
+
+	if strings.Contains(promptLower, "pmt") || strings.Contains(promptLower, "kredyt") || strings.Contains(promptLower, "rata") || strings.Contains(promptLower, "raty") || strings.Contains(promptLower, "ratę") || strings.Contains(promptLower, "loan") || strings.Contains(promptLower, "hipotek") || (strings.Contains(promptLower, "mortgage") && !strings.Contains(promptLower, "overpayment")) {
+		pv := int64(300000)
+		amtMatch := reAmountOnly.FindStringSubmatch(req.UserPrompt)
+		if len(amtMatch) >= 2 {
+			amtStr := strings.ReplaceAll(amtMatch[1], " ", "")
+			amtStr = strings.ReplaceAll(amtStr, ",", ".")
+			if amt, err := strconv.ParseFloat(amtStr, 64); err == nil && amt >= 1000 {
+				pv = int64(amt)
+			}
+		}
+		rateAnnual := 0.06
+		if strings.Contains(promptLower, "5%") || strings.Contains(promptLower, "0.05") {
+			rateAnnual = 0.05
+		} else if strings.Contains(promptLower, "7%") || strings.Contains(promptLower, "0.07") {
+			rateAnnual = 0.07
+		} else if strings.Contains(promptLower, "8%") || strings.Contains(promptLower, "0.08") {
+			rateAnnual = 0.08
+		} else if strings.Contains(promptLower, "6%") || strings.Contains(promptLower, "0.06") {
+			rateAnnual = 0.06
+		}
+
+		rateStr := "0.06 / 12"
+		if rateAnnual == 0.05 {
+			rateStr = "0.05 / 12"
+		} else if rateAnnual == 0.07 {
+			rateStr = "0.07 / 12"
+		} else if rateAnnual == 0.08 {
+			rateStr = "0.08 / 12"
+		}
+
+		script := fmt.Sprintf("local nper = date.diff_months(self.anchor_due_date, runtime.today)\nlocal r = %s\nlocal pv = %d\nlocal pmt = -financial.pmt(r, nper, pv)\nreturn money(pmt)", rateStr, pv)
+		return &FormulaGenerationResult{
+			LuaScript:   script,
+			Explanation: fmt.Sprintf("Calculate monthly loan payment using financial.pmt for %d principal at %.1f%% annual rate up to target anchor due date.", pv, rateAnnual*100),
 		}, nil
 	}
 
@@ -173,9 +214,30 @@ func (s *FormulaAssistantService) GenerateAndValidateFormula(
 	ctx context.Context,
 	req FormulaGenerationRequest,
 	snapshot *lua.InMemoryBudgetSnapshot,
+	targetCtxOpt ...*lua.TargetFormulaContext,
 ) (*FormulaGenerationResult, int64, error) {
 	if len(req.UserPrompt) > 500 {
 		return nil, 0, errors.New("user prompt exceeds 500 characters limit")
+	}
+
+	var targetCtx *lua.TargetFormulaContext
+	if len(targetCtxOpt) > 0 && targetCtxOpt[0] != nil {
+		targetCtx = targetCtxOpt[0]
+	} else if req.TargetCtx != nil {
+		targetCtx = req.TargetCtx
+	} else if req.TargetName != "" || req.AnchorDueDate != nil || req.DueDate != "" {
+		var anchorSec *int64 = req.AnchorDueDate
+		if anchorSec == nil && req.DueDate != "" {
+			if t, err := time.Parse("2006-01-02", req.DueDate); err == nil {
+				sec := t.Unix()
+				anchorSec = &sec
+			}
+		}
+		targetCtx = &lua.TargetFormulaContext{
+			Name:          req.TargetName,
+			Currency:      req.TargetCurrency,
+			AnchorDueDate: anchorSec,
+		}
 	}
 
 	// Attempt 1
@@ -185,7 +247,7 @@ func (s *FormulaAssistantService) GenerateAndValidateFormula(
 	}
 
 	// Validate & dry run Attempt 1
-	val, err := lua.EvaluateFormula(ctx, res.LuaScript, snapshot)
+	val, err := lua.EvaluateFormulaWithContext(ctx, res.LuaScript, snapshot, targetCtx)
 	if err == nil {
 		return res, val, nil
 	}
@@ -199,7 +261,7 @@ func (s *FormulaAssistantService) GenerateAndValidateFormula(
 		return nil, 0, fmt.Errorf("retry generation failed: %w", errRetry)
 	}
 
-	valRetry, errValRetry := lua.EvaluateFormula(ctx, resRetry.LuaScript, snapshot)
+	valRetry, errValRetry := lua.EvaluateFormulaWithContext(ctx, resRetry.LuaScript, snapshot, targetCtx)
 	if errValRetry != nil {
 		return nil, 0, fmt.Errorf("self-corrected formula failed validation: %w", errValRetry)
 	}
@@ -239,15 +301,32 @@ The script must end with return <int64_minor_units>, returning a single non-nega
 
 Available helper functions and runtime environment:
 - money(val): converts major currency units (number or string) into integer minor units (e.g. money(125) -> 12500, money("19.99") -> 1999).
-- target("name").required, .funded, .planned, .spent, .priority: inspects another target in the budget.
+- target("name").required, .funded, .planned, .spent, .priority, .anchor_due_date: inspects another target in the budget (anchor_due_date is Unix epoch in seconds).
+- self.name, .planned, .required, .funded, .spent, .priority, .anchor_due_date: inspects the current target being evaluated (anchor_due_date is Unix epoch in seconds).
 - bucket.balance(currency?): returns current bucket balance in minor units.
 - budget.income(days, currency?): external inflows over last N days (1 <= days <= 3650).
 - budget.spent(days, currency?): external outflows over last N days (1 <= days <= 3650).
 - window.days: active horizon window in days (default 30).
+- runtime.today: Unix timestamp in seconds representing the start of today (00:00:00) in the budget's timezone.
+- financial.pmt(rate, nper, pv, [fv], [type]): computes payment for a loan based on constant payments and interest rate (Excel PMT convention). Use -financial.pmt(...) for positive installment amount.
+- date library:
+  - date.diff_months(t1, t2): difference in whole months between t1 and t2 (t1 - t2).
+  - date.year(t), date.month(t), date.day(t), date.weekday(t)
+  - date.format(t, layout?): formats date (default "2006-01-02")
+  - date.parse(str, layout?): parses string into Unix microsecond timestamp
+- fx library:
+  - fx.rate(base, target): returns exchange rate as a float number
+  - fx.convert(amountMinor, base, target): converts minor units from base to target currency
 - Whitelisted math: math.max, math.min, math.floor, math.ceil, math.abs, math.fmod, math.pow, math.sqrt, tonumber.
 
 Formula rules & best practices:
-- Always use money(val) for currency amounts (never raw minor units directly unless using existing target/bucket properties).
+- Always use money(val) for currency amounts (never raw minor units directly unless using existing target/bucket properties or financial.pmt output).
+- For loan / mortgage installments with financial.pmt (e.g. calculating monthly payment to maturity using self.anchor_due_date and runtime.today):
+  local nper = date.diff_months(self.anchor_due_date, runtime.today)
+  local r = 0.06 / 12
+  local pv = 300000
+  local pmt = -financial.pmt(r, nper, pv)
+  return money(pmt)
 - For recurring expenses with a cycle of N days or months (e.g. "125 zł płatne co 3 miesiące / kwartalnie"):
   Calculate the proportional savings allocation for the active window:
   math.ceil(money(125) * window.days / 90)
@@ -255,6 +334,8 @@ Formula rules & best practices:
   math.max(0, money(2000) - target("Required Mortgage Installment").required)
 - For percentage of income savings (e.g. save 15% of past 30 days income capped at 5000 PLN):
   math.min(money(5000), math.floor(budget.income(30, "PLN") * 0.15))
+- For multi-currency conversion:
+  return fx.convert(money(100), "EUR", "PLN")
 - For fixed amounts:
   money(100)
 
@@ -290,6 +371,14 @@ func (g *GeminiDirectHTTPProvider) GenerateLuaFormula(ctx context.Context, req F
 
 	promptBuilder := strings.Builder{}
 	fmt.Fprintf(&promptBuilder, "User prompt: %s\nBucket: %s, Currency: %s, Window: %d", req.UserPrompt, req.CurrentBucketName, req.TargetCurrency, req.WindowDays)
+	if req.TargetName != "" {
+		fmt.Fprintf(&promptBuilder, "\nTarget Name: %s", req.TargetName)
+	}
+	if req.DueDate != "" {
+		fmt.Fprintf(&promptBuilder, "\nTarget Due Date: %s", req.DueDate)
+	} else if req.AnchorDueDate != nil {
+		fmt.Fprintf(&promptBuilder, "\nTarget Anchor Due Date (epoch seconds): %d", *req.AnchorDueDate)
+	}
 
 	if len(req.AvailableTargets) > 0 {
 		targetsJSON, _ := json.Marshal(req.AvailableTargets)

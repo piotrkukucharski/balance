@@ -2,7 +2,9 @@ package ai
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/balance/balance/internal/lua"
 )
@@ -96,5 +98,78 @@ func TestNewFormulaAIProvider(t *testing.T) {
 	p1 := NewFormulaAIProvider()
 	if p1.ProviderName() != "MOCK" && p1.ProviderName() != "GEMINI_DIRECT" {
 		t.Fatalf("unexpected provider name: %s", p1.ProviderName())
+	}
+}
+
+func TestMockFormulaAIProvider_LoanInstallmentPMT(t *testing.T) {
+	ctx := context.Background()
+	mockProvider := NewMockFormulaAIProvider()
+	svc := NewFormulaAssistantService(mockProvider)
+
+	simulatedToday := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	snap := &lua.InMemoryBudgetSnapshot{
+		TargetCurrency: "PLN",
+		WindowDays:     30,
+		Timezone:       "UTC",
+		NowTime:        &simulatedToday,
+	}
+
+	dueDateStr := "2036-10-25"
+	targetTime, _ := time.Parse("2006-01-02", dueDateStr)
+	targetEpochSec := targetTime.Unix()
+
+	req := FormulaGenerationRequest{
+		UserPrompt:        "Oblicz ratę kredytu 300000 zł przy oprocentowaniu 6% rocznie",
+		CurrentBucketName: "Housing",
+		TargetCurrency:    "PLN",
+		WindowDays:        30,
+		TargetName:        "Hipoteka",
+		AnchorDueDate:     &targetEpochSec,
+		DueDate:           dueDateStr,
+	}
+
+	res, val, err := svc.GenerateAndValidateFormula(ctx, req, snap)
+	if err != nil {
+		t.Fatalf("GenerateAndValidateFormula failed: %v", err)
+	}
+
+	if !strings.Contains(res.LuaScript, "financial.pmt") {
+		t.Fatalf("expected script to use financial.pmt, got:\n%s", res.LuaScript)
+	}
+	if !strings.Contains(res.LuaScript, "self.anchor_due_date") {
+		t.Fatalf("expected script to use self.anchor_due_date, got:\n%s", res.LuaScript)
+	}
+
+	// For 300,000 PLN loan over 120 months (10 years) at 6% annual (0.5% monthly):
+	// pmt = 3330.615... -> 333062 minor units
+	if val != 333062 {
+		t.Fatalf("expected evaluated minor amount 333062, got %d", val)
+	}
+}
+
+func TestMockFormulaAIProvider_LoanInstallmentMissingContextFails(t *testing.T) {
+	ctx := context.Background()
+	mockProvider := NewMockFormulaAIProvider()
+	svc := NewFormulaAssistantService(mockProvider)
+
+	snap := &lua.InMemoryBudgetSnapshot{
+		TargetCurrency: "PLN",
+		WindowDays:     30,
+	}
+
+	// Request without any anchor due date or targetCtx
+	req := FormulaGenerationRequest{
+		UserPrompt:        "Oblicz ratę kredytu 300000 zł przy oprocentowaniu 6% rocznie",
+		CurrentBucketName: "Housing",
+		TargetCurrency:    "PLN",
+		WindowDays:        30,
+	}
+
+	_, _, err := svc.GenerateAndValidateFormula(ctx, req, snap)
+	if err == nil {
+		t.Fatalf("expected GenerateAndValidateFormula to fail when anchor_due_date is missing, but it succeeded")
+	}
+	if !strings.Contains(err.Error(), "anchor_due_date is not configured") {
+		t.Fatalf("expected error mentioning anchor_due_date is not configured, got: %v", err)
 	}
 }

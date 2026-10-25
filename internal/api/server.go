@@ -1351,7 +1351,47 @@ func (s *Server) GenerateFormula(ctx echo.Context, budgetId BudgetIdPathParam) e
 		wDays = *req.WindowDays
 	}
 
-	snap, _ := budget.BuildBudgetSnapshot(ctx.Request().Context(), tenantDB, req.TargetCurrency, wDays)
+	var defaultCurr, tz string
+	_ = s.mainDB.QueryRowContext(ctx.Request().Context(), "SELECT default_currency, timezone FROM budgets WHERE id = ?", budgetID).Scan(&defaultCurr, &tz)
+	if defaultCurr == "" {
+		defaultCurr = "PLN"
+	}
+
+	snap, _ := budget.BuildBudgetSnapshot(ctx.Request().Context(), tenantDB, req.TargetCurrency, wDays, tz)
+
+	var targetName string
+	if req.TargetName != nil {
+		targetName = *req.TargetName
+	}
+
+	var anchorDueDateSec *int64
+	var dueDateStr string
+	if req.AnchorDueDate != nil && *req.AnchorDueDate > 0 {
+		sec := *req.AnchorDueDate
+		if sec > 1e14 {
+			sec = sec / 1_000_000
+		}
+		anchorDueDateSec = &sec
+	} else if req.DueDate != nil && *req.DueDate != "" {
+		dueDateStr = *req.DueDate
+		if t, err := time.Parse("2006-01-02", dueDateStr); err == nil {
+			sec := t.Unix()
+			anchorDueDateSec = &sec
+		}
+	}
+
+	if anchorDueDateSec == nil && targetName != "" && snap != nil && snap.Targets[targetName] != nil {
+		anchorDueDateSec = snap.Targets[targetName].AnchorDueDate
+	}
+
+	var targetCtx *lua.TargetFormulaContext
+	if targetName != "" || anchorDueDateSec != nil {
+		targetCtx = &lua.TargetFormulaContext{
+			Name:          targetName,
+			Currency:      req.TargetCurrency,
+			AnchorDueDate: anchorDueDateSec,
+		}
+	}
 
 	var availTargets []ai.TargetContextMeta
 	if snap != nil && snap.Targets != nil {
@@ -1390,7 +1430,11 @@ func (s *Server) GenerateFormula(ctx echo.Context, budgetId BudgetIdPathParam) e
 		WindowDays:        wDays,
 		AvailableBuckets:  availBuckets,
 		AvailableTargets:  availTargets,
-	}, snap)
+		TargetName:        targetName,
+		AnchorDueDate:     anchorDueDateSec,
+		DueDate:           dueDateStr,
+		TargetCtx:         targetCtx,
+	}, snap, targetCtx)
 	if err != nil {
 		return sendError(ctx, http.StatusBadRequest, err.Error(), "FORMULA_GEN_FAILED", nil)
 	}

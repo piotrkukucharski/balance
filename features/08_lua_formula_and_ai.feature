@@ -34,6 +34,20 @@ Feature: Sandboxed Lua Formula Engine and AI Formula Assistant
     And the sandbox dry-run should evaluate without errors
     And a live calculated preview badge should be displayed in the UI
 
+  Scenario: Generating a Lua formula for loan installment using financial.pmt and AI Assistant
+    Given an authenticated user editing target "Hipoteka" with anchor due date "2036-10-25" in bucket "Housing"
+    When I request AI formula generation with prompt "Oblicz ratę kredytu 300000 zł przy oprocentowaniu 6% rocznie"
+    Then the AI assistant should generate valid sandboxed Lua code:
+      """
+      local nper = date.diff_months(self.anchor_due_date, runtime.today)
+      local r = 0.06 / 12
+      local pv = 300000
+      local pmt = -financial.pmt(r, nper, pv)
+      return money(pmt)
+      """
+    And the sandbox dry-run should evaluate without errors
+    And a live calculated preview badge should be displayed in the UI
+
   Scenario: Blocking unsafe constructs in Lua formulas
     Given a user-submitted Lua formula attempting to use a while loop or function declaration:
       """

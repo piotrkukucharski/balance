@@ -3241,6 +3241,11 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             }
             if (btnGen) btnGen.disabled = true;
 
+            const dueDateInput = document.getElementById('target_due_date');
+            const dueDateVal = dueDateInput ? dueDateInput.value : '';
+            const targetNameInput = document.getElementById('target_name');
+            const targetNameVal = targetNameInput ? targetNameInput.value.trim() : '';
+
             fetch('/api/v1/budgets/' + currentBudgetID + '/targets/generate-formula', {
                 method: 'POST',
                 headers: {
@@ -3251,7 +3256,9 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                     current_bucket_name: document.getElementById('drawer_bucket_name').innerText.trim() || 'General',
                     target_currency: (document.getElementById('target_currency') ? document.getElementById('target_currency').value : '') || currentCurrency || 'PLN',
                     user_prompt: prompt,
-                    window_days: 30
+                    window_days: 30,
+                    due_date: dueDateVal,
+                    target_name: targetNameVal
                 })
             })
             .then(res => res.json())

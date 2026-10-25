@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/balance/balance/internal/ai"
 	openapi "github.com/balance/balance/internal/api"
 	"github.com/balance/balance/internal/clock"
 	"github.com/balance/balance/internal/db"
@@ -52,6 +53,7 @@ func setupTestAPIServer(t *testing.T) (*echo.Echo, *sql.DB, *db.TenantDBManager,
 	appService := service.NewAppService(mainDB, tenantMgr, sysClock)
 
 	server := openapi.NewServer(mainDB, tenantMgr, appService)
+	server.SetFormulaAIProvider(ai.NewMockFormulaAIProvider())
 
 	e := echo.New()
 	apiGroup := e.Group("/api/v1", func(next echo.HandlerFunc) echo.HandlerFunc {
@@ -302,6 +304,33 @@ func TestAPI_Auth_RegisterAndLoginAndTokenFlow(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &genResp)
 	if genResp.LuaScript == "" || genResp.Explanation == "" {
 		t.Fatalf("expected non-empty LuaScript and Explanation, got script=%q exp=%q", genResp.LuaScript, genResp.Explanation)
+	}
+
+	// 11. Generate Formula with target context (due_date, target_name) for loan / PMT
+	genLoanBody, _ := json.Marshal(map[string]interface{}{
+		"current_bucket_name": "Housing",
+		"target_name":        "Hipoteka",
+		"due_date":           "2036-10-25",
+		"target_currency":    "PLN",
+		"user_prompt":        "Oblicz ratę kredytu 300000 zł przy oprocentowaniu 6% rocznie",
+		"window_days":        30,
+	})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/budgets/"+budgetID+"/targets/generate-formula", bytes.NewReader(genLoanBody))
+	req.Header.Set("Authorization", "Bearer "+tokResp.Token)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on generate-formula for loan, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var genLoanResp openapi.GenerateFormulaResponse
+	json.Unmarshal(rec.Body.Bytes(), &genLoanResp)
+	if !strings.Contains(genLoanResp.LuaScript, "financial.pmt") {
+		t.Fatalf("expected generated script to contain financial.pmt, got %q", genLoanResp.LuaScript)
+	}
+	if !strings.Contains(genLoanResp.LuaScript, "self.anchor_due_date") {
+		t.Fatalf("expected generated script to contain self.anchor_due_date, got %q", genLoanResp.LuaScript)
 	}
 }
 
