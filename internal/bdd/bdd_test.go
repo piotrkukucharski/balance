@@ -3338,14 +3338,22 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 			return err
 		}
 		var target budget.TargetDefinition
+		var rInterval sql.NullInt64
+		var dueDate sql.NullInt64
 		err = bDB.QueryRow(`SELECT id, bucket_id, name, priority, sort_order, amount_minor, currency, recurrence_cadence, recurrence_interval, due_date, non_spending_strategy, current_funded_minor
 			FROM targets_projection WHERE id = ?`, activeTargetID).Scan(
 			&target.ID, &target.BucketID, &target.Name, &target.Priority, &target.SortOrder,
-			&target.AmountMinor, &target.Currency, &target.RecurrenceCadence, &target.RecurrenceInterval,
-			&target.DueDate, &target.NonSpendingStrategy, &target.CurrentFundedMinor,
+			&target.AmountMinor, &target.Currency, &target.RecurrenceCadence, &rInterval,
+			&dueDate, &target.NonSpendingStrategy, &target.CurrentFundedMinor,
 		)
 		if err != nil {
 			return fmt.Errorf("failed fetching active target %s: %w", activeTargetID, err)
+		}
+		if rInterval.Valid {
+			target.RecurrenceInterval = int(rInterval.Int64)
+		}
+		if dueDate.Valid {
+			target.DueDate = dueDate.Int64
 		}
 		req := budget.ComputeTargetRequirement(&target, windowDays, time.Now().UTC())
 		expectedMinor := parseAmountStr(expectedAmt)

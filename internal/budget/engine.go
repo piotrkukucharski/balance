@@ -226,7 +226,7 @@ func computeCalendarRecurring(t *TargetDefinition, windowDays int, now time.Time
 	} else {
 		for {
 			prev := curr.AddDate(-yearsStep, -monthsStep, 0)
-			if prev.Before(nowInLoc) {
+			if !prev.After(nowInLoc) {
 				break
 			}
 			curr = prev
@@ -302,12 +302,16 @@ func computeRecurring(t *TargetDefinition, windowDays, cycleDays int) int64 {
 		cycleDays = 1
 	}
 	occurrences := windowDays / cycleDays
-	remDays := windowDays % cycleDays
-
-	baseRequired := int64(occurrences) * t.AmountMinor
-	if remDays > 0 {
-		tailProrated := float64(t.AmountMinor) * (float64(remDays) / float64(cycleDays))
-		baseRequired += int64(math.Ceil(tailProrated))
+	var baseRequired int64
+	if occurrences < 1 {
+		baseRequired = t.AmountMinor
+	} else {
+		baseRequired = int64(occurrences) * t.AmountMinor
+		remDays := windowDays % cycleDays
+		if remDays > 0 {
+			tailProrated := float64(t.AmountMinor) * (float64(remDays) / float64(cycleDays))
+			baseRequired += int64(math.Ceil(tailProrated))
+		}
 	}
 
 	// Strategy specific adjustments
