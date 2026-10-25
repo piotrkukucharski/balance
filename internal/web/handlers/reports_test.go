@@ -214,8 +214,42 @@ func TestReportDetailView(t *testing.T) {
 			if !strings.Contains(body, "report-filters-form") {
 				t.Errorf("expected filters form in %s detail view", rt)
 			}
+			if !strings.Contains(body, "report-kpi-cards") {
+				t.Errorf("expected kpi cards container in %s detail view", rt)
+			}
+			if !strings.Contains(body, "saved-presets-select") {
+				t.Errorf("expected presets select in %s detail view", rt)
+			}
 		})
 	}
+
+	t.Run("DetailView_WithSavedPreset", func(t *testing.T) {
+		reportID := domain.NewUUIDv7()
+		_, err := tenantDB.Exec(`
+			INSERT INTO saved_reports_current (id, version, name, report_type, config_json, is_pinned_widget, agent_id, updated_at)
+			VALUES (?, 1, 'My Preset Test', 'INCOME_VS_EXPENSE', '{"range":"90d","currency":"EUR","exclude_internal":true}', 1, ?, ?)`,
+			reportID, userID, now)
+		if err != nil {
+			t.Fatalf("insert saved report failed: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/reports/income-expense", nil)
+		rec := httptest.NewRecorder()
+		c := e.NewContext(req, rec)
+		c.SetParamNames("budgetId", "reportType")
+		c.SetParamValues(budgetID, "income-expense")
+		c.Set(ContextUserIDKey, userID)
+		c.Set(ContextBudgetDBKey, tenantDB)
+		c.Set("csrfToken", "test_csrf")
+
+		if err := reportsHandler.ReportDetailView(c); err != nil {
+			t.Fatalf("ReportDetailView failed: %v", err)
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "My Preset Test") {
+			t.Errorf("expected saved preset name 'My Preset Test' in preset dropdown")
+		}
+	})
 }
 
 func TestSavedReportsManagement(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	htmlPkg "html"
 	"net/http"
 	"strconv"
 	"strings"
@@ -947,6 +948,33 @@ var reportMetaMap = map[string]ReportDetailMeta{
 	},
 }
 
+func reportTypeToEnum(reportType string) string {
+	switch reportType {
+	case "age-of-money":
+		return "AGE_OF_MONEY"
+	case "income-expense":
+		return "INCOME_VS_EXPENSE"
+	case "spending-trends":
+		return "SPENDING_TRENDS"
+	case "spending-breakdown":
+		return "SPENDING_BREAKDOWN"
+	case "net-worth":
+		return "NET_WORTH"
+	case "sankey":
+		return "SANKEY"
+	case "forecast":
+		return "BALANCE_FORECAST"
+	case "budget-analysis":
+		return "BUDGET_ANALYSIS"
+	case "monte-carlo":
+		return "MONTE_CARLO"
+	case "party-cashflow":
+		return "PARTY_CASHFLOW"
+	default:
+		return strings.ToUpper(strings.ReplaceAll(reportType, "-", "_"))
+	}
+}
+
 // ReportDetailView renders the dedicated full-screen interactive view for a single report.
 func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
 	budgetID := c.Param("budgetId")
@@ -969,6 +997,28 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
 		selectedCurrency = currency
 	}
 	excludeInternal := c.QueryParam("exclude_internal") != "false"
+
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	reportTypeEnum := reportTypeToEnum(reportType)
+	savedPresetsOptions := ""
+	if rows, err := tenantDB.QueryContext(c.Request().Context(), `
+		SELECT id, name, config_json, is_pinned_widget
+		FROM saved_reports_current
+		WHERE report_type = ?
+		ORDER BY is_pinned_widget DESC, name ASC`, reportTypeEnum); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var sID, sName, sCfg string
+			var sPinned int
+			if err := rows.Scan(&sID, &sName, &sCfg, &sPinned); err == nil {
+				star := ""
+				if sPinned == 1 {
+					star = " ⭐"
+				}
+				savedPresetsOptions += fmt.Sprintf(`<option value="%s" data-config="%s">%s%s</option>`, sID, htmlPkg.EscapeString(sCfg), htmlPkg.EscapeString(sName), star)
+			}
+		}
+	}
 
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en" data-theme="dark">
@@ -1025,6 +1075,15 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
 
                 <!-- Filters Form -->
                 <form id="report-filters-form" method="GET" class="flex flex-wrap items-center gap-3">
+                    <!-- Presets Selector -->
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs font-semibold">Preset</span></label>
+                        <select id="saved-presets-select" class="select select-bordered select-sm font-medium">
+                            <option value="">-- Presets --</option>
+                            %s
+                        </select>
+                    </div>
+
                     <!-- Date Range Selector -->
                     <div class="form-control">
                         <label class="label py-1"><span class="label-text text-xs font-semibold">Range</span></label>
@@ -1067,6 +1126,9 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
                     </div>
                 </form>
             </div>
+
+            <!-- KPI Metric Cards Grid -->
+            <div id="report-kpi-cards" class="grid grid-cols-2 md:grid-cols-4 gap-4"></div>
 
             <!-- Save Report Modal -->
             <dialog id="save_report_modal" class="modal">
@@ -1139,6 +1201,136 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
         }
 
         let chart = null;
+
+        function updateKPICards(type, data, curr) {
+            const kpiContainer = document.getElementById('report-kpi-cards');
+            if (!kpiContainer) return;
+            let cards = [];
+
+            if (type === 'age-of-money') {
+                const headline = (data && data.headline_days != null) ? data.headline_days : 0;
+                const pts = (data && data.history) ? data.history.length : 0;
+                let status = 'Moderate';
+                let badgeColor = 'badge-warning';
+                if (headline >= 30) { status = 'Healthy (>30d)'; badgeColor = 'badge-success'; }
+                else if (headline < 10) { status = 'At Risk (<10d)'; badgeColor = 'badge-error'; }
+                cards = [
+                    { label: 'Age of Money', value: headline + ' days', color: 'text-accent' },
+                    { label: 'Buffer Health', value: status, badge: badgeColor },
+                    { label: 'Sample Outflows', value: pts },
+                    { label: 'Evaluation Model', value: 'FIFO Liquid Queue' }
+                ];
+            } else if (type === 'income-expense') {
+                const inc = (data && data.total_income_minor) || 0;
+                const exp = (data && data.total_expense_minor) || 0;
+                const net = (data && data.total_net_minor) || 0;
+                const rate = inc > 0 ? ((net / inc) * 100).toFixed(1) + '%%' : '0.0%%';
+                cards = [
+                    { label: 'Total Inflow', value: formatMoney(inc, curr), color: 'text-success' },
+                    { label: 'Total Outflow', value: formatMoney(exp, curr), color: 'text-error' },
+                    { label: 'Net Savings', value: formatMoney(net, curr), color: net >= 0 ? 'text-primary' : 'text-error' },
+                    { label: 'Savings Rate', value: rate, color: 'text-info' }
+                ];
+            } else if (type === 'spending-trends') {
+                const pts = (data && data.points) || [];
+                let total = 0;
+                pts.forEach(p => total += (p.total_spent_minor || 0));
+                const avg = pts.length > 0 ? Math.round(total / pts.length) : 0;
+                cards = [
+                    { label: 'Total Spent', value: formatMoney(total, curr), color: 'text-primary' },
+                    { label: 'Monthly Average', value: formatMoney(avg, curr), color: 'text-warning' },
+                    { label: 'Intervals Analyzed', value: pts.length + ' months' },
+                    { label: 'Calculation Mode', value: '3-Mo Moving Avg' }
+                ];
+            } else if (type === 'spending-breakdown') {
+                const items = (data && data.items) || [];
+                let total = (data && data.total_spent_minor) || 0;
+                let topCat = items.length > 0 ? (items[0].bucket_name || 'Unassigned') : 'None';
+                let topAmt = items.length > 0 ? items[0].total_spent_minor : 0;
+                cards = [
+                    { label: 'Total Outflow', value: formatMoney(total, curr), color: 'text-primary' },
+                    { label: 'Top Envelope', value: topCat, color: 'text-secondary' },
+                    { label: 'Top Category Amount', value: formatMoney(topAmt, curr) },
+                    { label: 'Envelopes Active', value: items.length }
+                ];
+            } else if (type === 'net-worth') {
+                const curNW = (data && data.current_net_worth_minor) || 0;
+                const pts = (data && data.points) || [];
+                let startNW = pts.length > 0 ? pts[0].net_worth_minor : curNW;
+                let chg = curNW - startNW;
+                let pct = startNW !== 0 ? ((chg / Math.abs(startNW)) * 100).toFixed(1) + '%%' : '0.0%%';
+                cards = [
+                    { label: 'Current Net Worth', value: formatMoney(curNW, curr), color: curNW >= 0 ? 'text-success' : 'text-error' },
+                    { label: 'Starting Balance', value: formatMoney(startNW, curr) },
+                    { label: 'Net Period Change', value: (chg >= 0 ? '+' : '') + formatMoney(chg, curr), color: chg >= 0 ? 'text-success' : 'text-error' },
+                    { label: 'Trajectory Shift', value: (chg >= 0 ? '+' : '') + pct }
+                ];
+            } else if (type === 'sankey') {
+                const nodes = (data && data.nodes) || [];
+                const links = (data && data.links) || [];
+                let totalFlow = 0;
+                links.forEach(l => { if (l.source === 'Income' || l.source === 'Total Pool') totalFlow += (l.value_minor || 0); });
+                cards = [
+                    { label: 'Flow Nodes', value: nodes.length },
+                    { label: 'Active Channels', value: links.length },
+                    { label: 'Aggregated Inflow', value: formatMoney(totalFlow, curr), color: 'text-success' },
+                    { label: 'Topology Engine', value: 'Multi-Tier Sankey' }
+                ];
+            } else if (type === 'forecast') {
+                const cur = (data && data.current_balance_minor) || 0;
+                const pts = (data && data.points) || [];
+                let lastPt = pts.length > 0 ? pts[pts.length - 1].projected_balance_minor : cur;
+                cards = [
+                    { label: 'Current Liquidity', value: formatMoney(cur, curr), color: 'text-primary' },
+                    { label: '90-Day Projected', value: formatMoney(lastPt, curr), color: lastPt >= 0 ? 'text-success' : 'text-error' },
+                    { label: 'Runway Projection', value: (data && data.runway_days) ? data.runway_days + ' days' : '> 90 days' },
+                    { label: 'Confidence Band', value: 'Scheduled + Cycles' }
+                ];
+            } else if (type === 'budget-analysis') {
+                const pts = (data && data.points) || [];
+                let bud = 0, spent = 0;
+                pts.forEach(p => { bud += (p.budgeted_minor || 0); spent += (p.spent_minor || 0); });
+                const variance = bud - spent;
+                cards = [
+                    { label: 'Total Budgeted', value: formatMoney(bud, curr), color: 'text-info' },
+                    { label: 'Actual Spent', value: formatMoney(spent, curr), color: 'text-error' },
+                    { label: 'Variance / Buffer', value: formatMoney(variance, curr), color: variance >= 0 ? 'text-success' : 'text-warning' },
+                    { label: 'Adherence', value: bud > 0 ? ((spent / bud) * 100).toFixed(1) + '%%' : '100%%' }
+                ];
+            } else if (type === 'monte-carlo') {
+                const succ = (data && data.success_rate_pct != null) ? data.success_rate_pct : 0;
+                const med = (data && data.median_ending_balance != null) ? data.median_ending_balance : 0;
+                const risk = (data && data.chance_of_running_out != null) ? data.chance_of_running_out : 0;
+                cards = [
+                    { label: 'Success Rate', value: succ + '%%', color: succ >= 85 ? 'text-success' : (succ >= 70 ? 'text-warning' : 'text-error') },
+                    { label: 'Median Ending Capital', value: formatMoney(med, curr), color: 'text-primary' },
+                    { label: 'Risk of Depletion', value: risk + '%%', color: risk <= 15 ? 'text-success' : 'text-error' },
+                    { label: 'Stochastic Iterations', value: '1,000 parallel' }
+                ];
+            } else if (type === 'party-cashflow') {
+                const parties = (data && data.parties) || [];
+                const inFlow = (data && data.total_inflow_minor) || 0;
+                const outFlow = (data && data.total_outflow_minor) || 0;
+                const net = inFlow - outFlow;
+                cards = [
+                    { label: 'Counterparty Inflow', value: formatMoney(inFlow, curr), color: 'text-success' },
+                    { label: 'Counterparty Outflow', value: formatMoney(outFlow, curr), color: 'text-error' },
+                    { label: 'Net Counterparty Flow', value: formatMoney(net, curr), color: net >= 0 ? 'text-success' : 'text-error' },
+                    { label: 'Active Entities', value: parties.length }
+                ];
+            }
+
+            kpiContainer.innerHTML = cards.map(function(c) {
+                var badgeHtml = c.badge ? '<span class="badge ' + c.badge + ' badge-sm font-semibold">' + c.value + '</span>' : '';
+                return '<div class="card card-border bg-base-100 border-base-300 p-4 rounded-xl shadow-xs flex flex-col gap-1">' +
+                    '<span class="text-xs font-semibold text-base-content/60 tracking-wide uppercase">' + c.label + '</span>' +
+                    '<div class="flex items-center gap-2">' +
+                        '<span class="text-xl md:text-2xl font-black tabular-nums tracking-tight ' + (c.color || 'text-base-content') + '">' + c.value + '</span>' +
+                        badgeHtml +
+                    '</div>' +
+                '</div>';
+            }).join('');
+        }
 
         function renderChart(type, data, curr) {
             if (!chart) return;
@@ -1374,12 +1566,34 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
             if (chart) chart.hideLoading();
 
             renderChart(type, data, curr);
+            updateKPICards(type, data, curr);
         }
 
         const chartDom = document.getElementById(chartId);
         if (chartDom) {
             chart = echarts.init(chartDom);
             updateReport();
+        }
+
+        const presetsSelect = document.getElementById('saved-presets-select');
+        if (presetsSelect) {
+            presetsSelect.addEventListener('change', (e) => {
+                const opt = presetsSelect.options[presetsSelect.selectedIndex];
+                const cfgStr = opt ? opt.getAttribute('data-config') : null;
+                if (!cfgStr) return;
+                try {
+                    const cfg = JSON.parse(cfgStr);
+                    const filterForm = document.getElementById('report-filters-form');
+                    if (filterForm) {
+                        if (cfg.range && filterForm.elements['range']) filterForm.elements['range'].value = cfg.range;
+                        if (cfg.currency && filterForm.elements['currency']) filterForm.elements['currency'].value = cfg.currency;
+                        if (cfg.exclude_internal != null && filterForm.elements['exclude_internal']) filterForm.elements['exclude_internal'].checked = !!cfg.exclude_internal;
+                        updateReport();
+                    }
+                } catch (err) {
+                    console.error("error parsing preset config:", err);
+                }
+            });
         }
 
         const filterForm = document.getElementById('report-filters-form');
@@ -1408,6 +1622,7 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
 		RenderSidebarNavigation(budgetID, "reports"),
 		meta.Title,
 		meta.Description,
+		savedPresetsOptions,
 		selectedAttr(selectedRange == "30d"),
 		selectedAttr(selectedRange == "90d"),
 		selectedAttr(selectedRange == "180d"),
@@ -1421,7 +1636,7 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
 		checkedAttr(excludeInternal),
 		budgetID,
 		csrfToken,
-		strings.ToUpper(strings.ReplaceAll(meta.Type, "-", "_")),
+		reportTypeEnum,
 		selectedRange,
 		selectedCurrency,
 		excludeInternal,
