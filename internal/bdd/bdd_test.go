@@ -1533,6 +1533,13 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		return nil
 	})
+	ctx.Step(`^the action menu popover should support upward positioning and anchor try fallbacks$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "position-try-fallbacks") && !strings.Contains(body, "dropdown-top") {
+			return fmt.Errorf("expected popover to define upward/position-try positioning support")
+		}
+		return nil
+	})
 
 	// Favicon BDD step definitions
 	ctx.Step(`^I create an account named "([^"]*)" of type "([^"]*)" with currency "([^"]*)" and favicon emoji "([^"]*)"$`, func(name, aType, curr, emoji string) error {

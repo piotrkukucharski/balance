@@ -20,7 +20,11 @@ type TableActionItem struct {
 // Using the HTML Popover API + CSS anchor positioning guarantees that the menu
 // escapes all overflow boundaries (such as overflow-x-auto, overflow-y-auto on table containers)
 // and renders in the browser top-layer without clipping.
-func RenderPopoverActionMenu(prefix, id string, items []TableActionItem) string {
+func RenderPopoverActionMenu(prefix, id string, items []TableActionItem, extraClasses ...string) string {
+	extraClass := ""
+	if len(extraClasses) > 0 && extraClasses[0] != "" {
+		extraClass = " " + extraClasses[0]
+	}
 	targetID := fmt.Sprintf("%s-menu-%s", prefix, id)
 	anchorName := fmt.Sprintf("--%s-anchor-%s", prefix, id)
 
@@ -67,10 +71,10 @@ func RenderPopoverActionMenu(prefix, id string, items []TableActionItem) string 
 
 	return fmt.Sprintf(`
 		<button popovertarget="%s" style="anchor-name:%s" class="btn btn-ghost btn-xs">•••</button>
-		<ul class="dropdown dropdown-end menu p-2 shadow-lg bg-base-100 rounded-box w-36 text-xs border border-base-300" popover id="%s" style="position-anchor:%s">
+		<ul class="dropdown dropdown-end menu p-2 shadow-lg bg-base-100 rounded-box w-36 text-xs border border-base-300%s" popover id="%s" style="position-anchor:%s; position-try-fallbacks: flip-block, --flip-block; margin: 0;" onbeforetoggle="if(event.newState==='open'){const r=this.getBoundingClientRect();if(window.innerHeight-r.bottom<120){this.classList.add('dropdown-top');}}else{this.classList.remove('dropdown-top');}">
 			%s
 		</ul>`,
-		targetID, anchorName, targetID, anchorName, itemsHTML.String(),
+		targetID, anchorName, extraClass, targetID, anchorName, itemsHTML.String(),
 	)
 }
 

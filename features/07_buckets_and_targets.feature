@@ -164,5 +164,13 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     And I add a recurring target "Streaming" with amount "100.00 PLN" monthly and due in 12 days
     Then the target requirement in a 30-day window should be "160.00 PLN"
 
+  Scenario: Actions dropdown menu in buckets and accounts list supports upwards opening and anchor positioning
+    Given an open budget "Family Home"
+    When I create a bucket "Living Expenses" in group "Needs"
+    And I request the budget view "/budgets/:budgetId/budget"
+    Then the response status should be 200 OK
+    And the action menu popover should support upward positioning and anchor try fallbacks
+
+
 
 
