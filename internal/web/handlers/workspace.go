@@ -16,6 +16,7 @@ import (
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/logger"
+	"github.com/balance/balance/internal/lua"
 	"github.com/balance/balance/internal/service"
 	"github.com/labstack/echo/v4"
 )
@@ -735,23 +736,26 @@ type bucketViewData struct {
 }
 
 type targetViewData struct {
-	ID                  string
-	BucketID            string
-	Name                string
-	TargetType          string
-	Priority            int
-	SortOrder           int
-	AmountMinor         int64
-	Currency            string
-	RecurrenceCadence   string
-	RecurrenceDays      int
-	DueDate             int64
-	NonSpendingStrategy string
-	CeilingAmountMinor  *int64
-	CurrentFundedMinor  int64
-	RequiredMinor       int64
-	HealthBadge         string
-	HealthBadgeClass    string
+	ID                  string  `json:"ID"`
+	BucketID            string  `json:"BucketID"`
+	Name                string  `json:"Name"`
+	TargetType          string  `json:"TargetType"`
+	Priority            int     `json:"Priority"`
+	SortOrder           int     `json:"SortOrder"`
+	AmountMode          string  `json:"AmountMode"`
+	AmountMinor         int64   `json:"AmountMinor"`
+	LuaScript           *string `json:"LuaScript"`
+	LastFormulaError    *string `json:"LastFormulaError"`
+	Currency            string  `json:"Currency"`
+	RecurrenceCadence   string  `json:"RecurrenceCadence"`
+	RecurrenceDays      int     `json:"RecurrenceDays"`
+	DueDate             int64   `json:"DueDate"`
+	NonSpendingStrategy string  `json:"NonSpendingStrategy"`
+	CeilingAmountMinor  *int64  `json:"CeilingAmountMinor"`
+	CurrentFundedMinor  int64   `json:"CurrentFundedMinor"`
+	RequiredMinor       int64   `json:"RequiredMinor"`
+	HealthBadge         string  `json:"HealthBadge"`
+	HealthBadgeClass    string  `json:"HealthBadgeClass"`
 }
 
 // BudgetView renders the YNAB-style Budget/Envelopes view with DaisyUI 5 stats, tables, and badges.
@@ -806,10 +810,12 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
 	// 3. Fetch all active targets
 	nowUTC := time.Now().UTC()
+	snap, _ := budget.BuildBudgetSnapshot(c.Request().Context(), tenantDB, defaultCurr, windowDays)
+
 	targetRows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT id, bucket_id, name, target_type, priority, sort_order, amount_minor, currency,
 		       recurrence_cadence, recurrence_days, due_date, non_spending_strategy,
-		       ceiling_amount_minor, current_funded_minor
+		       ceiling_amount_minor, current_funded_minor, amount_mode, lua_script, last_formula_error
 		FROM targets_projection
 		WHERE is_archived = 0
 		ORDER BY priority DESC, due_date ASC, sort_order ASC`)
@@ -820,15 +826,38 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 			var t targetViewData
 			var dueDate sql.NullInt64
 			var ceiling sql.NullInt64
+			var luaScriptNull sql.NullString
+			var lastErrNull sql.NullString
 			targetRows.Scan(&t.ID, &t.BucketID, &t.Name, &t.TargetType, &t.Priority, &t.SortOrder,
 				&t.AmountMinor, &t.Currency, &t.RecurrenceCadence, &t.RecurrenceDays,
-				&dueDate, &t.NonSpendingStrategy, &ceiling, &t.CurrentFundedMinor)
+				&dueDate, &t.NonSpendingStrategy, &ceiling, &t.CurrentFundedMinor,
+				&t.AmountMode, &luaScriptNull, &lastErrNull)
 			if dueDate.Valid {
 				t.DueDate = dueDate.Int64
 			}
 			if ceiling.Valid {
 				cVal := ceiling.Int64
 				t.CeilingAmountMinor = &cVal
+			}
+			if luaScriptNull.Valid {
+				sVal := luaScriptNull.String
+				t.LuaScript = &sVal
+			}
+			if lastErrNull.Valid {
+				eVal := lastErrNull.String
+				t.LastFormulaError = &eVal
+			}
+
+			// Dynamic Lua formula evaluation
+			if snap != nil && t.AmountMode == "LUA_FORMULA" && t.LuaScript != nil && *t.LuaScript != "" {
+				evalVal, evalErr := lua.EvaluateFormula(c.Request().Context(), *t.LuaScript, snap)
+				if evalErr == nil {
+					t.AmountMinor = evalVal
+					t.LastFormulaError = nil
+				} else {
+					errStr := evalErr.Error()
+					t.LastFormulaError = &errStr
+				}
 			}
 
 			tDef := &budget.TargetDefinition{
@@ -1503,14 +1532,14 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
         <form method="dialog" class="modal-backdrop"><button>close</button></form>
     </dialog>
 
-    <!-- Create Target Modal -->
+    <!-- Create / Edit Target Modal -->
     <dialog id="target_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
+        <div class="modal-box card-border border-base-300 p-6 max-w-xl">
             <div class="flex justify-between items-center mb-4">
                 <h3 id="target_modal_title" class="font-extrabold text-xl tracking-tight">Add Target</h3>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
             </div>
-            <form id="target_form" method="POST" action="/budgets/%s/targets" class="flex flex-col gap-4">
+            <form id="target_form" method="POST" action="/budgets/%s/targets" class="flex flex-col gap-4" onsubmit="prepareTargetSubmit()">
                 <input type="hidden" name="csrf_token" value="%s" />
                 <input type="hidden" id="target_bucket_id" name="bucket_id" value="" />
                 <input type="hidden" id="target_currency" name="currency" value="%s" />
@@ -1562,15 +1591,61 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                     </div>
                 </div>
 
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Monthly / Period Amount</span></label>
-                        <input type="number" step="0.01" min="0" id="target_amount" name="amount" required placeholder="1000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
+                <!-- Calculation Mode Selector -->
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Calculation Mode</span></label>
+                    <div class="join w-full grid grid-cols-2">
+                        <input class="join-item btn btn-sm btn-outline checked:btn-primary text-xs" type="radio" name="amount_mode" id="mode_fixed" value="FIXED" aria-label="Fixed Amount" checked onchange="switchAmountMode('FIXED')" />
+                        <input class="join-item btn btn-sm btn-outline checked:btn-primary text-xs" type="radio" name="amount_mode" id="mode_lua" value="LUA_FORMULA" aria-label="Dynamic Formula (Lua / AI)" onchange="switchAmountMode('LUA_FORMULA')" />
                     </div>
+                </div>
+
+                <!-- Fixed Amount Input -->
+                <div id="fixed_amount_container" class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Monthly / Period Amount</span></label>
+                    <input type="number" step="0.01" min="0" id="target_amount" name="amount" required placeholder="1000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
+                </div>
+
+                <!-- Lua Formula & AI Assistant Container -->
+                <div id="lua_formula_container" class="hidden flex flex-col gap-3">
                     <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Target Ceiling / Goal (Optional)</span></label>
-                        <input type="number" step="0.01" min="0" id="target_ceiling" name="ceiling_amount" placeholder="20000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
+                        <div class="flex justify-between items-center pb-1">
+                            <label class="label-text font-medium text-xs font-semibold">Lua Script</label>
+                            <span class="text-[10px] text-base-content/50 font-mono">minor units (int64)</span>
+                        </div>
+                        <textarea id="target_lua_script" name="lua_script" rows="3" placeholder="return math.max(0, money(2000) - target('Mortgage Installment').required)" class="textarea textarea-bordered w-full font-mono text-xs focus:textarea-primary"></textarea>
+                        <div class="text-[10px] text-base-content/60 mt-1">
+                            API: <code class="bg-base-200 px-1 rounded">money(val)</code>, <code class="bg-base-200 px-1 rounded">target(&quot;name&quot;).required</code>, <code class="bg-base-200 px-1 rounded">bucket.balance()</code>, <code class="bg-base-200 px-1 rounded">budget.income(days)</code>
+                        </div>
                     </div>
+
+                    <div class="flex items-center gap-2">
+                        <button type="button" id="btn_validate_formula" class="btn btn-outline btn-xs gap-1 font-semibold" onclick="validateFormulaScript()">
+                            🔍 Validate &amp; Preview
+                        </button>
+                        <button type="button" id="btn_toggle_ai" class="btn btn-secondary btn-xs gap-1 font-semibold" onclick="toggleAIPanel()">
+                            ✨ Generate with AI
+                        </button>
+                    </div>
+
+                    <div id="formula_preview_box" class="hidden text-xs p-3 rounded-lg border flex flex-col gap-1"></div>
+
+                    <div id="ai_assistant_panel" class="hidden card bg-base-200/60 border border-base-300 p-3 rounded-lg flex flex-col gap-2">
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs font-bold text-secondary flex items-center gap-1">✨ AI Formula Assistant</span>
+                            <span class="text-[10px] text-base-content/50">Gemini 3.8 Flash</span>
+                        </div>
+                        <div class="join w-full">
+                            <input type="text" id="ai_formula_prompt" placeholder="e.g. Save 15%% of total income over last 30 days capped at 5000 PLN" class="input input-bordered input-sm join-item w-full text-xs" />
+                            <button type="button" id="btn_generate_ai" class="btn btn-secondary btn-sm join-item" onclick="generateFormulaAI()">Generate</button>
+                        </div>
+                        <div id="ai_status_msg" class="text-xs hidden"></div>
+                    </div>
+                </div>
+
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Target Ceiling / Goal (Optional)</span></label>
+                    <input type="number" step="0.01" min="0" id="target_ceiling" name="ceiling_amount" placeholder="20000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
                 </div>
 
                 <div class="modal-action mt-6 gap-2">
@@ -1629,20 +1704,29 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                     card.className = 'card card-border bg-base-100 border-base-300 shadow-xs p-4 flex flex-col gap-2';
                     const priorityText = t.Priority === 3 ? 'Mandatory' : (t.Priority === 2 ? 'Recommended' : 'Optional');
                     const ceilingHtml = t.CeilingAmountMinor ? ' • <span class="font-semibold text-primary">Goal: ' + (t.CeilingAmountMinor/100).toFixed(2) + ' ' + t.Currency + '</span>' : '';
+                    const luaBadge = t.AmountMode === 'LUA_FORMULA' ? ' <span class="badge badge-outline badge-xs font-mono text-secondary border-secondary">LUA</span>' : '';
+                    const formulaErrHtml = (t.LastFormulaError && t.LastFormulaError.length > 0) ? '<div class="text-[11px] text-error font-mono mt-1">⚠️ ' + escapeHtml(t.LastFormulaError) + '</div>' : '';
+
                     card.innerHTML = 
                         '<div class="flex justify-between items-start">' +
                             '<div>' +
-                                '<div class="font-bold text-sm tracking-tight">' + t.Name + '</div>' +
+                                '<div class="font-bold text-sm tracking-tight flex items-center gap-1">' +
+                                    escapeHtml(t.Name) + luaBadge +
+                                '</div>' +
                                 '<div class="text-[11px] text-base-content/60">Priority: ' + priorityText + ' • Cadence: ' + t.RecurrenceCadence + ' • Strategy: ' + t.NonSpendingStrategy + ceilingHtml + '</div>' +
                             '</div>' +
                             '<span class="badge ' + t.HealthBadgeClass + ' badge-sm font-semibold">' + t.HealthBadge + '</span>' +
                         '</div>' +
+                        formulaErrHtml +
                         '<div class="flex justify-between items-center text-xs mt-1">' +
                             '<span class="font-mono">Funded: ' + (t.CurrentFundedMinor/100).toFixed(2) + ' / Required: ' + (t.RequiredMinor/100).toFixed(2) + ' ' + t.Currency + '</span>' +
-                            '<form method="POST" action="/budgets/' + currentBudgetID + '/targets/' + t.ID + '/delete" onsubmit="return confirm(\'Delete this target?\')">' +
-                                '<input type="hidden" name="csrf_token" value="' + csrfTokenVal + '" />' +
-                                '<button type="submit" class="btn btn-ghost btn-xs text-error font-semibold">Delete</button>' +
-                            '</form>' +
+                            '<div class="flex items-center gap-1">' +
+                                '<button type="button" class="btn btn-ghost btn-xs text-primary font-semibold target-edit-btn" onclick="openEditTargetModal(\'' + t.ID + '\')">Edit</button>' +
+                                '<form method="POST" action="/budgets/' + currentBudgetID + '/targets/' + t.ID + '/delete" onsubmit="return confirm(\'Delete this target?\')">' +
+                                    '<input type="hidden" name="csrf_token" value="' + csrfTokenVal + '" />' +
+                                    '<button type="submit" class="btn btn-ghost btn-xs text-error font-semibold">Delete</button>' +
+                                '</form>' +
+                            '</div>' +
                         '</div>';
                     container.appendChild(card);
                 });
@@ -1653,13 +1737,227 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             bucket_drawer.showModal();
         }
 
+        function openEditTargetModal(id) {
+            const b = bucketsData.find(x => x.ID === activeDrawerBucketID);
+            if (!b || !b.Targets) return;
+            const t = b.Targets.find(x => x.ID === id);
+            if (!t) return;
+
+            document.getElementById('target_modal_title').innerText = 'Edit Target';
+            document.getElementById('target_form').action = '/budgets/' + currentBudgetID + '/targets/' + t.ID + '/update';
+            document.getElementById('target_bucket_id').value = t.BucketID;
+            document.getElementById('target_name').value = t.Name;
+            document.getElementById('target_type').value = t.TargetType;
+            document.getElementById('target_priority').value = t.Priority;
+            document.getElementById('target_cadence').value = t.RecurrenceCadence;
+            document.getElementById('target_strategy').value = t.NonSpendingStrategy;
+            document.getElementById('target_amount').value = (t.AmountMinor / 100).toFixed(2);
+            document.getElementById('target_ceiling').value = t.CeilingAmountMinor ? (t.CeilingAmountMinor / 100).toFixed(2) : '';
+            document.getElementById('target_currency').value = t.Currency;
+            document.getElementById('target_lua_script').value = t.LuaScript || '';
+
+            hideFormulaPreview();
+            hideAIPanel();
+
+            const mode = t.AmountMode === 'LUA_FORMULA' ? 'LUA_FORMULA' : 'FIXED';
+            switchAmountMode(mode);
+
+            target_modal.showModal();
+        }
+
         function openNewTargetModal() {
+            document.getElementById('target_modal_title').innerText = 'Add Target';
             document.getElementById('target_form').action = '/budgets/' + currentBudgetID + '/targets';
             document.getElementById('target_bucket_id').value = activeDrawerBucketID;
             document.getElementById('target_name').value = '';
+            document.getElementById('target_type').value = 'EXPENSE';
+            document.getElementById('target_priority').value = '2';
+            document.getElementById('target_cadence').value = 'MONTHLY';
+            document.getElementById('target_strategy').value = 'ROLL_OVER';
             document.getElementById('target_amount').value = '';
             document.getElementById('target_ceiling').value = '';
+            document.getElementById('target_currency').value = currentCurrency;
+            document.getElementById('target_lua_script').value = '';
+
+            hideFormulaPreview();
+            hideAIPanel();
+            switchAmountMode('FIXED');
+
             target_modal.showModal();
+        }
+
+        function switchAmountMode(mode) {
+            const isLua = mode === 'LUA_FORMULA';
+            const rFixed = document.getElementById('mode_fixed');
+            const rLua = document.getElementById('mode_lua');
+            if (rFixed) rFixed.checked = !isLua;
+            if (rLua) rLua.checked = isLua;
+
+            const fixedContainer = document.getElementById('fixed_amount_container');
+            const luaContainer = document.getElementById('lua_formula_container');
+            const targetAmt = document.getElementById('target_amount');
+
+            if (isLua) {
+                if (fixedContainer) fixedContainer.classList.add('hidden');
+                if (luaContainer) luaContainer.classList.remove('hidden');
+                if (targetAmt) targetAmt.removeAttribute('required');
+            } else {
+                if (fixedContainer) fixedContainer.classList.remove('hidden');
+                if (luaContainer) luaContainer.classList.add('hidden');
+                if (targetAmt) targetAmt.setAttribute('required', 'required');
+            }
+        }
+
+        function toggleAIPanel() {
+            const panel = document.getElementById('ai_assistant_panel');
+            if (panel) panel.classList.toggle('hidden');
+        }
+
+        function hideAIPanel() {
+            const panel = document.getElementById('ai_assistant_panel');
+            if (panel) panel.classList.add('hidden');
+            const statusMsg = document.getElementById('ai_status_msg');
+            if (statusMsg) {
+                statusMsg.innerText = '';
+                statusMsg.classList.add('hidden');
+            }
+        }
+
+        function showFormulaPreview(type, htmlContent) {
+            const box = document.getElementById('formula_preview_box');
+            if (!box) return;
+            box.className = 'text-xs p-3 rounded-lg border flex flex-col gap-1 ' + 
+                (type === 'success' ? 'bg-success/10 border-success/30 text-success' : 
+                (type === 'error' ? 'bg-error/10 border-error/30 text-error' : 'bg-base-200 border-base-300'));
+            box.innerHTML = htmlContent;
+            box.classList.remove('hidden');
+        }
+
+        function hideFormulaPreview() {
+            const box = document.getElementById('formula_preview_box');
+            if (box) {
+                box.innerHTML = '';
+                box.classList.add('hidden');
+            }
+        }
+
+        function generateFormulaAI() {
+            const promptInput = document.getElementById('ai_formula_prompt');
+            const prompt = promptInput ? promptInput.value.trim() : '';
+            const statusMsg = document.getElementById('ai_status_msg');
+            const btnGen = document.getElementById('btn_generate_ai');
+
+            if (!prompt) {
+                if (statusMsg) {
+                    statusMsg.className = 'text-xs text-error mt-1';
+                    statusMsg.innerText = 'Please describe the formula in natural language.';
+                    statusMsg.classList.remove('hidden');
+                }
+                return;
+            }
+
+            if (statusMsg) {
+                statusMsg.className = 'text-xs text-base-content/70 mt-1 flex items-center gap-1';
+                statusMsg.innerHTML = '<span class="loading loading-spinner loading-xs"></span> Generating formula with AI...';
+                statusMsg.classList.remove('hidden');
+            }
+            if (btnGen) btnGen.disabled = true;
+
+            fetch('/api/v1/budgets/' + currentBudgetID + '/targets/generate-formula', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': csrfTokenVal
+                },
+                body: JSON.stringify({
+                    current_bucket_name: document.getElementById('drawer_bucket_name').innerText.trim() || 'General',
+                    target_currency: currentCurrency || 'PLN',
+                    user_prompt: prompt,
+                    window_days: 30
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (btnGen) btnGen.disabled = false;
+                if (data.error || !data.lua_script) {
+                    if (statusMsg) {
+                        statusMsg.className = 'text-xs text-error mt-1';
+                        statusMsg.innerText = data.error || 'Failed generating formula';
+                    }
+                } else {
+                    if (statusMsg) {
+                        statusMsg.className = 'text-xs text-success mt-1';
+                        statusMsg.innerHTML = '✨ <strong>Generated:</strong> ' + escapeHtml(data.explanation || '');
+                    }
+                    document.getElementById('target_lua_script').value = data.lua_script;
+                    validateFormulaScript();
+                }
+            })
+            .catch(err => {
+                if (btnGen) btnGen.disabled = false;
+                if (statusMsg) {
+                    statusMsg.className = 'text-xs text-error mt-1';
+                    statusMsg.innerText = 'Network error: ' + err.message;
+                }
+            });
+        }
+
+        function validateFormulaScript() {
+            const script = document.getElementById('target_lua_script').value.trim();
+            if (!script) {
+                showFormulaPreview('error', '⚠️ Please enter a Lua script to validate.');
+                return;
+            }
+
+            showFormulaPreview('info', '<div class="flex items-center gap-1"><span class="loading loading-spinner loading-xs"></span> Validating and running dry-run evaluation...</div>');
+
+            fetch('/api/v1/budgets/' + currentBudgetID + '/targets/validate-formula', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': csrfTokenVal
+                },
+                body: JSON.stringify({
+                    lua_script: script
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.valid) {
+                    let depsHtml = (data.dependencies && data.dependencies.length > 0) 
+                        ? 'Dependencies: <span class="font-mono">' + escapeHtml(data.dependencies.join(', ')) + '</span>' 
+                        : 'No external target dependencies';
+                    let previewHtml = '';
+                    if (data.evaluated_minor !== undefined && data.evaluated_minor !== null) {
+                        const evalAmt = (data.evaluated_minor / 100).toFixed(2);
+                        previewHtml = '<div class="font-bold text-sm text-primary mt-1">Calculated Preview: ' + evalAmt + ' ' + currentCurrency + '</div>';
+                        document.getElementById('target_amount').value = evalAmt;
+                    }
+                    showFormulaPreview('success', 
+                        '<div class="flex items-center gap-1 font-bold text-success">✓ Valid Sandboxed Formula</div>' +
+                        '<div class="text-[11px] text-base-content/70">' + depsHtml + '</div>' +
+                        previewHtml
+                    );
+                } else {
+                    showFormulaPreview('error', 
+                        '<div class="font-bold text-error">✕ Validation Failed</div>' +
+                        '<div class="font-mono text-[11px]">' + escapeHtml(data.error || 'Invalid script') + '</div>'
+                    );
+                }
+            })
+            .catch(err => {
+                showFormulaPreview('error', '✕ Network error: ' + escapeHtml(err.message));
+            });
+        }
+
+        function prepareTargetSubmit() {
+            const rLua = document.getElementById('mode_lua');
+            const targetAmt = document.getElementById('target_amount');
+            if (rLua && rLua.checked) {
+                if (!targetAmt.value || targetAmt.value.trim() === '') {
+                    targetAmt.value = '0.00';
+                }
+            }
         }
 
         function openStructureModal(tab) {
@@ -2209,6 +2507,18 @@ func (h *WorkspaceHandler) CreateTarget(c echo.Context) error {
 	fmt.Sscanf(amtStr, "%f", &amtFloat)
 	amtMinor := int64(amtFloat * 100)
 
+	amountMode := c.FormValue("amount_mode")
+	if amountMode == "" {
+		amountMode = "FIXED"
+	}
+	var luaScript *string
+	if amountMode == "LUA_FORMULA" {
+		script := strings.TrimSpace(c.FormValue("lua_script"))
+		if script != "" {
+			luaScript = &script
+		}
+	}
+
 	var ceilingMinor *int64
 	if ceilingStr := strings.TrimSpace(c.FormValue("ceiling_amount")); ceilingStr != "" {
 		var ceilFloat float64
@@ -2223,7 +2533,9 @@ func (h *WorkspaceHandler) CreateTarget(c echo.Context) error {
 		Name:                name,
 		TargetType:          tType,
 		Priority:            priority,
+		AmountMode:          amountMode,
 		AmountMinor:         amtMinor,
+		LuaScript:           luaScript,
 		Currency:            currency,
 		RecurrenceCadence:   cadence,
 		NonSpendingStrategy: strategy,
@@ -2268,14 +2580,38 @@ func (h *WorkspaceHandler) UpdateTarget(c echo.Context) error {
 	fmt.Sscanf(amtStr, "%f", &amtFloat)
 	amtMinor := int64(amtFloat * 100)
 
+	amountMode := c.FormValue("amount_mode")
+	if amountMode == "" {
+		amountMode = "FIXED"
+	}
+	var luaScript *string
+	if amountMode == "LUA_FORMULA" {
+		script := strings.TrimSpace(c.FormValue("lua_script"))
+		if script != "" {
+			luaScript = &script
+		}
+	}
+
+	var ceilingMinor *int64
+	if ceilingStr := strings.TrimSpace(c.FormValue("ceiling_amount")); ceilingStr != "" {
+		var ceilFloat float64
+		if _, err := fmt.Sscanf(ceilingStr, "%f", &ceilFloat); err == nil && ceilFloat > 0 {
+			cMinor := int64(ceilFloat * 100)
+			ceilingMinor = &cMinor
+		}
+	}
+
 	err := budget.UpdateTarget(c.Request().Context(), tenantDB, budget.UpdateTargetInput{
 		ID:                  targetID,
 		Name:                name,
 		TargetType:          tType,
 		Priority:            priority,
+		AmountMode:          amountMode,
 		AmountMinor:         amtMinor,
+		LuaScript:           luaScript,
 		RecurrenceCadence:   cadence,
 		NonSpendingStrategy: strategy,
+		CeilingAmountMinor:  ceilingMinor,
 		AgentID:             userID,
 		CorrelationID:       corrID,
 	})

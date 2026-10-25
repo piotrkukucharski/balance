@@ -53,6 +53,15 @@ type bddTestContext struct {
 	partiesHandler   *handlers.PartiesHandler
 	membersHandler   *handlers.MembersHandler
 	pwaHandler       *handlers.PWAHandler
+
+	luaSnapshot            *lua.InMemoryBudgetSnapshot
+	luaScript              string
+	evalResult             int64
+	evalError              error
+	unsafeScript           string
+	validateError          error
+	aiGeneratedScript      string
+	aiGeneratedExplanation string
 }
 
 func (tc *bddTestContext) setup() error {
@@ -120,8 +129,20 @@ func (tc *bddTestContext) teardown() {
 	}
 }
 
+func parseAmountStr(amtStr string) int64 {
+	clean := strings.TrimSpace(amtStr)
+	clean = strings.ReplaceAll(clean, ",", "")
+	clean = strings.TrimSuffix(clean, " PLN")
+	var f float64
+	fmt.Sscanf(clean, "%f", &f)
+	return int64(f * 100)
+}
+
 func InitializeScenario(ctx *godog.ScenarioContext) {
 	tc := &bddTestContext{}
+	var activeBucketID string
+	var activeTargetID string
+	var lastTargetErr error
 
 	ctx.Before(func(ctx context.Context, sc *godog.Scenario) (context.Context, error) {
 		err := tc.setup()
@@ -341,30 +362,45 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 
 	// 08_lua_formula_and_ai.feature steps
 	ctx.Step(`^a target "([^"]*)" with required amount "([^"]*)"$`, func(targetName, amountStr string) error {
+		if tc.luaSnapshot == nil {
+			tc.luaSnapshot = &lua.InMemoryBudgetSnapshot{
+				Targets:        make(map[string]*lua.TargetMeta),
+				BucketBalances: make(map[string]int64),
+				FXRates:        make(map[string]int64),
+				InflowsPast:    make(map[string][]int64),
+				OutflowsPast:   make(map[string][]int64),
+				WindowDays:     30,
+				TargetCurrency: "PLN",
+			}
+		}
+		amt := parseAmountStr(amountStr)
+		meta := &lua.TargetMeta{
+			Name:     targetName,
+			Required: amt,
+			Planned:  amt,
+			Priority: 3,
+			Currency: "PLN",
+		}
+		tc.luaSnapshot.Targets[targetName] = meta
+		tc.luaSnapshot.Targets[strings.ToLower(targetName)] = meta
 		return nil
 	})
 	ctx.Step(`^a dependent target "([^"]*)" with Lua formula:$`, func(targetName string, formula *godog.DocString) error {
+		tc.luaScript = strings.TrimSpace(formula.Content)
 		return nil
 	})
 	ctx.Step(`^the Lua sandbox evaluates the target formula$`, func() error {
-		return nil
+		val, err := lua.EvaluateFormula(context.Background(), tc.luaScript, tc.luaSnapshot)
+		tc.evalResult = val
+		tc.evalError = err
+		return err
 	})
 	ctx.Step(`^the result should be (\d+) minor units \("([^"]*)"\)$`, func(minor int64, display string) error {
-		snap := &lua.InMemoryBudgetSnapshot{
-			Targets: map[string]*lua.TargetMeta{
-				"Required Mortgage Installment": {
-					Name:     "Required Mortgage Installment",
-					Required: 90000,
-					Priority: 3,
-				},
-			},
-			TargetCurrency: "PLN",
-			WindowDays:     30,
+		if tc.evalError != nil {
+			return tc.evalError
 		}
-		script := `return math.max(0, money(2000) - target("Required Mortgage Installment").required)`
-		val, err := lua.EvaluateFormula(context.Background(), script, snap)
-		if err != nil || val != minor {
-			return godog.ErrPending
+		if tc.evalResult != minor {
+			return fmt.Errorf("expected %d minor units, got %d", minor, tc.evalResult)
 		}
 		return nil
 	})
@@ -372,6 +408,171 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 	ctx.Step(`^the formula execution should not trigger any database I/O$`, func() error {
+		return nil
+	})
+	ctx.Step(`^an authenticated user editing target "([^"]*)" in bucket "([^"]*)"$`, func(targetName, bucketName string) error {
+		now := time.Now().UTC().UnixMicro()
+		if tc.activeUserID == "" {
+			tc.activeUserID = domain.NewUUIDv7()
+			_, err := tc.mainDB.Exec(`INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, 'aiuser@example.com', 'h', 'AI User', ?, ?)`, tc.activeUserID, now, now)
+			if err != nil {
+				return err
+			}
+		}
+		if tc.activeBudgetID == "" {
+			bID := domain.NewUUIDv7()
+			_, err := tc.mainDB.Exec(`INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at) VALUES (?, 'AI Test Budget', 'PLN', 'Europe/Warsaw', ?, ?, ?)`, bID, tc.activeUserID, now, now)
+			if err != nil {
+				return err
+			}
+			_, err = tc.mainDB.Exec(`INSERT INTO budget_members (budget_id, user_id, role, joined_at) VALUES (?, ?, 'EDITOR', ?)`, bID, tc.activeUserID, now)
+			if err != nil {
+				return err
+			}
+			tc.activeBudgetID = bID
+			_, err = tc.tenantMgr.GetTenantDB(bID, true)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	ctx.Step(`^I request AI formula generation with prompt "([^"]*)"$`, func(prompt string) error {
+		reqBody, _ := json.Marshal(map[string]interface{}{
+			"current_bucket_name": "Savings",
+			"target_currency":    "PLN",
+			"user_prompt":        prompt,
+			"window_days":        30,
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/budgets/"+tc.activeBudgetID+"/targets/generate-formula", bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		if tc.activeBearer == "" {
+			tok, _ := auth.GenerateCSPRNGToken()
+			hash := auth.HashToken(tok)
+			now := time.Now().UTC().UnixMicro()
+			_, _ = tc.mainDB.Exec(`INSERT INTO api_tokens (id, user_id, name, token_hash, expires_at, created_at) VALUES (?, ?, 'test', ?, ?, ?)`, domain.NewUUIDv7(), tc.activeUserID, hash, now+3600*1000000, now)
+			tc.activeBearer = tok
+		}
+		req.Header.Set("Authorization", "Bearer "+tc.activeBearer)
+		rec := httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			return fmt.Errorf("generate formula failed with %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Explanation string `json:"explanation"`
+			LuaScript   string `json:"lua_script"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			return err
+		}
+		tc.aiGeneratedScript = resp.LuaScript
+		tc.aiGeneratedExplanation = resp.Explanation
+		return nil
+	})
+	ctx.Step(`^the AI assistant should generate valid sandboxed Lua code:$`, func(doc *godog.DocString) error {
+		expected := strings.TrimSpace(doc.Content)
+		actual := strings.TrimSpace(tc.aiGeneratedScript)
+		if actual != expected {
+			return fmt.Errorf("expected generated script:\n%s\ngot:\n%s", expected, actual)
+		}
+		return nil
+	})
+	ctx.Step(`^the sandbox dry-run should evaluate without errors$`, func() error {
+		if err := lua.ValidateLuaScript(tc.aiGeneratedScript); err != nil {
+			return fmt.Errorf("sandbox validation failed: %w", err)
+		}
+		return nil
+	})
+	ctx.Step(`^a live calculated preview badge should be displayed in the UI$`, func() error {
+		valBody, _ := json.Marshal(map[string]interface{}{
+			"lua_script": tc.aiGeneratedScript,
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/budgets/"+tc.activeBudgetID+"/targets/validate-formula", bytes.NewReader(valBody))
+		req.Header.Set("Authorization", "Bearer "+tc.activeBearer)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			return fmt.Errorf("validate-formula failed: %d", rec.Code)
+		}
+		var valResp struct {
+			Valid          bool   `json:"valid"`
+			EvaluatedMinor *int64 `json:"evaluated_minor"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &valResp); err != nil {
+			return err
+		}
+		if !valResp.Valid {
+			return fmt.Errorf("expected script to be valid")
+		}
+		return nil
+	})
+	ctx.Step(`^a user-submitted Lua formula attempting to use a while loop or function declaration:$`, func(formula *godog.DocString) error {
+		tc.unsafeScript = formula.Content
+		return nil
+	})
+	ctx.Step(`^the script is submitted for validation$`, func() error {
+		tc.validateError = lua.ValidateLuaScript(tc.unsafeScript)
+		return nil
+	})
+	ctx.Step(`^the engine should reject the script with a forbidden token error$`, func() error {
+		if tc.validateError == nil {
+			return fmt.Errorf("expected script validation to fail, but it succeeded")
+		}
+		if !strings.Contains(tc.validateError.Error(), "forbidden") {
+			return fmt.Errorf("expected forbidden token error, got: %v", tc.validateError)
+		}
+		return nil
+	})
+	ctx.Step(`^the VM should never execute the script$`, func() error {
+		_, err := lua.EvaluateFormula(context.Background(), tc.unsafeScript, nil)
+		if err == nil {
+			return fmt.Errorf("expected EvaluateFormula to reject unsafe script")
+		}
+		return nil
+	})
+	ctx.Step(`^I edit target "([^"]*)" switching amount mode to "([^"]*)" with script:$`, func(targetName, mode string, script *godog.DocString) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var tID string
+		err = bDB.QueryRow(`SELECT id FROM targets_projection WHERE name = ?`, targetName).Scan(&tID)
+		if err != nil {
+			return fmt.Errorf("target %s not found: %w", targetName, err)
+		}
+		activeTargetID = tID
+		luaStr := strings.TrimSpace(script.Content)
+		return budget.UpdateTarget(context.Background(), bDB, budget.UpdateTargetInput{
+			ID:                  tID,
+			Name:                targetName,
+			TargetType:          "EXPENSE",
+			Priority:            3,
+			AmountMode:          mode,
+			LuaScript:           &luaStr,
+			RecurrenceCadence:   budget.CadenceMonthly,
+			NonSpendingStrategy: budget.StrategyRollOver,
+			AgentID:             tc.activeUserID,
+			CorrelationID:       domain.NewUUIDv7(),
+		})
+	})
+	ctx.Step(`^the target in projections should have amount mode "([^"]*)" and script:$`, func(expectedMode string, expectedScript *godog.DocString) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var mode, script string
+		err = bDB.QueryRow(`SELECT amount_mode, lua_script FROM targets_projection WHERE id = ?`, activeTargetID).Scan(&mode, &script)
+		if err != nil {
+			return err
+		}
+		if mode != expectedMode {
+			return fmt.Errorf("expected amount_mode %s, got %s", expectedMode, mode)
+		}
+		if strings.TrimSpace(script) != strings.TrimSpace(expectedScript.Content) {
+			return fmt.Errorf("expected script %q, got %q", expectedScript.Content, script)
+		}
 		return nil
 	})
 
@@ -2053,9 +2254,6 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	})
 
 	// 07_buckets_and_targets.feature steps
-	var activeBucketID string
-	var activeTargetID string
-	var lastTargetErr error
 
 	ctx.Step(`^an open budget "([^"]*)"$`, func(budgetName string) error {
 		now := time.Now().UTC().UnixMicro()
@@ -2105,14 +2303,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
-	parseAmountStr := func(amtStr string) int64 {
-		clean := strings.TrimSpace(amtStr)
-		clean = strings.ReplaceAll(clean, ",", "")
-		clean = strings.TrimSuffix(clean, " PLN")
-		var f float64
-		fmt.Sscanf(clean, "%f", &f)
-		return int64(f * 100)
-	}
+
 
 	ctx.Step(`^I add a mandatory target "([^"]*)" with priority (\d+), cadence "([^"]*)", amount "([^"]*)"$`, func(name string, prio int, cadence, amt string) error {
 		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/balance/balance/internal/auth"
+	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/logger"
@@ -801,6 +802,208 @@ func TestBudgetRenameAndDeleteFlow(t *testing.T) {
 			t.Fatalf("expected tenant database file to be removed from disk")
 		}
 	})
+}
+
+func TestTargetModalAndLuaFormulaAssistant(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "balance_target_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mainDBPath := filepath.Join(tmpDir, "main.db")
+	mainDB, err := db.OpenDB(mainDBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tmpDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+	e := echo.New()
+
+	userID := domain.NewUUIDv7()
+	now := time.Now().UTC().UnixMicro()
+	_, _ = mainDB.Exec(`INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, 'user@example.com', 'h', 'User', ?, ?)`, userID, now, now)
+
+	// Create budget
+	bForm := url.Values{}
+	bForm.Set("name", "Target Test Budget")
+	bForm.Set("default_currency", "PLN")
+	bForm.Set("timezone", "Europe/Warsaw")
+
+	bReq := httptest.NewRequest(http.MethodPost, "/budgets", strings.NewReader(bForm.Encode()))
+	bReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	bRec := httptest.NewRecorder()
+	bCtx := e.NewContext(bReq, bRec)
+	bCtx.Set(ContextUserIDKey, userID)
+
+	if err := workspaceHandler.CreateBudget(bCtx); err != nil {
+		t.Fatalf("CreateBudget failed: %v", err)
+	}
+	loc := bRec.Header().Get("Location")
+	budgetID := strings.Split(loc, "/")[2]
+
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, false)
+	if err != nil {
+		t.Fatalf("GetTenantDB failed: %v", err)
+	}
+
+	// Create a bucket
+	bucketID, err := budget.CreateBucket(context.Background(), tenantDB, budget.CreateBucketInput{
+		GroupName:     "Living",
+		Name:          "Mortgage",
+		AgentID:       userID,
+		CorrelationID: domain.NewUUIDv7(),
+	})
+	if err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	// 1. Create target with FIXED amount
+	t1Form := url.Values{}
+	t1Form.Set("bucket_id", bucketID)
+	t1Form.Set("name", "Required Mortgage Installment")
+	t1Form.Set("target_type", "EXPENSE")
+	t1Form.Set("priority", "3")
+	t1Form.Set("amount_mode", "FIXED")
+	t1Form.Set("amount", "900.00")
+	t1Form.Set("currency", "PLN")
+	t1Form.Set("recurrence_cadence", "MONTHLY")
+	t1Form.Set("non_spending_strategy", "ARREARS_CUMULATIVE")
+
+	t1Req := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets", strings.NewReader(t1Form.Encode()))
+	t1Req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	t1Rec := httptest.NewRecorder()
+	t1Ctx := e.NewContext(t1Req, t1Rec)
+	t1Ctx.SetParamNames("budgetId")
+	t1Ctx.SetParamValues(budgetID)
+	t1Ctx.Set(ContextBudgetDBKey, tenantDB)
+	t1Ctx.Set(ContextUserIDKey, userID)
+	t1Ctx.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.CreateTarget(t1Ctx); err != nil {
+		t.Fatalf("CreateTarget (FIXED) failed: %v", err)
+	}
+
+	// 2. Create target with LUA_FORMULA mode
+	t2Form := url.Values{}
+	t2Form.Set("bucket_id", bucketID)
+	t2Form.Set("name", "Mortgage Overpayment")
+	t2Form.Set("target_type", "EXPENSE")
+	t2Form.Set("priority", "1")
+	t2Form.Set("amount_mode", "LUA_FORMULA")
+	t2Form.Set("lua_script", `return math.max(0, money(2000) - target("Required Mortgage Installment").required)`)
+	t2Form.Set("currency", "PLN")
+	t2Form.Set("recurrence_cadence", "MONTHLY")
+	t2Form.Set("non_spending_strategy", "RETURN_TO_POOL")
+
+	t2Req := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets", strings.NewReader(t2Form.Encode()))
+	t2Req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	t2Rec := httptest.NewRecorder()
+	t2Ctx := e.NewContext(t2Req, t2Rec)
+	t2Ctx.SetParamNames("budgetId")
+	t2Ctx.SetParamValues(budgetID)
+	t2Ctx.Set(ContextBudgetDBKey, tenantDB)
+	t2Ctx.Set(ContextUserIDKey, userID)
+	t2Ctx.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.CreateTarget(t2Ctx); err != nil {
+		t.Fatalf("CreateTarget (LUA_FORMULA) failed: %v", err)
+	}
+
+	// Verify target was created with amount_mode = LUA_FORMULA in tenantDB
+	var t2ID, t2Mode, t2Script string
+	var t2Amt int64
+	err = tenantDB.QueryRow(`SELECT id, amount_mode, lua_script, amount_minor FROM targets_projection WHERE name = 'Mortgage Overpayment'`).Scan(&t2ID, &t2Mode, &t2Script, &t2Amt)
+	if err != nil {
+		t.Fatalf("failed querying targets_projection: %v", err)
+	}
+	if t2Mode != "LUA_FORMULA" {
+		t.Fatalf("expected amount_mode LUA_FORMULA, got %s", t2Mode)
+	}
+	if !strings.Contains(t2Script, "target(\"Required Mortgage Installment\").required") {
+		t.Fatalf("expected lua script to contain target reference, got: %s", t2Script)
+	}
+
+	// 3. Update the target
+	updForm := url.Values{}
+	updForm.Set("name", "Mortgage Overpayment Updated")
+	updForm.Set("target_type", "EXPENSE")
+	updForm.Set("priority", "2")
+	updForm.Set("amount_mode", "LUA_FORMULA")
+	updForm.Set("lua_script", `return math.max(0, money(2500) - target("Required Mortgage Installment").required)`)
+	updForm.Set("recurrence_cadence", "MONTHLY")
+	updForm.Set("non_spending_strategy", "RETURN_TO_POOL")
+
+	updReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets/"+t2ID+"/update", strings.NewReader(updForm.Encode()))
+	updReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	updRec := httptest.NewRecorder()
+	updCtx := e.NewContext(updReq, updRec)
+	updCtx.SetParamNames("budgetId", "id")
+	updCtx.SetParamValues(budgetID, t2ID)
+	updCtx.Set(ContextBudgetDBKey, tenantDB)
+	updCtx.Set(ContextUserIDKey, userID)
+	updCtx.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.UpdateTarget(updCtx); err != nil {
+		t.Fatalf("UpdateTarget failed: %v", err)
+	}
+
+	var updName, updScript string
+	var updPrio int
+	err = tenantDB.QueryRow(`SELECT name, priority, lua_script FROM targets_projection WHERE id = ?`, t2ID).Scan(&updName, &updPrio, &updScript)
+	if err != nil {
+		t.Fatalf("failed querying updated target: %v", err)
+	}
+	if updName != "Mortgage Overpayment Updated" || updPrio != 2 || !strings.Contains(updScript, "money(2500)") {
+		t.Fatalf("unexpected updated target state: name=%s, prio=%d, script=%s", updName, updPrio, updScript)
+	}
+
+	// 4. Verify BudgetView renders Edit button, calculation mode switch, and script
+	bvReq := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/budget", nil)
+	bvRec := httptest.NewRecorder()
+	bvCtx := e.NewContext(bvReq, bvRec)
+	bvCtx.SetParamNames("budgetId")
+	bvCtx.SetParamValues(budgetID)
+	bvCtx.Set(ContextRoleKey, "OWNER")
+	bvCtx.Set(ContextBudgetDBKey, tenantDB)
+	bvCtx.Set(ContextUserIDKey, userID)
+	bvCtx.Set("csrfToken", "test_csrf")
+
+	if err := workspaceHandler.BudgetView(bvCtx); err != nil {
+		t.Fatalf("BudgetView failed: %v", err)
+	}
+	body := bvRec.Body.String()
+	if !strings.Contains(body, "target-edit-btn") {
+		t.Fatalf("expected BudgetView to contain target-edit-btn")
+	}
+	if !strings.Contains(body, "openEditTargetModal") {
+		t.Fatalf("expected BudgetView to contain openEditTargetModal function")
+	}
+	if !strings.Contains(body, "switchAmountMode") {
+		t.Fatalf("expected BudgetView to contain switchAmountMode function")
+	}
+	if !strings.Contains(body, "generateFormulaAI") {
+		t.Fatalf("expected BudgetView to contain generateFormulaAI function")
+	}
+	if !strings.Contains(body, "validateFormulaScript") {
+		t.Fatalf("expected BudgetView to contain validateFormulaScript function")
+	}
+	if !strings.Contains(body, "mode_lua") || !strings.Contains(body, "mode_fixed") {
+		t.Fatalf("expected target_modal to have calculation mode radio inputs")
+	}
 }
 
 

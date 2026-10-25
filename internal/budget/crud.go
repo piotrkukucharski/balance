@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/lua"
 )
 
 // Event Types for Buckets and Targets
@@ -48,7 +49,9 @@ type CreateTargetInput struct {
 	TargetType          string // 'EXPENSE', 'SAVINGS', 'DEBT_PAYMENT'
 	Priority            int    // >= 1 (1=Optional, 2=Recommended, 3=Mandatory)
 	SortOrder           int
+	AmountMode          string // 'FIXED', 'LUA_FORMULA'
 	AmountMinor         int64
+	LuaScript           *string
 	Currency            string
 	RecurrenceCadence   string // 'ONE_OFF', 'WEEKLY', 'MONTHLY', 'ANNUAL', 'CUSTOM_DAYS'
 	RecurrenceDays      int
@@ -66,7 +69,9 @@ type UpdateTargetInput struct {
 	TargetType          string
 	Priority            int
 	SortOrder           int
+	AmountMode          string // 'FIXED', 'LUA_FORMULA'
 	AmountMinor         int64
+	LuaScript           *string
 	RecurrenceCadence   string
 	RecurrenceDays      int
 	DueDate             *int64
@@ -294,6 +299,25 @@ func CreateTarget(ctx context.Context, tenantDB *sql.DB, input CreateTargetInput
 	if input.NonSpendingStrategy == "" {
 		input.NonSpendingStrategy = StrategyRollOver
 	}
+	if input.AmountMode == "" {
+		input.AmountMode = "FIXED"
+	}
+
+	if input.AmountMode == "LUA_FORMULA" && input.LuaScript != nil && *input.LuaScript != "" {
+		if err := lua.ValidateLuaScript(*input.LuaScript); err != nil {
+			return "", fmt.Errorf("invalid lua script: %w", err)
+		}
+		if input.AmountMinor == 0 {
+			snap, _ := BuildBudgetSnapshot(ctx, tenantDB, input.Currency, 30)
+			if snap != nil {
+				evalVal, err := lua.EvaluateFormula(ctx, *input.LuaScript, snap)
+				if err == nil {
+					input.AmountMinor = evalVal
+				}
+			}
+		}
+	}
+
 	if err := domain.ValidateAmountMinor(input.AmountMinor, true); err != nil {
 		return "", fmt.Errorf("invalid target amount: %w", err)
 	}
@@ -322,7 +346,9 @@ func CreateTarget(ctx context.Context, tenantDB *sql.DB, input CreateTargetInput
 		"target_type":           input.TargetType,
 		"priority":              input.Priority,
 		"sort_order":            input.SortOrder,
+		"amount_mode":           input.AmountMode,
 		"amount_minor":          input.AmountMinor,
+		"lua_script":            input.LuaScript,
 		"currency":              input.Currency,
 		"recurrence_cadence":    input.RecurrenceCadence,
 		"recurrence_days":       input.RecurrenceDays,
@@ -346,12 +372,12 @@ func CreateTarget(ctx context.Context, tenantDB *sql.DB, input CreateTargetInput
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO targets_projection (
 			id, bucket_id, name, target_type, priority, sort_order, amount_mode, amount_minor,
-			currency, recurrence_cadence, recurrence_days, due_date, non_spending_strategy,
+			lua_script, currency, recurrence_cadence, recurrence_days, due_date, non_spending_strategy,
 			ceiling_amount_minor, current_funded_minor, is_archived, version, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, 'FIXED', ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?)`,
-		targetID, input.BucketID, input.Name, input.TargetType, input.Priority, input.SortOrder, input.AmountMinor,
-		input.Currency, input.RecurrenceCadence, input.RecurrenceDays, input.DueDate, input.NonSpendingStrategy,
-		input.CeilingAmountMinor, now,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?)`,
+		targetID, input.BucketID, input.Name, input.TargetType, input.Priority, input.SortOrder,
+		input.AmountMode, input.AmountMinor, input.LuaScript, input.Currency, input.RecurrenceCadence,
+		input.RecurrenceDays, input.DueDate, input.NonSpendingStrategy, input.CeilingAmountMinor, now,
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed inserting targets_projection: %w", err)
@@ -371,6 +397,25 @@ func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput
 	if input.Priority < 1 {
 		input.Priority = 2
 	}
+	if input.AmountMode == "" {
+		input.AmountMode = "FIXED"
+	}
+
+	if input.AmountMode == "LUA_FORMULA" && input.LuaScript != nil && *input.LuaScript != "" {
+		if err := lua.ValidateLuaScript(*input.LuaScript); err != nil {
+			return fmt.Errorf("invalid lua script: %w", err)
+		}
+		if input.AmountMinor == 0 {
+			snap, _ := BuildBudgetSnapshot(ctx, tenantDB, "PLN", 30)
+			if snap != nil {
+				evalVal, err := lua.EvaluateFormula(ctx, *input.LuaScript, snap)
+				if err == nil {
+					input.AmountMinor = evalVal
+				}
+			}
+		}
+	}
+
 	if err := domain.ValidateAmountMinor(input.AmountMinor, true); err != nil {
 		return fmt.Errorf("invalid target amount: %w", err)
 	}
@@ -401,7 +446,9 @@ func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput
 		"target_type":           input.TargetType,
 		"priority":              input.Priority,
 		"sort_order":            input.SortOrder,
+		"amount_mode":           input.AmountMode,
 		"amount_minor":          input.AmountMinor,
+		"lua_script":            input.LuaScript,
 		"recurrence_cadence":    input.RecurrenceCadence,
 		"recurrence_days":       input.RecurrenceDays,
 		"due_date":              input.DueDate,
@@ -423,12 +470,12 @@ func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput
 
 	_, err = tx.ExecContext(ctx, `
 		UPDATE targets_projection
-		SET name = ?, target_type = ?, priority = ?, sort_order = ?, amount_minor = ?,
-		    recurrence_cadence = ?, recurrence_days = ?, due_date = ?, non_spending_strategy = ?,
+		SET name = ?, target_type = ?, priority = ?, sort_order = ?, amount_mode = ?, amount_minor = ?,
+		    lua_script = ?, recurrence_cadence = ?, recurrence_days = ?, due_date = ?, non_spending_strategy = ?,
 		    ceiling_amount_minor = ?, version = ?, updated_at = ?
 		WHERE id = ?`,
-		input.Name, input.TargetType, input.Priority, input.SortOrder, input.AmountMinor,
-		input.RecurrenceCadence, input.RecurrenceDays, input.DueDate, input.NonSpendingStrategy,
+		input.Name, input.TargetType, input.Priority, input.SortOrder, input.AmountMode, input.AmountMinor,
+		input.LuaScript, input.RecurrenceCadence, input.RecurrenceDays, input.DueDate, input.NonSpendingStrategy,
 		input.CeilingAmountMinor, newVersion, now, input.ID,
 	)
 	if err != nil {

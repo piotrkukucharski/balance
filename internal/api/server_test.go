@@ -231,6 +231,31 @@ func TestAPI_Auth_RegisterAndLoginAndTokenFlow(t *testing.T) {
 	if !valResp.Valid {
 		t.Fatalf("expected formula to be valid, got false")
 	}
+	if valResp.EvaluatedMinor == nil || *valResp.EvaluatedMinor != 200 {
+		t.Fatalf("expected EvaluatedMinor 200, got %v", valResp.EvaluatedMinor)
+	}
+
+	// 10. Generate Formula Endpoint
+	genBody, _ := json.Marshal(map[string]interface{}{
+		"current_bucket_name": "Mortgage",
+		"target_currency":    "PLN",
+		"user_prompt":        "Save 15% of income",
+		"window_days":        30,
+	})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/budgets/"+budgetID+"/targets/generate-formula", bytes.NewReader(genBody))
+	req.Header.Set("Authorization", "Bearer "+tokResp.Token)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on generate-formula, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var genResp openapi.GenerateFormulaResponse
+	json.Unmarshal(rec.Body.Bytes(), &genResp)
+	if genResp.LuaScript == "" || genResp.Explanation == "" {
+		t.Fatalf("expected non-empty LuaScript and Explanation, got script=%q exp=%q", genResp.LuaScript, genResp.Explanation)
+	}
 }
 
 func TestAPI_RBAC_UnauthorizedAndForbidden(t *testing.T) {

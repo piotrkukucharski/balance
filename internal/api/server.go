@@ -11,6 +11,7 @@ import (
 
 	"github.com/balance/balance/internal/ai"
 	"github.com/balance/balance/internal/auth"
+	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/integration/csv"
@@ -1183,7 +1184,7 @@ func (s *Server) FundTarget(ctx echo.Context, budgetId BudgetIdPathParam, id IdP
 // GenerateFormula (POST /budgets/{budgetId}/targets/generate-formula)
 func (s *Server) GenerateFormula(ctx echo.Context, budgetId BudgetIdPathParam) error {
 	budgetID := budgetId.String()
-	_, _, err := s.verifyBudgetAccess(ctx, budgetID, "EDITOR")
+	tenantDB, _, err := s.verifyBudgetAccess(ctx, budgetID, "EDITOR")
 	if err != nil {
 		return err
 	}
@@ -1198,12 +1199,14 @@ func (s *Server) GenerateFormula(ctx echo.Context, budgetId BudgetIdPathParam) e
 		wDays = *req.WindowDays
 	}
 
+	snap, _ := budget.BuildBudgetSnapshot(ctx.Request().Context(), tenantDB, req.TargetCurrency, wDays)
+
 	res, _, err := s.aiService.GenerateAndValidateFormula(ctx.Request().Context(), ai.FormulaGenerationRequest{
 		CurrentBucketName: req.CurrentBucketName,
 		TargetCurrency:    req.TargetCurrency,
 		UserPrompt:        req.UserPrompt,
 		WindowDays:        wDays,
-	}, nil)
+	}, snap)
 	if err != nil {
 		return sendError(ctx, http.StatusBadRequest, err.Error(), "FORMULA_GEN_FAILED", nil)
 	}
@@ -1217,7 +1220,7 @@ func (s *Server) GenerateFormula(ctx echo.Context, budgetId BudgetIdPathParam) e
 // ValidateFormula (POST /budgets/{budgetId}/targets/validate-formula)
 func (s *Server) ValidateFormula(ctx echo.Context, budgetId BudgetIdPathParam) error {
 	budgetID := budgetId.String()
-	_, _, err := s.verifyBudgetAccess(ctx, budgetID, "EDITOR")
+	tenantDB, _, err := s.verifyBudgetAccess(ctx, budgetID, "EDITOR")
 	if err != nil {
 		return err
 	}
@@ -1237,6 +1240,19 @@ func (s *Server) ValidateFormula(ctx echo.Context, budgetId BudgetIdPathParam) e
 	}
 
 	deps, _ := lua.ExtractTargetDependencies(req.LuaScript)
+
+	snap, snapErr := budget.BuildBudgetSnapshot(ctx.Request().Context(), tenantDB, "PLN", 30)
+	if snapErr == nil && snap != nil {
+		evalVal, evalErr := lua.EvaluateFormula(ctx.Request().Context(), req.LuaScript, snap)
+		if evalErr == nil {
+			return ctx.JSON(http.StatusOK, ValidateFormulaResponse{
+				Error:          nil,
+				Valid:          true,
+				Dependencies:   &deps,
+				EvaluatedMinor: &evalVal,
+			})
+		}
+	}
 
 	return ctx.JSON(http.StatusOK, ValidateFormulaResponse{
 		Error:        nil,

@@ -181,6 +181,25 @@ func EvaluateFormula(ctx context.Context, script string, snap *InMemoryBudgetSna
 }
 
 func registerSandboxedEnvironment(L *glua.LState, snap *InMemoryBudgetSnapshot, checkCall func() error) {
+	if snap == nil {
+		snap = &InMemoryBudgetSnapshot{}
+	}
+	if snap.Targets == nil {
+		snap.Targets = make(map[string]*TargetMeta)
+	}
+	if snap.BucketBalances == nil {
+		snap.BucketBalances = make(map[string]int64)
+	}
+	if snap.FXRates == nil {
+		snap.FXRates = make(map[string]int64)
+	}
+	if snap.InflowsPast == nil {
+		snap.InflowsPast = make(map[string][]int64)
+	}
+	if snap.OutflowsPast == nil {
+		snap.OutflowsPast = make(map[string][]int64)
+	}
+
 	// Whitelisted math table
 	mathTable := L.NewTable()
 	L.SetField(mathTable, "abs", L.NewFunction(luaMathAbs))

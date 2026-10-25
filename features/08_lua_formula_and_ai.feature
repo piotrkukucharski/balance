@@ -32,3 +32,17 @@ Feature: Sandboxed Lua Formula Engine and AI Formula Assistant
     When the script is submitted for validation
     Then the engine should reject the script with a forbidden token error
     And the VM should never execute the script
+
+  Scenario: Editing an existing target and switching to Lua formula mode
+    Given an open budget "Family Home"
+    And an existing bucket "Housing" in group "Fixed"
+    And an existing target "Rent" in bucket "Housing" with required amount "2,000.00 PLN"
+    When I edit target "Rent" switching amount mode to "LUA_FORMULA" with script:
+      """
+      return money(2100)
+      """
+    Then the target in projections should have amount mode "LUA_FORMULA" and script:
+      """
+      return money(2100)
+      """
+    And the target requirement in projections should be "2,100.00 PLN"
