@@ -1637,7 +1637,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
                 <!-- Fixed Amount Input -->
                 <div id="fixed_amount_container" class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Monthly / Period Amount</span></label>
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Period Amount</span></label>
                     <input type="number" step="0.01" min="0" id="target_amount" name="amount" required placeholder="1000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
                 </div>
 
