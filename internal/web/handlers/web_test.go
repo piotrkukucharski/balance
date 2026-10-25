@@ -1319,6 +1319,59 @@ func TestCreateAndEditTarget_CustomDays(t *testing.T) {
 	if err := workspaceHandler.CreateTarget(ctx5); err == nil {
 		t.Fatalf("expected error creating CUSTOM_MONTHS target without due date, but got nil")
 	}
+
+	// 7. Create target with MONTHLY cadence and optional due_date
+	f6 := url.Values{}
+	f6.Set("bucket_id", bucketID)
+	f6.Set("name", "Monthly Subscription with Anchor")
+	f6.Set("amount", "49.99")
+	f6.Set("currency", "PLN")
+	f6.Set("recurrence_cadence", "MONTHLY")
+	f6.Set("due_date", "2026-11-15")
+	f6.Set("non_spending_strategy", "ROLL_OVER")
+
+	req6 := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets", strings.NewReader(f6.Encode()))
+	req6.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	rec6 := httptest.NewRecorder()
+	ctx6 := e.NewContext(req6, rec6)
+	ctx6.SetParamNames("budgetId")
+	ctx6.SetParamValues(budgetID)
+	ctx6.Set(ContextBudgetDBKey, tenantDB)
+	ctx6.Set(ContextUserIDKey, userID)
+	ctx6.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.CreateTarget(ctx6); err != nil {
+		t.Fatalf("CreateTarget (MONTHLY with due_date) failed: %v", err)
+	}
+
+	var t6Cadence string
+	var t6DueDate int64
+	err = tenantDB.QueryRow(`SELECT recurrence_cadence, due_date FROM targets_projection WHERE name = 'Monthly Subscription with Anchor'`).Scan(&t6Cadence, &t6DueDate)
+	if err != nil {
+		t.Fatalf("failed querying Monthly Subscription with Anchor: %v", err)
+	}
+	if t6Cadence != "MONTHLY" || t6DueDate == 0 {
+		t.Fatalf("expected MONTHLY with non-zero due_date, got %s, %d", t6Cadence, t6DueDate)
+	}
+
+	// Verify rendered in BudgetView
+	reqView := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/budget", nil)
+	recView := httptest.NewRecorder()
+	ctxView := e.NewContext(reqView, recView)
+	ctxView.SetParamNames("budgetId")
+	ctxView.SetParamValues(budgetID)
+	ctxView.Set(ContextBudgetDBKey, tenantDB)
+	ctxView.Set(ContextUserIDKey, userID)
+	ctxView.Set(ContextRoleKey, "EDITOR")
+	ctxView.Set("csrfToken", "test-token")
+
+	if err := workspaceHandler.BudgetView(ctxView); err != nil {
+		t.Fatalf("BudgetView failed: %v", err)
+	}
+	viewBody := recView.Body.String()
+	if !strings.Contains(viewBody, "Due: 2026-11-15") {
+		t.Fatalf("expected BudgetView to display due date for monthly target, but it was missing in output")
+	}
 }
 
 func TestPartyMatchingRulesCRUD(t *testing.T) {

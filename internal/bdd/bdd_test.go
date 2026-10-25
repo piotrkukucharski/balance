@@ -2832,6 +2832,26 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	ctx.Step(`^target "([^"]*)" in projections should have cadence "([^"]*)" and non-zero due date$`, func(name string, expectedCadence string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var cadence string
+		var dueDate sql.NullInt64
+		err = bDB.QueryRow(`SELECT recurrence_cadence, due_date FROM targets_projection WHERE name = ? AND is_archived = 0`, name).Scan(&cadence, &dueDate)
+		if err != nil {
+			return fmt.Errorf("target %s not found: %w", name, err)
+		}
+		if cadence != expectedCadence {
+			return fmt.Errorf("expected cadence %s, got %s", expectedCadence, cadence)
+		}
+		if !dueDate.Valid || dueDate.Int64 == 0 {
+			return fmt.Errorf("expected target %s to have non-zero due date", name)
+		}
+		return nil
+	})
+
 	ctx.Step(`^the bucket and targets should be recorded in event streams and projections$`, func() error {
 		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
 		if err != nil {

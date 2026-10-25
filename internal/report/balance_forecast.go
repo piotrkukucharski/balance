@@ -98,15 +98,30 @@ func CalculateBalanceForecast(ctx context.Context, tenantDB *sql.DB, daysForward
 			triggers := false
 			switch t.cadence {
 			case "MONTHLY":
-				if currentDate.Day() == 1 {
+				targetDay := 1
+				if t.dueDate > 0 {
+					targetDay = time.UnixMicro(t.dueDate).UTC().Day()
+				}
+				if currentDate.Day() == targetDay {
 					triggers = true
 				}
 			case "WEEKLY":
-				if currentDate.Weekday() == time.Monday {
+				targetWeekday := time.Monday
+				if t.dueDate > 0 {
+					targetWeekday = time.UnixMicro(t.dueDate).UTC().Weekday()
+				}
+				if currentDate.Weekday() == targetWeekday {
 					triggers = true
 				}
 			case "ANNUAL":
-				if currentDate.Month() == time.January && currentDate.Day() == 1 {
+				targetMonth := time.January
+				targetDay := 1
+				if t.dueDate > 0 {
+					dueTime := time.UnixMicro(t.dueDate).UTC()
+					targetMonth = dueTime.Month()
+					targetDay = dueTime.Day()
+				}
+				if currentDate.Month() == targetMonth && currentDate.Day() == targetDay {
 					triggers = true
 				}
 			case "CUSTOM_DAYS":

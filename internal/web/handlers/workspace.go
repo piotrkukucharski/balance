@@ -1159,15 +1159,20 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 				if t.CeilingAmountMinor != nil {
 					goalText = fmt.Sprintf(` <span class="text-primary font-semibold">(Goal: %.2f %s)</span>`, float64(*t.CeilingAmountMinor)/100.0, t.Currency)
 				}
+				dueText := ""
+				if t.DueDate > 0 {
+					dTime := time.UnixMicro(t.DueDate).UTC()
+					dueText = fmt.Sprintf(` • Due: %s`, dTime.Format("2006-01-02"))
+				}
 				targetsSublist.WriteString(fmt.Sprintf(`
 					<div class="flex items-center justify-between text-base-content/70 py-0.5">
-						<span class="font-medium">• %s <span class="opacity-50 text-[10px]">(%s, %s)%s</span></span>
+						<span class="font-medium">• %s <span class="opacity-50 text-[10px]">(%s, %s%s)%s</span></span>
 						<div class="flex items-center gap-2">
 							<span class="badge %s badge-xs">%s</span>
 							<span class="font-mono">%.2f / %.2f %s</span>
 						</div>
 					</div>`,
-					html.EscapeString(t.Name), priorityLabel, t.RecurrenceCadence, goalText,
+					html.EscapeString(t.Name), priorityLabel, t.RecurrenceCadence, dueText, goalText,
 					t.HealthBadgeClass, t.HealthBadge,
 					float64(t.CurrentFundedMinor)/100.0, float64(t.RequiredMinor)/100.0, t.Currency))
 			}
@@ -1925,13 +1930,19 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                         (t.RecurrenceCadence === 'CUSTOM_MONTHS' ? ((rInt || 3) + 'm') :
                         (t.RecurrenceCadence === 'CUSTOM_YEARS' ? ((rInt || 1) + 'y') : t.RecurrenceCadence));
 
+                    let dueHtml = '';
+                    if (t.DueDate && t.DueDate > 0) {
+                        const d = new Date(t.DueDate / 1000);
+                        dueHtml = ' • Due: ' + d.toISOString().split('T')[0];
+                    }
+
                     card.innerHTML = 
                         '<div class="flex justify-between items-start">' +
                             '<div>' +
                                 '<div class="font-bold text-sm tracking-tight flex items-center gap-1">' +
                                     escapeHtml(t.Name) + luaBadge +
                                 '</div>' +
-                                '<div class="text-[11px] text-base-content/60">Priority: ' + priorityText + ' • Cadence: ' + cadenceDisplay + ' • Strategy: ' + t.NonSpendingStrategy + ceilingHtml + '</div>' +
+                                '<div class="text-[11px] text-base-content/60">Priority: ' + priorityText + ' • Cadence: ' + cadenceDisplay + dueHtml + ' • Strategy: ' + t.NonSpendingStrategy + ceilingHtml + '</div>' +
                             '</div>' +
                             '<span class="badge ' + t.HealthBadgeClass + ' badge-sm font-semibold">' + t.HealthBadge + '</span>' +
                         '</div>' +
@@ -2041,6 +2052,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             const isCustom = isCustomDays || isCustomMonths || isCustomYears;
             const isOneOff = val === 'ONE_OFF';
 
+            const isWeeklyMonthlyAnnual = val === 'WEEKLY' || val === 'MONTHLY' || val === 'ANNUAL';
+
             if (isCustom) {
                 customContainer.classList.remove('hidden');
                 if (isCustomDays) {
@@ -2070,6 +2083,10 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                     dueDateContainer.classList.remove('hidden');
                     dueDateInput.required = false;
                     if (dueDateLabel) dueDateLabel.innerText = 'Target Due Date (Optional)';
+                } else if (isWeeklyMonthlyAnnual) {
+                    dueDateContainer.classList.remove('hidden');
+                    dueDateInput.required = false;
+                    if (dueDateLabel) dueDateLabel.innerText = 'Anchor Due Date (Optional)';
                 } else {
                     dueDateContainer.classList.add('hidden');
                     dueDateInput.required = false;
