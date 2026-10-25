@@ -9,6 +9,7 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1103,9 +1104,9 @@ func renderBudgetStatsBanner(budgetID string, defaultRTA int64, defaultCurr, rta
 				<div class="stat-title text-xs font-bold uppercase tracking-wider">Ready to Assign</div>
 				<div class="stat-value %s text-2xl font-black">
 					%.2f %s
-					%s
 				</div>
-				<div class="stat-desc text-xs %s">%s</div>
+				%s
+				<div class="stat-desc text-xs %s mt-1">%s</div>
 			</div>
 
 			<div class="stat">
@@ -1815,15 +1816,65 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	}
 	defaultRTA := rtaMap[defaultCurr]
 
-	var rtaOtherBadges strings.Builder
+	type rtaCurrencyItem struct {
+		curr string
+		amt  int64
+	}
+	var nonDefaultCurrencies []rtaCurrencyItem
 	for curr, amt := range rtaMap {
 		if curr != defaultCurr && amt != 0 {
+			nonDefaultCurrencies = append(nonDefaultCurrencies, rtaCurrencyItem{curr: curr, amt: amt})
+		}
+	}
+	sort.Slice(nonDefaultCurrencies, func(i, j int) bool {
+		return nonDefaultCurrencies[i].curr < nonDefaultCurrencies[j].curr
+	})
+
+	var rtaOtherBadges strings.Builder
+	if len(nonDefaultCurrencies) > 0 {
+		rtaOtherBadges.WriteString(`<div class="flex flex-wrap items-center gap-1.5 mt-1.5">`)
+		limit := 3
+		displayCount := len(nonDefaultCurrencies)
+		if displayCount > limit {
+			displayCount = limit
+		}
+
+		for i := 0; i < displayCount; i++ {
+			item := nonDefaultCurrencies[i]
 			badgeColor := "badge-info"
-			if amt < 0 {
+			if item.amt < 0 {
 				badgeColor = "badge-error"
 			}
-			rtaOtherBadges.WriteString(fmt.Sprintf(`<span class="badge %s badge-sm font-bold ml-1">%.2f %s</span>`, badgeColor, float64(amt)/100.0, curr))
+			rtaOtherBadges.WriteString(fmt.Sprintf(`<span class="badge %s badge-sm font-bold font-mono">%.2f %s</span>`, badgeColor, float64(item.amt)/100.0, item.curr))
 		}
+
+		if len(nonDefaultCurrencies) > limit {
+			extraCount := len(nonDefaultCurrencies) - limit
+			rtaOtherBadges.WriteString(fmt.Sprintf(`
+				<div class="dropdown dropdown-end dropdown-top">
+					<label tabindex="0" class="badge badge-neutral badge-sm font-bold cursor-pointer hover:badge-primary transition-colors">+%d walut</label>
+					<div tabindex="0" class="dropdown-content z-20 menu p-2.5 shadow-xl bg-base-100 rounded-box border border-base-300 w-52 gap-1.5 text-xs">
+						<div class="font-bold text-[11px] uppercase tracking-wider text-base-content/60 px-1 pb-1 border-b border-base-200">Pozostałe waluty</div>
+			`, extraCount))
+			for i := limit; i < len(nonDefaultCurrencies); i++ {
+				item := nonDefaultCurrencies[i]
+				badgeColor := "badge-info"
+				if item.amt < 0 {
+					badgeColor = "badge-error"
+				}
+				rtaOtherBadges.WriteString(fmt.Sprintf(`
+						<div class="flex items-center justify-between px-1 py-0.5">
+							<span class="font-bold">%s:</span>
+							<span class="badge %s badge-xs font-mono font-bold">%.2f %s</span>
+						</div>
+				`, item.curr, badgeColor, float64(item.amt)/100.0, item.curr))
+			}
+			rtaOtherBadges.WriteString(`
+					</div>
+				</div>
+			`)
+		}
+		rtaOtherBadges.WriteString(`</div>`)
 	}
 
 	// 3. Fetch all active targets

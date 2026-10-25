@@ -2208,6 +2208,184 @@ func TestWorkspaceTimeHorizonsAndDynamicCalculation(t *testing.T) {
 	}
 }
 
+func TestReadyToAssignMultiCurrencyLayout(t *testing.T) {
+	logger.BindTestLogger(t)
+
+	tmpDir, err := os.MkdirTemp("", "balance_rta_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mainPath := filepath.Join(tmpDir, "main.db")
+	mainDB, err := db.OpenDB(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tmpDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	e := echo.New()
+	authHandler := NewAuthHandler(mainDB, tenantMgr)
+	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+
+	// 1. Register User
+	form := url.Values{}
+	form.Set("email", "multi@example.com")
+	form.Set("password", "SecureP@ss123")
+	form.Set("display_name", "Jan Multi")
+
+	reqReg := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(form.Encode()))
+	reqReg.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	recReg := httptest.NewRecorder()
+	cReg := e.NewContext(reqReg, recReg)
+
+	if err := authHandler.HandleRegister(cReg); err != nil {
+		t.Fatalf("HandleRegister failed: %v", err)
+	}
+
+	var userID, csrfToken string
+	if err := mainDB.QueryRow("SELECT user_id, csrf_token FROM sessions LIMIT 1").Scan(&userID, &csrfToken); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Create Budget
+	bForm := url.Values{}
+	bForm.Set("name", "Multi Currency Budget")
+	bForm.Set("default_currency", "PLN")
+	bForm.Set("timezone", "UTC")
+	bForm.Set("csrf_token", csrfToken)
+
+	reqB := httptest.NewRequest(http.MethodPost, "/budgets", strings.NewReader(bForm.Encode()))
+	reqB.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	recB := httptest.NewRecorder()
+	cB := e.NewContext(reqB, recB)
+	cB.Set(ContextUserIDKey, userID)
+	cB.Set("csrfToken", csrfToken)
+
+	if err := workspaceHandler.CreateBudget(cB); err != nil {
+		t.Fatalf("CreateBudget failed: %v", err)
+	}
+
+	var budgetID string
+	if err := mainDB.QueryRow("SELECT id FROM budgets LIMIT 1").Scan(&budgetID); err != nil {
+		t.Fatal(err)
+	}
+
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Single-currency budget verification
+	req1 := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/budget", nil)
+	rec1 := httptest.NewRecorder()
+	c1 := e.NewContext(req1, rec1)
+	c1.SetParamNames("budgetId")
+	c1.SetParamValues(budgetID)
+	c1.Set(ContextBudgetDBKey, tenantDB)
+	c1.Set(ContextUserIDKey, userID)
+	c1.Set(ContextRoleKey, "OWNER")
+	c1.Set("csrfToken", csrfToken)
+
+	if err := workspaceHandler.BudgetView(c1); err != nil {
+		t.Fatalf("BudgetView failed for 1 currency: %v", err)
+	}
+	body1 := rec1.Body.String()
+	if !strings.Contains(body1, "Ready to Assign") {
+		t.Errorf("Ready to Assign card missing")
+	}
+	if strings.Contains(body1, "+") && strings.Contains(body1, "walut") {
+		t.Errorf("Unexpected multi-currency dropdown in single currency budget")
+	}
+
+	// 4. Add multiple accounts with distinct currencies: EUR, USD, GBP, CHF, CAD (5 non-default currencies)
+	now := time.Now().UTC().UnixMicro()
+	userPartyID := domain.NewUUIDv7()
+	_, err = tenantDB.Exec(`
+		INSERT INTO parties_current (id, version, name, party_type, is_user_owned, notes, agent_id, updated_at)
+		VALUES (?, 1, 'Jan Multi Personal', 'PERSON', 1, NULL, ?, ?)`,
+		userPartyID, userID, now,
+	)
+	if err != nil {
+		t.Fatalf("failed inserting party: %v", err)
+	}
+
+	currencies := []struct {
+		name string
+		curr string
+		bal  int64
+	}{
+		{"Konto Walutowe EUR", "EUR", 150000},
+		{"Konto Walutowe USD", "USD", 250000},
+		{"Konto Walutowe GBP", "GBP", 80000},
+		{"Konto Walutowe CHF", "CHF", 95000},
+		{"Konto Walutowe CAD", "CAD", 60000},
+	}
+
+	for _, cItem := range currencies {
+		accID := domain.NewUUIDv7()
+		_, err = tenantDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', ?, 0, ?, ?)`,
+			accID, userPartyID, cItem.name, cItem.curr, userID, now,
+		)
+		if err != nil {
+			t.Fatalf("failed inserting account %s: %v", cItem.name, err)
+		}
+		_, err = tenantDB.Exec(`
+			INSERT INTO account_currency_balances (account_id, currency, balance_minor, updated_at)
+			VALUES (?, ?, ?, ?)`,
+			accID, cItem.curr, cItem.bal, now,
+		)
+		if err != nil {
+			t.Fatalf("failed inserting balance %s: %v", cItem.curr, err)
+		}
+	}
+
+	// 5. Multi-currency verification (should show first 3 sorted and +2 walut in dropdown)
+	req2 := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/budget", nil)
+	rec2 := httptest.NewRecorder()
+	c2 := e.NewContext(req2, rec2)
+	c2.SetParamNames("budgetId")
+	c2.SetParamValues(budgetID)
+	c2.Set(ContextBudgetDBKey, tenantDB)
+	c2.Set(ContextUserIDKey, userID)
+	c2.Set(ContextRoleKey, "OWNER")
+	c2.Set("csrfToken", csrfToken)
+
+	if err := workspaceHandler.BudgetView(c2); err != nil {
+		t.Fatalf("BudgetView failed for multi-currency: %v", err)
+	}
+	body2 := rec2.Body.String()
+
+	// Sorted: CAD, CHF, EUR (visible directly), GBP, USD (in dropdown)
+	if !strings.Contains(body2, "CAD") || !strings.Contains(body2, "CHF") || !strings.Contains(body2, "EUR") {
+		t.Errorf("Expected CAD, CHF, EUR to be present in body")
+	}
+	if !strings.Contains(body2, "+2 walut") {
+		t.Errorf("Expected dropdown badge '+2 walut' for 5 additional currencies, body had:\n%s", body2)
+	}
+	if !strings.Contains(body2, "Pozostałe waluty") {
+		t.Errorf("Expected dropdown header 'Pozostałe waluty'")
+	}
+	if !strings.Contains(body2, "GBP") || !strings.Contains(body2, "USD") {
+		t.Errorf("Expected GBP and USD inside dropdown")
+	}
+}
+
+
 
 
 
