@@ -502,6 +502,80 @@ Applies to: `Party`, `Account`, `MatchingRule`, `RawTransaction`, `BudgetTransac
     $$\text{dedup\_hash} = \text{SHA256}(\text{len\_prefixed}(\text{account\_id}, \text{external\_tx\_id\_or\_seq}, \text{booking\_date}, \text{amount\_minor}, \text{currency}, \text{clean\_payee}, \text{clean\_reference}))$$
   - Active uniqueness on `(account_id, dedup_hash)` is enforced on `raw_transactions_current` (so soft-deleted raw transactions can be cleanly re-imported if needed), while collisions on active records are safely skipped during sync/import.
 
+### 9.2 Central Bank Exchange Rate Synchronization (ECB & NBP)
+
+```
+       +-------------------------------------------------------+
+       |           Central Bank Exchange Rate Engine           |
+       +-------------------------------------------------------+
+       | Priority: European Central Bank (ECB) -> Primary      |
+       | Fallback: Narodowy Bank Polski (NBP)   -> Fallback    |
+       +-------------------------------------------------------+
+                                   |
+         +-------------------------+-------------------------+
+         |                                                   |
++---------------------------------+         +---------------------------------+
+|      ECB Feed Client            |         |      NBP Feed Client            |
++---------------------------------+         +---------------------------------+
+| Base: EUR                       |         | Target: PLN                     |
+| Daily: eurofxref-daily.xml      |         | Table A: Daily major (~35 curr) |
+| History: eurofxref-hist-90d.xml |         | Table B: Weekly exotic          |
++---------------------------------+         +---------------------------------+
+                                   |
+                                   v
+             +-------------------------------------------+
+             |         main.db Storage Invariants        |
+             +-------------------------------------------+
+             | Table: currency_exchange_rates            |
+             | - Stores ONLY original published quotes   |
+             | - Source & publication date preserved     |
+             | - NO inverse or cross pairs in DB         |
+             +-------------------------------------------+
+                                   |
+                                   v
+             +-------------------------------------------+
+             |    In-Memory Dynamic Calculation Engine   |
+             +-------------------------------------------+
+             | - Dynamic Inversion: 10^12 / rate_micros  |
+             | - Cross-rate Triangulation (via EUR/PLN)  |
+             | - Linear Interpolation (weekends/holidays)|
+             | - In-progress weekend uses Friday rate    |
+             | - Dates older than history -> Strict Error|
+             +-------------------------------------------+
+```
+
+1. **Central Bank Sourcing & Global Priority Hierarchy**:
+   - **European Central Bank (ECB) — Global Primary**: Sourced from official ECB XML reference feeds (`eurofxref-daily.xml` for current rates and `eurofxref-hist-90d.xml` for 90-day history). All ECB quotes have `base_currency = 'EUR'`.
+   - **Narodowy Bank Polski (NBP) — Fallback**: Sourced from the official NBP REST API (`https://api.nbp.pl/api/exchangerates/tables/{table}/`). Table A provides daily mid rates for ~35 major currencies; Table B provides weekly mid rates for exotic currencies. All NBP quotes have `target_currency = 'PLN'`.
+   - **Conflict Resolution**: If both ECB and NBP publish a rate for the same pair and date, ECB takes global precedence while NBP serves as fallback.
+   - **Audit Preservation**: Both `source` (`'ECB'`, `'NBP'`, `'MANUAL'`, `'MOCK'`) and canonical UTC publication timestamp (`rate_date`) are strictly recorded for every rate.
+
+2. **Storage Invariants (`currency_exchange_rates` in `main.db`)**:
+   - Rates are stored strictly in the central **`main.db`** (shared across all tenant budgets without duplication).
+   - **Original Quotes Only**: The database stores **only** the original published rates from the central banks. Reciprocal inverse pairs (e.g. `PLN -> EUR`) and cross-rate permutations (e.g. `USD -> CHF`) are **never** generated or stored as duplicate rows in SQLite, maintaining zero data redundancy.
+   - `rate_micros` is stored as `INTEGER NOT NULL CHECK(rate_micros > 0)` scaled by $1,000,000$ (e.g., $4.321500 \implies 4321500$).
+
+3. **In-Memory Dynamic Calculation, Triangulation & Interpolation**:
+   - **Dynamic Inversion**: An inverse rate ($B \to A$) is derived dynamically in Go using 128-bit integer arithmetic:
+     $$\text{rate\_micros}(B \to A) = \left\lfloor \frac{10^{12}}{\text{rate\_micros}(A \to B)} \right\rfloor$$
+   - **Cross-Rate Triangulation**: When converting between two currencies where neither direct nor inverse pair exists, the engine triangulates via common pivot currencies (EUR or PLN) using 128-bit safe integer math with Round Half Up.
+   - **Linear Interpolation for Non-Business Days**: For weekends and bank holidays between two published business days $T_1$ and $T_2$, the rate at date $T$ is computed via deterministic linear interpolation:
+     $$\text{Rate}(T) = \text{Rate}(T_1) + \frac{T - T_1}{T_2 - T_1} \cdot (\text{Rate}(T_2) - \text{Rate}(T_1))$$
+   - **In-Progress Weekend Rule**: For dates during the current in-progress weekend where Monday's rate has not yet been published by the central banks, the engine uses the latest known business day rate (Friday) until Monday's rate is published.
+   - **Strict Error on Missing Past History**: If a transaction date is older than the earliest available historical rate in `currency_exchange_rates` (older than 90 days), the conversion **must immediately fail with an error** (`ErrExchangeRateNotFound`). Silent 1:1 fallbacks for historical financial transactions are strictly prohibited.
+
+4. **Standalone CLI Worker & Scheduled Sync (`balance worker:sync-fx`)**:
+   - Executed as a standalone CLI subcommand: `balance worker:sync-fx` (or via `task worker:sync-fx`).
+   - Supported CLI flags:
+     - `--days=N`: Number of days of history to sync (defaults to 1 day if data exists, or 90 days if `currency_exchange_rates` is empty).
+     - `--source=ALL|ECB|NBP`: Sourcing filter (defaults to `ALL` with ECB priority).
+     - `--data-dir=PATH`: Path to directory containing `main.db`.
+   - Intended for execution once daily via host Linux cron or container scheduler.
+
+5. **REST API Triggers**:
+   - `POST /api/v1/exchange-rates/sync`: Allows authenticated clients / admins to trigger synchronization of central bank feeds on demand, returning `{"synced_count": N}`.
+   - `GET /api/v1/exchange-rates`: Queries historical time-series from `main.db` with parameters `base`, `target`, `from`, `to`.
+
 ---
 
 ## 10. Testing Strategy, Heavy-Load Fixtures & Quality Standards
@@ -1218,7 +1292,7 @@ All reports are computed on the **Go backend** against the `*_current` and CQRS 
    - **Centralized Historical Storage**: All current and historical currency exchange rates (`currency_exchange_rates`) are stored in **`main.db`** so they are shared across all tenant budgets without data duplication and cached in-memory by the Go application for $O(1)$ nanosecond lookups.
    - **Single-Currency Slice Mode**: Filter report strictly to one currency (e.g., `currency=PLN` or `currency=EUR`) without conversion.
    - **Aggregated Display Currency Mode**: Convert and sum all multi-currency balances and transactions into a single selected `display_currency` (defaulting to the budget's `default_currency`) using 128-bit safe integer micro-rates (`rate_micros`):
-     - **Historical Rate Mode (Default)**: Flow reports (`Income v. Expense`, `Spending Trends`, `Spending Breakdown`, `Sankey`, `Party Cashflow`) convert each transaction using the historical rate from its `transaction_date` (or nearest preceding business day `rate_date <= transaction_date`), while balance reports (`Net Worth`, `Budget Analysis`) value each period's ending balance using the rate at the end of that period.
+     - **Historical Rate Mode (Default)**: Flow reports (`Income v. Expense`, `Spending Trends`, `Spending Breakdown`, `Sankey`, `Party Cashflow`) convert each transaction using the historical rate from its `transaction_date` (evaluated via linear interpolation between bounding business days for weekends/holidays, or the latest Friday rate for the in-progress weekend; returning a strict error if the date precedes available history), while balance reports (`Net Worth`, `Budget Analysis`) value each period's ending balance using the rate at the end of that period.
      - **Latest Rate Mode (Toggleable)**: Optionally evaluates all historical series using the latest current exchange rate to eliminate FX fluctuation noise when analyzing pure spending volume trends.
 2. **Unified Filter Engine**:
    - Every report supports filtering by:

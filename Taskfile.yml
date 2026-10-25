@@ -49,6 +49,11 @@ tasks:
       - pkill -f "cmd/server" || pkill -f "bin/{{.BIN_NAME}}" || true
       - echo "Balance server stopped"
 
+  worker:sync-fx:
+    desc: "Synchronize central bank exchange rates (ECB priority, NBP fallback) into main.db"
+    cmds:
+      - DATA_DIR={{.DATA_DIR}} go run ./cmd/server worker:sync-fx {{.CLI_ARGS}}
+
   # Worktree management tasks
   dev:worktree:create:
     desc: "Create an isolated git worktree with dedicated port and data directory in ../development/<name> (accepts task ID e.g. BALANCE-2)"

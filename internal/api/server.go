@@ -14,6 +14,7 @@ import (
 	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/fx"
 	"github.com/balance/balance/internal/integration/csv"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/lua"
@@ -32,6 +33,7 @@ type Server struct {
 	appService  *service.AppService
 	aiService   *ai.FormulaAssistantService
 	structureAI ai.BudgetStructureAIProvider
+	fxService   *fx.Service
 }
 
 // NewServer creates a new API Server instance.
@@ -39,6 +41,7 @@ func NewServer(mainDB *sql.DB, tenantMgr *db.TenantDBManager, appService *servic
 	mockAI := ai.NewMockFormulaAIProvider()
 	aiService := ai.NewFormulaAssistantService(mockAI)
 	structureAI := ai.NewBudgetStructureProvider()
+	fxService := fx.NewService(mainDB, nil, nil)
 
 	return &Server{
 		mainDB:      mainDB,
@@ -46,7 +49,13 @@ func NewServer(mainDB *sql.DB, tenantMgr *db.TenantDBManager, appService *servic
 		appService:  appService,
 		aiService:   aiService,
 		structureAI: structureAI,
+		fxService:   fxService,
 	}
+}
+
+// SetFXService overrides FX service (useful for testing or custom mocks).
+func (s *Server) SetFXService(svc *fx.Service) {
+	s.fxService = svc
 }
 
 // SetStructureAIProvider overrides structure AI provider (useful for tests).
@@ -2827,8 +2836,15 @@ func (s *Server) GetExchangeRates(ctx echo.Context, params GetExchangeRatesParam
 
 // SyncExchangeRates (POST /exchange-rates/sync)
 func (s *Server) SyncExchangeRates(ctx echo.Context) error {
+	if s.fxService == nil {
+		s.fxService = fx.NewService(s.mainDB, nil, nil)
+	}
+	synced, err := s.fxService.Sync(ctx.Request().Context(), fx.SyncOptions{})
+	if err != nil {
+		return sendError(ctx, http.StatusInternalServerError, "Failed syncing exchange rates: "+err.Error(), "INTERNAL_ERROR", nil)
+	}
 	return ctx.JSON(http.StatusOK, SyncRatesResponse{
-		SyncedCount: 0,
+		SyncedCount: synced,
 	})
 }
 

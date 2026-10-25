@@ -5,6 +5,7 @@ import (
 	"database/sql"
 
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/fx"
 )
 
 // ExchangeRateMap provides currency conversions to a target currency using historical or latest rates.
@@ -12,6 +13,7 @@ type ExchangeRateMap struct {
 	targetCurrency string
 	// map of baseCurrency -> sorted entries (rate_date asc/desc) or latest rate
 	latestRates map[string]int64 // baseCurrency -> rate_micros
+	fxService   *fx.Service
 }
 
 // LoadExchangeRates loads available exchange rates from mainDB where target_currency = targetCurrency.
@@ -29,6 +31,7 @@ func LoadExchangeRates(ctx context.Context, mainDB *sql.DB, targetCurrency strin
 	if mainDB == nil {
 		return erm, nil
 	}
+	erm.fxService = fx.NewService(mainDB, nil, nil)
 
 	rows, err := mainDB.QueryContext(ctx, `
 		SELECT base_currency, rate_micros
@@ -56,10 +59,16 @@ func LoadExchangeRates(ctx context.Context, mainDB *sql.DB, targetCurrency strin
 }
 
 // ConvertTo converts amountMinor from fromCurr to toCurr. If fromCurr == toCurr, amount is returned directly.
-// If fromCurr != toCurr and no rate is found, defaults to 1:1 conversion.
-func (erm *ExchangeRateMap) ConvertTo(amountMinor int64, fromCurr, toCurr string, _ int64) (int64, error) {
+// If fromCurr != toCurr, uses fxService with historical linear interpolation if available; otherwise falls back to latest rate or 1:1.
+func (erm *ExchangeRateMap) ConvertTo(amountMinor int64, fromCurr, toCurr string, dateMicros int64) (int64, error) {
 	if fromCurr == "" || toCurr == "" || fromCurr == toCurr {
 		return amountMinor, nil
+	}
+
+	if erm.fxService != nil && dateMicros > 0 {
+		if converted, err := erm.fxService.Convert(context.Background(), amountMinor, fromCurr, toCurr, dateMicros); err == nil {
+			return converted, nil
+		}
 	}
 
 	rateMicros, ok := erm.latestRates[fromCurr]

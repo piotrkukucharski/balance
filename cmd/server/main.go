@@ -10,6 +10,7 @@ import (
 
 	"github.com/balance/balance/internal/clock"
 	"github.com/balance/balance/internal/db"
+	"github.com/balance/balance/internal/fx"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/service"
 	openapi "github.com/balance/balance/internal/api"
@@ -20,6 +21,15 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "worker:sync-fx" || os.Args[1] == "sync-fx") {
+		ctx := logger.WithComponent(context.Background(), "worker:sync-fx")
+		if err := fx.RunWorkerCLI(ctx, os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Worker error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	ctx := context.Background()
 	ctx = logger.WithComponent(ctx, "infra:server")
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,7 @@ import (
 	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/fx"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/lua"
 	"github.com/balance/balance/internal/report"
@@ -37,6 +39,13 @@ type bddTestContext struct {
 	mainDB     *sql.DB
 	tenantMgr  *db.TenantDBManager
 	tmpDir     string
+
+	apiServer           *openapi.Server
+	fxService           *fx.Service
+	lastResolvedRate    int64
+	lastResolvedSource  string
+	lastConvertedAmount int64
+	lastConversionError error
 
 	lastResponse   *httptest.ResponseRecorder
 	sessionCookie  *http.Cookie
@@ -102,6 +111,19 @@ func (tc *bddTestContext) setup() error {
 	// Register REST API v1
 	appSvc := service.NewAppService(mainDB, tenantMgr, nil)
 	apiServer := openapi.NewServer(mainDB, tenantMgr, appSvc)
+	tc.apiServer = apiServer
+
+	tToday := fx.DayBoundaryMicros(time.Now())
+	defaultECBQuotes := []fx.RateQuote{
+		{BaseCurrency: "EUR", TargetCurrency: "USD", RateDate: tToday, RateMicros: 1085000, Source: "ECB"},
+		{BaseCurrency: "EUR", TargetCurrency: "PLN", RateDate: tToday, RateMicros: 4321500, Source: "ECB"},
+	}
+	defaultNBPQuotes := []fx.RateQuote{
+		{BaseCurrency: "USD", TargetCurrency: "PLN", RateDate: tToday, RateMicros: 3985000, Source: "NBP"},
+	}
+	apiServer.SetFXService(fx.NewService(mainDB, &bddMockECBClient{quotes: defaultECBQuotes}, &bddMockNBPClient{quotes: defaultNBPQuotes}))
+	tc.fxService = fx.NewService(mainDB, &bddMockECBClient{quotes: defaultECBQuotes}, &bddMockNBPClient{quotes: defaultNBPQuotes})
+
 	apiGroup := tc.echoEngine.Group("/api/v1", func(next echo.HandlerFunc) echo.HandlerFunc {
 		authMiddleware := handlers.SessionOrBearerAuthMiddleware(mainDB)
 		return func(c echo.Context) error {
@@ -136,6 +158,38 @@ func parseAmountStr(amtStr string) int64 {
 	var f float64
 	fmt.Sscanf(clean, "%f", &f)
 	return int64(f * 100)
+}
+
+type bddMockECBClient struct {
+	quotes []fx.RateQuote
+	err    error
+}
+
+func (m *bddMockECBClient) FetchRates(ctx context.Context, days int) ([]fx.RateQuote, error) {
+	return m.quotes, m.err
+}
+
+type bddMockNBPClient struct {
+	quotes []fx.RateQuote
+	err    error
+}
+
+func (m *bddMockNBPClient) FetchRates(ctx context.Context, days int) ([]fx.RateQuote, error) {
+	return m.quotes, m.err
+}
+
+func parseAmountWithCurrency(str string) (int64, string, error) {
+	parts := strings.Fields(strings.TrimSpace(str))
+	if len(parts) != 2 {
+		return 0, "", fmt.Errorf("expected format '<amount> <currency>', got %q", str)
+	}
+	valStr := strings.ReplaceAll(parts[0], ",", "")
+	var f float64
+	if _, err := fmt.Sscanf(valStr, "%f", &f); err != nil {
+		return 0, "", err
+	}
+	minor := int64(math.Round(f * 100))
+	return minor, strings.ToUpper(parts[1]), nil
 }
 
 func InitializeScenario(ctx *godog.ScenarioContext) {
@@ -3529,6 +3583,345 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		if resp.Name != expectedName {
 			return fmt.Errorf("expected budget name %q, got %q", expectedName, resp.Name)
+		}
+		return nil
+	})
+
+	// Currency Exchange Rates (BALANCE-18)
+	ctx.Step(`^the exchange rate storage in "main.db" is empty$`, func() error {
+		_, err := tc.mainDB.Exec("DELETE FROM currency_exchange_rates")
+		return err
+	})
+
+	ctx.Step(`^I trigger central bank synchronization for (\d+) days of history$`, func(days int) error {
+		tToday := fx.DayBoundaryMicros(time.Now())
+		ecbQuotes := []fx.RateQuote{
+			{BaseCurrency: "EUR", TargetCurrency: "USD", RateDate: tToday, RateMicros: 1085000, Source: "ECB"},
+			{BaseCurrency: "EUR", TargetCurrency: "PLN", RateDate: tToday, RateMicros: 4321500, Source: "ECB"},
+		}
+		nbpQuotes := []fx.RateQuote{
+			{BaseCurrency: "USD", TargetCurrency: "PLN", RateDate: tToday, RateMicros: 3985000, Source: "NBP"},
+			{BaseCurrency: "EUR", TargetCurrency: "PLN", RateDate: tToday, RateMicros: 4325000, Source: "NBP"},
+		}
+		svc := fx.NewService(tc.mainDB, &bddMockECBClient{quotes: ecbQuotes}, &bddMockNBPClient{quotes: nbpQuotes})
+		tc.fxService = svc
+		_, err := svc.Sync(context.Background(), fx.SyncOptions{Days: days, Source: "ALL"})
+		return err
+	})
+
+	ctx.Step(`^exchange rates from "([^"]*)" should be persisted with base currency "([^"]*)"$`, func(source, base string) error {
+		var count int
+		err := tc.mainDB.QueryRow("SELECT COUNT(*) FROM currency_exchange_rates WHERE source = ? AND base_currency = ?", source, base).Scan(&count)
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			return fmt.Errorf("no exchange rates found with source %q and base %q", source, base)
+		}
+		return nil
+	})
+
+	ctx.Step(`^exchange rates from "([^"]*)" should be persisted with target currency "([^"]*)"$`, func(source, target string) error {
+		var count int
+		err := tc.mainDB.QueryRow("SELECT COUNT(*) FROM currency_exchange_rates WHERE source = ? AND target_currency = ?", source, target).Scan(&count)
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			return fmt.Errorf("no exchange rates found with source %q and target %q", source, target)
+		}
+		return nil
+	})
+
+	ctx.Step(`^each persisted record should retain its source and date without inverse duplicates in the database$`, func() error {
+		var inverseCount int
+		err := tc.mainDB.QueryRow("SELECT COUNT(*) FROM currency_exchange_rates WHERE base_currency = 'PLN'").Scan(&inverseCount)
+		if err != nil {
+			return err
+		}
+		if inverseCount != 0 {
+			return fmt.Errorf("expected 0 inverse PLN pairs stored, found %d", inverseCount)
+		}
+		return nil
+	})
+
+	ctx.Step(`^an ECB published rate for "([^"]*)" to "([^"]*)" on "([^"]*)" is "([^"]*)"$`, func(base, target, dateStr, rateStr string) error {
+		d, err := fx.ParseDateBoundaryMicros(dateStr)
+		if err != nil {
+			return err
+		}
+		r, err := fx.ParseDecimalMicros(rateStr)
+		if err != nil {
+			return err
+		}
+		quotes := []fx.RateQuote{
+			{BaseCurrency: base, TargetCurrency: target, RateDate: d, RateMicros: r, Source: "ECB"},
+		}
+		svc := fx.NewService(tc.mainDB, &bddMockECBClient{quotes: quotes}, &bddMockNBPClient{})
+		tc.fxService = svc
+		_, err = svc.Sync(context.Background(), fx.SyncOptions{Source: "ECB"})
+		return err
+	})
+
+	ctx.Step(`^an NBP published rate for "([^"]*)" to "([^"]*)" on "([^"]*)" is "([^"]*)"$`, func(base, target, dateStr, rateStr string) error {
+		d, err := fx.ParseDateBoundaryMicros(dateStr)
+		if err != nil {
+			return err
+		}
+		r, err := fx.ParseDecimalMicros(rateStr)
+		if err != nil {
+			return err
+		}
+		quotes := []fx.RateQuote{
+			{BaseCurrency: base, TargetCurrency: target, RateDate: d, RateMicros: r, Source: "NBP"},
+		}
+		svc := fx.NewService(tc.mainDB, &bddMockECBClient{}, &bddMockNBPClient{quotes: quotes})
+		tc.fxService = svc
+		_, err = svc.Sync(context.Background(), fx.SyncOptions{Source: "NBP"})
+		return err
+	})
+
+	ctx.Step(`^I query the effective exchange rate for "([^"]*)" to "([^"]*)" on "([^"]*)"$`, func(base, target, dateStr string) error {
+		d, err := fx.ParseDateBoundaryMicros(dateStr)
+		if err != nil {
+			return err
+		}
+		if tc.fxService == nil {
+			tc.fxService = fx.NewService(tc.mainDB, nil, nil)
+		}
+		rate, src, err := tc.fxService.GetRate(context.Background(), base, target, d)
+		if err != nil {
+			return err
+		}
+		tc.lastResolvedRate = rate
+		tc.lastResolvedSource = src
+		return nil
+	})
+
+	ctx.Step(`^the resolved rate should be "([^"]*)" with source "([^"]*)"$`, func(rateStr, expectedSource string) error {
+		expectedRate, err := fx.ParseDecimalMicros(rateStr)
+		if err != nil {
+			return err
+		}
+		if tc.lastResolvedRate != expectedRate {
+			return fmt.Errorf("expected rate %d, got %d", expectedRate, tc.lastResolvedRate)
+		}
+		if tc.lastResolvedSource != expectedSource {
+			return fmt.Errorf("expected source %q, got %q", expectedSource, tc.lastResolvedSource)
+		}
+		return nil
+	})
+
+	ctx.Step(`^a persisted ECB exchange rate for "([^"]*)" to "([^"]*)" on "([^"]*)" is "([^"]*)"$`, func(base, target, dateStr, rateStr string) error {
+		d, err := fx.ParseDateBoundaryMicros(dateStr)
+		if err != nil {
+			return err
+		}
+		r, err := fx.ParseDecimalMicros(rateStr)
+		if err != nil {
+			return err
+		}
+		quotes := []fx.RateQuote{
+			{BaseCurrency: base, TargetCurrency: target, RateDate: d, RateMicros: r, Source: "ECB"},
+		}
+		svc := fx.NewService(tc.mainDB, &bddMockECBClient{quotes: quotes}, &bddMockNBPClient{})
+		tc.fxService = svc
+		_, err = svc.Sync(context.Background(), fx.SyncOptions{Source: "ECB"})
+		return err
+	})
+
+	ctx.Step(`^I convert "([^"]*)" to "([^"]*)" on (?:Saturday |Sunday )?"([^"]*)"$`, func(amtWithCurr, toCurr, dateStr string) error {
+		amtMinor, fromCurr, err := parseAmountWithCurrency(amtWithCurr)
+		if err != nil {
+			return err
+		}
+		d, err := fx.ParseDateBoundaryMicros(dateStr)
+		if err != nil {
+			return err
+		}
+		if tc.fxService == nil {
+			tc.fxService = fx.NewService(tc.mainDB, nil, nil)
+		}
+		converted, err := tc.fxService.Convert(context.Background(), amtMinor, fromCurr, toCurr, d)
+		tc.lastConvertedAmount = converted
+		tc.lastConversionError = err
+		return err
+	})
+
+	ctx.Step(`^the converted amount should be dynamically inverted to "([^"]*)"$`, func(expectedMoney string) error {
+		expectedMinor, _, err := parseAmountWithCurrency(expectedMoney)
+		if err != nil {
+			return err
+		}
+		if tc.lastConvertedAmount != expectedMinor {
+			return fmt.Errorf("expected inverted amount %d, got %d", expectedMinor, tc.lastConvertedAmount)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the converted amount should be triangulated via "([^"]*)" to "([^"]*)"$`, func(viaCurr, expectedMoney string) error {
+		expectedMinor, _, err := parseAmountWithCurrency(expectedMoney)
+		if err != nil {
+			return err
+		}
+		if tc.lastConvertedAmount != expectedMinor {
+			return fmt.Errorf("expected triangulated amount %d, got %d", expectedMinor, tc.lastConvertedAmount)
+		}
+		return nil
+	})
+
+	ctx.Step(`^a Friday "([^"]*)" rate for "([^"]*)" to "([^"]*)" is "([^"]*)"$`, func(dateStr, base, target, rateStr string) error {
+		d, err := fx.ParseDateBoundaryMicros(dateStr)
+		if err != nil {
+			return err
+		}
+		r, err := fx.ParseDecimalMicros(rateStr)
+		if err != nil {
+			return err
+		}
+		quotes := []fx.RateQuote{
+			{BaseCurrency: base, TargetCurrency: target, RateDate: d, RateMicros: r, Source: "ECB"},
+		}
+		svc := fx.NewService(tc.mainDB, &bddMockECBClient{quotes: quotes}, &bddMockNBPClient{})
+		tc.fxService = svc
+		_, err = svc.Sync(context.Background(), fx.SyncOptions{Source: "ECB"})
+		return err
+	})
+
+	ctx.Step(`^a Monday "([^"]*)" rate for "([^"]*)" to "([^"]*)" is "([^"]*)"$`, func(dateStr, base, target, rateStr string) error {
+		d, err := fx.ParseDateBoundaryMicros(dateStr)
+		if err != nil {
+			return err
+		}
+		r, err := fx.ParseDecimalMicros(rateStr)
+		if err != nil {
+			return err
+		}
+		quotes := []fx.RateQuote{
+			{BaseCurrency: base, TargetCurrency: target, RateDate: d, RateMicros: r, Source: "ECB"},
+		}
+		svc := fx.NewService(tc.mainDB, &bddMockECBClient{quotes: quotes}, &bddMockNBPClient{})
+		tc.fxService = svc
+		_, err = svc.Sync(context.Background(), fx.SyncOptions{Source: "ECB"})
+		return err
+	})
+
+	ctx.Step(`^the linearly interpolated rate should be "([^"]*)" and result in "([^"]*)"$`, func(expectedRateStr, expectedMoney string) error {
+		expectedMinor, _, err := parseAmountWithCurrency(expectedMoney)
+		if err != nil {
+			return err
+		}
+		if tc.lastConvertedAmount != expectedMinor {
+			return fmt.Errorf("expected linearly interpolated result %d, got %d", expectedMinor, tc.lastConvertedAmount)
+		}
+		return nil
+	})
+
+	ctx.Step(`^Monday "([^"]*)" rate is not yet published$`, func(dateStr string) error {
+		d, err := fx.ParseDateBoundaryMicros(dateStr)
+		if err != nil {
+			return err
+		}
+		_, err = tc.mainDB.Exec("DELETE FROM currency_exchange_rates WHERE rate_date >= ?", d)
+		return err
+	})
+
+	ctx.Step(`^the rate should fall back to Friday rate "([^"]*)" resulting in "([^"]*)"$`, func(expectedRateStr, expectedMoney string) error {
+		expectedMinor, _, err := parseAmountWithCurrency(expectedMoney)
+		if err != nil {
+			return err
+		}
+		if tc.lastConvertedAmount != expectedMinor {
+			return fmt.Errorf("expected Friday fallback result %d, got %d", expectedMinor, tc.lastConvertedAmount)
+		}
+		return nil
+	})
+
+	ctx.Step(`^exchange rates history is only available starting from "([^"]*)"$`, func(dateStr string) error {
+		d, err := fx.ParseDateBoundaryMicros(dateStr)
+		if err != nil {
+			return err
+		}
+		_, err = tc.mainDB.Exec("DELETE FROM currency_exchange_rates WHERE rate_date < ?", d)
+		return err
+	})
+
+	ctx.Step(`^I attempt to convert "([^"]*)" to "([^"]*)" on "([^"]*)"$`, func(amtWithCurr, toCurr, dateStr string) error {
+		amtMinor, fromCurr, err := parseAmountWithCurrency(amtWithCurr)
+		if err != nil {
+			return err
+		}
+		d, err := fx.ParseDateBoundaryMicros(dateStr)
+		if err != nil {
+			return err
+		}
+		if tc.fxService == nil {
+			tc.fxService = fx.NewService(tc.mainDB, nil, nil)
+		}
+		tc.lastConvertedAmount, tc.lastConversionError = tc.fxService.Convert(context.Background(), amtMinor, fromCurr, toCurr, d)
+		return nil
+	})
+
+	ctx.Step(`^the conversion should fail with an exchange rate not found error$`, func() error {
+		if tc.lastConversionError == nil {
+			return errors.New("expected conversion error, but got nil")
+		}
+		if !errors.Is(tc.lastConversionError, fx.ErrExchangeRateNotFound) {
+			return fmt.Errorf("expected ErrExchangeRateNotFound, got: %v", tc.lastConversionError)
+		}
+		return nil
+	})
+
+	ctx.Step(`^an authenticated API user$`, func() error {
+		userID := domain.NewUUIDv7()
+		now := time.Now().UTC().UnixMicro()
+		pwHash, err := auth.HashPassword("Secret123!")
+		if err != nil {
+			return err
+		}
+		_, err = tc.mainDB.Exec(`
+			INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at)
+			VALUES (?, 'api_user@example.com', ?, 'API User', ?, ?)`,
+			userID, pwHash, now, now)
+		if err != nil {
+			return err
+		}
+
+		rawToken, tokenHash, err := auth.GeneratePAT()
+		if err != nil {
+			return err
+		}
+		tokenID := domain.NewUUIDv7()
+		exp := now + 30*24*3600*1000000
+		_, err = tc.mainDB.Exec(`
+			INSERT INTO api_tokens (id, user_id, name, token_hash, expires_at, created_at)
+			VALUES (?, ?, 'Test Token', ?, ?, ?)`,
+			tokenID, userID, tokenHash, exp, now)
+		if err != nil {
+			return err
+		}
+		tc.activeBearer = rawToken
+		return nil
+	})
+
+	ctx.Step(`^I send a POST request to "([^"]*)"$`, func(path string) error {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set("Content-Type", "application/json")
+		if tc.activeBearer != "" {
+			req.Header.Set("Authorization", "Bearer "+tc.activeBearer)
+		}
+		tc.lastResponse = httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
+		return nil
+	})
+
+	ctx.Step(`^the response body should contain "synced_count" greater than (\d+)$`, func(minCount int) error {
+		var resp openapi.SyncRatesResponse
+		if err := json.Unmarshal(tc.lastResponse.Body.Bytes(), &resp); err != nil {
+			return fmt.Errorf("failed parsing SyncRatesResponse: %w (body: %s)", err, tc.lastResponse.Body.String())
+		}
+		if resp.SyncedCount <= minCount {
+			return fmt.Errorf("expected synced_count > %d, got %d", minCount, resp.SyncedCount)
 		}
 		return nil
 	})
