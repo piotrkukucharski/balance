@@ -1058,7 +1058,7 @@ func safeDOMID(s string) string {
 	return res
 }
 
-func renderBudgetStatsBanner(budgetID string, defaultRTA int64, defaultCurr, rtaOtherBadges, horizonParam string, windowDays int, totalNeededMinor, mandatoryP3NeededMinor int64, filterParam, csrfToken string) string {
+func renderBudgetStatsBanner(defaultRTA int64, defaultCurr, rtaOtherBadges, horizonTitle string, totalNeededMinor, mandatoryP3NeededMinor int64) string {
 	rtaColor := "text-success"
 	rtaDescClass := "text-base-content/60"
 	rtaDesc := "Unallocated liquid funds across budget accounts"
@@ -1068,87 +1068,94 @@ func renderBudgetStatsBanner(budgetID string, defaultRTA int64, defaultCurr, rta
 		rtaDesc = "Assigned more than you have (over-assigned)"
 	}
 
-	monthlyActive := "btn-ghost"
-	d30Active := "btn-ghost"
-	d90Active := "btn-ghost"
-	annualActive := "btn-ghost"
-	d365Active := "btn-ghost"
-	horizonTitle := "Monthly"
-	switch horizonParam {
-	case "30d":
-		d30Active = "btn-primary"
-		horizonTitle = "30d"
-	case "90d":
-		d90Active = "btn-primary"
-		horizonTitle = "90d"
-	case "annual":
-		annualActive = "btn-primary"
-		horizonTitle = "Annual"
-	case "365d":
-		d365Active = "btn-primary"
-		horizonTitle = "365d"
-	default:
-		monthlyActive = "btn-primary"
-		horizonTitle = "Monthly"
-	}
-
 	p3Desc := `<span class="text-success font-medium">✓ All mandatory targets funded</span>`
 	if mandatoryP3NeededMinor > 0 {
 		p3Desc = fmt.Sprintf(`of which Mandatory: <span class="font-mono font-bold text-error">%.2f %s</span>`, float64(mandatoryP3NeededMinor)/100.0, defaultCurr)
 	}
 
 	return fmt.Sprintf(`
-		<div class="stats stats-horizontal shadow-md w-full bg-base-100 border border-base-300 mb-6 grid grid-cols-1 md:grid-cols-4">
-			<div class="stat">
-				<div class="stat-figure text-success text-3xl">💵</div>
-				<div class="stat-title text-xs font-bold uppercase tracking-wider">Ready to Assign</div>
-				<div class="stat-value %s text-2xl font-black">
+		<div class="stats stats-horizontal shadow-md w-full bg-base-100 border border-base-300 mb-4 grid grid-cols-1 md:grid-cols-2">
+			<div class="stat p-5">
+				<div class="stat-figure text-success text-3xl hidden sm:block">💵</div>
+				<div class="stat-title text-xs font-bold uppercase tracking-wider flex items-center gap-1.5">
+					<span class="sm:hidden text-base">💵</span>
+					<span>Ready to Assign</span>
+				</div>
+				<div class="stat-value %s text-2xl md:text-3xl font-black tracking-tight mt-0.5">
 					%.2f %s
 				</div>
 				%s
-				<div class="stat-desc text-xs %s mt-1">%s</div>
+				<div class="stat-desc text-xs %s mt-1.5">%s</div>
 			</div>
 
-			<div class="stat">
-				<div class="stat-figure text-primary text-3xl">🎯</div>
-				<div class="stat-title text-xs font-bold uppercase tracking-wider">Needed (%s)</div>
-				<div class="stat-value text-primary text-2xl font-black">
+			<div class="stat p-5 border-t md:border-t-0 md:border-l border-base-200">
+				<div class="stat-figure text-primary text-3xl hidden sm:block">🎯</div>
+				<div class="stat-title text-xs font-bold uppercase tracking-wider flex items-center gap-1.5">
+					<span class="sm:hidden text-base">🎯</span>
+					<span>Needed (%s)</span>
+				</div>
+				<div class="stat-value text-primary text-2xl md:text-3xl font-black tracking-tight mt-0.5">
 					%.2f <span class="text-xs font-normal text-base-content/60">%s</span>
 				</div>
-				<div class="stat-desc text-xs">%s</div>
-			</div>
-
-			<div class="stat">
-				<div class="stat-title text-xs font-bold uppercase tracking-wider">Active Horizon</div>
-				<div class="stat-actions mt-2">
-					<div class="join">
-						<a href="/budgets/%s/budget?horizon=monthly&filter=%s" class="btn btn-xs join-item %s">Monthly</a>
-						<a href="/budgets/%s/budget?horizon=30d&filter=%s" class="btn btn-xs join-item %s">30d</a>
-						<a href="/budgets/%s/budget?horizon=90d&filter=%s" class="btn btn-xs join-item %s">90d</a>
-						<a href="/budgets/%s/budget?horizon=annual&filter=%s" class="btn btn-xs join-item %s">Annual</a>
-						<a href="/budgets/%s/budget?horizon=365d&filter=%s" class="btn btn-xs join-item %s">365d</a>
-					</div>
-				</div>
-				<div class="stat-desc text-[11px] mt-1">%d days requirement window</div>
-			</div>
-
-			<div class="stat">
-				<div class="stat-title text-xs font-bold uppercase tracking-wider">Quick Actions</div>
-				<div class="stat-actions mt-2">
-					<form method="POST" action="/budgets/%s/budget/auto-assign" class="inline">
-						<input type="hidden" name="csrf_token" value="%s" />
-						<input type="hidden" name="currency" value="%s" />
-						<input type="hidden" name="horizon" value="%s" />
-						<input type="hidden" name="filter" value="%s" />
-						<button type="submit" class="btn btn-xs btn-outline btn-primary font-semibold shadow-xs">Auto-Assign by Priority</button>
-					</form>
-				</div>
-				<div class="stat-desc text-[11px] mt-1">Waterfall funding by priority</div>
+				<div class="stat-desc text-xs mt-1.5">%s</div>
 			</div>
 		</div>
 	`,
 		rtaColor, float64(defaultRTA)/100.0, defaultCurr, rtaOtherBadges, rtaDescClass, rtaDesc,
 		horizonTitle, float64(totalNeededMinor)/100.0, defaultCurr, p3Desc,
+	)
+}
+
+func renderBudgetControlsToolbar(budgetID, horizonParam, filterParam, defaultCurr, csrfToken string, windowDays int) string {
+	monthlyActive := "btn-ghost"
+	d30Active := "btn-ghost"
+	d90Active := "btn-ghost"
+	annualActive := "btn-ghost"
+	d365Active := "btn-ghost"
+	switch horizonParam {
+	case "30d":
+		d30Active = "btn-primary"
+	case "90d":
+		d90Active = "btn-primary"
+	case "annual":
+		annualActive = "btn-primary"
+	case "365d":
+		d365Active = "btn-primary"
+	default:
+		monthlyActive = "btn-primary"
+	}
+
+	return fmt.Sprintf(`
+		<div class="card card-border bg-base-100 border-base-300 shadow-xs mb-4 px-4 py-3 flex flex-wrap justify-between items-center gap-3">
+			<div class="flex flex-wrap items-center gap-2.5">
+				<div class="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-base-content/70">
+					<span>⏱️</span>
+					<span>Horizon:</span>
+				</div>
+				<div class="join">
+					<a href="/budgets/%s/budget?horizon=monthly&filter=%s" class="btn btn-xs join-item %s">Monthly</a>
+					<a href="/budgets/%s/budget?horizon=30d&filter=%s" class="btn btn-xs join-item %s">30d</a>
+					<a href="/budgets/%s/budget?horizon=90d&filter=%s" class="btn btn-xs join-item %s">90d</a>
+					<a href="/budgets/%s/budget?horizon=annual&filter=%s" class="btn btn-xs join-item %s">Annual</a>
+					<a href="/budgets/%s/budget?horizon=365d&filter=%s" class="btn btn-xs join-item %s">365d</a>
+				</div>
+				<span class="text-[11px] text-base-content/50 font-medium hidden sm:inline">(%d days requirement window)</span>
+			</div>
+
+			<div class="flex items-center gap-2">
+				<form method="POST" action="/budgets/%s/budget/auto-assign" class="inline">
+					<input type="hidden" name="csrf_token" value="%s" />
+					<input type="hidden" name="currency" value="%s" />
+					<input type="hidden" name="horizon" value="%s" />
+					<input type="hidden" name="filter" value="%s" />
+					<button type="submit" class="btn btn-xs btn-outline btn-primary font-semibold shadow-xs gap-1.5">
+						<span>⚡</span>
+						<span>Auto-Assign by Priority</span>
+					</button>
+				</form>
+			</div>
+		</div>
+	`,
 		budgetID, filterParam, monthlyActive,
 		budgetID, filterParam, d30Active,
 		budgetID, filterParam, d90Active,
@@ -2409,10 +2416,27 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		</div>
 	`, toastClass, html.EscapeString(flashMsg))
 
+	horizonTitle := "Monthly"
+	switch horizonParam {
+	case "30d":
+		horizonTitle = "30d"
+	case "90d":
+		horizonTitle = "90d"
+	case "annual":
+		horizonTitle = "Annual"
+	case "365d":
+		horizonTitle = "365d"
+	default:
+		horizonTitle = "Monthly"
+	}
+
 	statsBannerHTML := renderBudgetStatsBanner(
-		budgetID, defaultRTA, defaultCurr, rtaOtherBadges.String(),
-		horizonParam, windowDays, totalNeededAcrossAllMinor, totalMandatoryP3NeededAcrossAllMinor,
-		filterParam, csrfToken,
+		defaultRTA, defaultCurr, rtaOtherBadges.String(),
+		horizonTitle, totalNeededAcrossAllMinor, totalMandatoryP3NeededAcrossAllMinor,
+	)
+
+	controlsToolbarHTML := renderBudgetControlsToolbar(
+		budgetID, horizonParam, filterParam, defaultCurr, csrfToken, windowDays,
 	)
 
 	filterToolbarHTML := renderBudgetFilterToolbar(
@@ -2554,6 +2578,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
         <!-- Center Workspace -->
         <main class="flex-1 p-6 md:p-8 overflow-y-auto">
+            %s
+
             %s
 
             %s
@@ -3842,6 +3868,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		accountSummaryRows.String(),
 		toastHTML,
 		statsBannerHTML,
+		controlsToolbarHTML,
 		filterToolbarHTML,
 		mainEnvelopesContent,
 		RenderBottomDock(budgetID, "budget"),
