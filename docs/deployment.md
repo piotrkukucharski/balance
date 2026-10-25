@@ -1,33 +1,33 @@
 # Deployment & Production Runbook
 
-Ten dokument opisuje proces wdrażania i uruchamiania produkcyjnego aplikacji **Balance** z wykorzystaniem kontenerów Docker, GitHub Actions CI/CD oraz `docker-compose`.
+This document describes the production deployment and operation procedures for **Balance** using Docker containers, GitHub Actions CI/CD, and `docker-compose`.
 
 ---
 
-## 1. Wymagane zmienne środowiskowe (ENV)
+## 1. Required Environment Variables (ENV)
 
-Aplikacja Balance w trybie produkcyjnym korzysta z poniższych zmiennych konfiguracyjnych:
+When running in production mode, Balance uses the following environment variables:
 
-| Zmienna | Wymagana | Wartość domyślna | Opis |
-|---------|----------|-------------------|------|
-| `PORT` | Nie | `8080` | Port nasłuchiwania serwera HTTP wewnątrz kontenera. |
-| `DATA_DIR` | Nie | `/app/data` | Ścieżka do katalogu z bazami SQLite (`main.db` oraz podkatalog `budgets/`). |
-| `ALLOW_MOCK_PROVIDERS` | Nie | `false` | Zabezpieczenie przed używaniem mocków bankowych w produkcji (`false` dla środowiska live). |
-| `GEMINI_API_KEY` | Tak (dla AI) | - | Klucz API Google Gemini wykorzystywany przez asystenta formuł Lua i strukturyzatora. |
-| `GEMINI_MODEL` | Nie | `gemini-3.8-flash` | Model Gemini wykorzystywany do generowania formuł. |
-| `GEMINI_TIMEOUT_SECONDS` | Nie | `90` | Limit czasu dla zapytań do API Gemini w sekundach. |
-| `GOCARDLESS_SECRET_ID` | Opcjonalna | - | Identyfikator klucza API GoCardless (Open Banking). |
-| `GOCARDLESS_SECRET_KEY` | Opcjonalna | - | Klucz prywatny API GoCardless. |
-| `GOCARDLESS_ENVIRONMENT` | Nie | `live` | Środowisko GoCardless (`live` lub `sandbox`). |
-| `GOCARDLESS_REDIRECT_URL` | Opcjonalna | - | URL przekierowania powrotnego po autoryzacji w banku. |
+| Variable | Required | Default Value | Description |
+|---|---|---|---|
+| `PORT` | No | `8080` | HTTP server listening port inside the container. |
+| `DATA_DIR` | No | `/app/data` | Path to the directory housing SQLite databases (`main.db` and the `budgets/` tenant subdirectory). |
+| `ALLOW_MOCK_PROVIDERS` | No | `false` | Security guard preventing mock banking adapters in production builds (`false` for live environments). |
+| `GEMINI_API_KEY` | Yes (for AI) | - | Google Gemini API key used by the Lua formula assistant and structuring assistant. |
+| `GEMINI_MODEL` | No | `gemini-3.8-flash` | Gemini model variant used for formula generation. |
+| `GEMINI_TIMEOUT_SECONDS` | No | `90` | HTTP client timeout in seconds for Gemini API requests. |
+| `GOCARDLESS_SECRET_ID` | Optional | - | GoCardless Open Banking API secret ID. |
+| `GOCARDLESS_SECRET_KEY` | Optional | - | GoCardless Open Banking API secret key. |
+| `GOCARDLESS_ENVIRONMENT` | No | `live` | GoCardless environment mode (`live` or `sandbox`). |
+| `GOCARDLESS_REDIRECT_URL` | Optional | - | Callback redirect URL following bank authentication. |
 
 ---
 
-## 2. Uruchomienie za pomocą Docker Compose
+## 2. Running with Docker Compose
 
-W repozytorium znajduje się przykładowy plik konfiguracyjny [`docker-compose.prod.yml`](file:///home/ptr/Codes/balance/balance/docker-compose.prod.yml).
+A production-ready compose template is provided in [`docker-compose.prod.yml`](file:///home/ptr/Codes/balance/balance/docker-compose.prod.yml).
 
-### Przykład `docker-compose.yml`:
+### Example `docker-compose.yml`:
 
 ```yaml
 version: "3.8"
@@ -58,41 +58,41 @@ volumes:
     name: balance-prod-data
 ```
 
-### Instrukcja uruchomienia:
+### Deployment Instructions:
 
-1. Utwórz plik `.env` na serwerze produkcyjnym z wymaganymi sekretami:
+1. Create a `.env` file on the production server with the required secrets:
    ```bash
    cp .env.example .env
-   # Uzupełnij GEMINI_API_KEY oraz ewentualne klucze GoCardless
+   # Populate GEMINI_API_KEY and GoCardless credentials
    ```
 
-2. Uruchom kontener w tle:
+2. Start the container in detached mode:
    ```bash
    docker compose -f docker-compose.prod.yml up -d
    ```
 
-3. Sprawdź logi aplikacji:
+3. Check application logs:
    ```bash
    docker compose -f docker-compose.prod.yml logs -f balance
    ```
 
-4. Trwałość danych:
-   Wszystkie bazy SQLite przechowywane są w wolumenie `balance-prod-data` podpiętym pod ścieżkę `/app/data`.
+4. Data Persistence:
+   All SQLite database files are stored inside the named Docker volume `balance-prod-data` mounted at `/app/data`.
 
 ---
 
-## 3. Pipeline CI/CD w GitHub Actions
+## 3. GitHub Actions CI/CD Pipeline
 
-Pipeline CI/CD zdefiniowany jest w pliku `.github/workflows/ci-cd.yml` i składa się z dwóch etapów:
+The pipeline is defined in [`.github/workflows/ci-cd.yml`](file:///home/ptr/Codes/balance/balance/.github/workflows/ci-cd.yml) and consists of two primary stages:
 
 1. **Test & Build (CI)**:
-   - Uruchamiany automatycznie przy każdym `push` oraz `pull_request` do gałęzi `main`.
-   - Konfiguruje środowisko Go 1.27.x.
-   - Uruchamia pełny zestaw testów jednostkowych, integracyjnych oraz BDD na mockach (`go test -v ./...` z `ALLOW_MOCK_PROVIDERS=true`).
-   - Weryfikuje kompilację binarnej wersji serwera (`go build ./cmd/server`).
+   - Triggers automatically on every `push` and `pull_request` targeting the `main` branch.
+   - Sets up the Go 1.27.x environment with caching.
+   - Runs the full unit, integration, and BDD test suite with mock adapters enabled (`go test -v -race ./...` with `ALLOW_MOCK_PROVIDERS=true`).
+   - Verifies server binary compilation (`go build ./cmd/server`).
 
 2. **Publish Docker Image (CD)**:
-   - Uruchamiany automatycznie przy utworzeniu i wypchnięciu tagu wydaniowego (np. `v1.0.0`).
-   - Loguje się do GitHub Container Registry (`ghcr.io`) za pomocą wbudowanego tokenu `GITHUB_TOKEN`.
-   - Buduje zoptymalizowany wieloetapowy obraz Docker.
-   - Taguje obraz jako `vX.Y.Z` oraz `latest` i publikuje w rejestrze `ghcr.io`.
+   - Triggers automatically when a release tag is pushed (e.g. `v1.0.0`).
+   - Authenticates against GitHub Container Registry (`ghcr.io`) using `GITHUB_TOKEN`.
+   - Builds an optimized multi-stage Docker image with CGO and SQLite support.
+   - Tags the image with semantic versioning tags (`vX.Y.Z`, `vX.Y`, `latest`) and publishes it to `ghcr.io`.
