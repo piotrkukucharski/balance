@@ -182,6 +182,10 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 			reconnectBtn,
 			RenderPopoverActionMenu("account", id, []TableActionItem{
 				{
+					Label: "🕒 History",
+					HXGet: fmt.Sprintf("/budgets/%s/history/accounts/%s", budgetID, id),
+				},
+				{
 					Label:   "✏️ Edit",
 					OnClick: fmt.Sprintf("openEditModal('%s', '%s', '%s', '%s', '%s', '%s')", id, strings.ReplaceAll(name, "'", "\\'"), curr, aType, favType, strings.ReplaceAll(favVal, "'", "\\'")),
 				},
@@ -1331,6 +1335,10 @@ func (h *AccountsHandler) UpdateAccount(c echo.Context) error {
 	acctID := c.Param("id")
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	userID := c.Get(ContextUserIDKey).(string)
+	corrID, _ := c.Get("correlationID").(string)
+	if corrID == "" {
+		corrID = domain.NewUUIDv7()
+	}
 	name := c.FormValue("name")
 	favType := c.FormValue("favicon_type")
 	favVal := c.FormValue("favicon_value")
@@ -1347,12 +1355,45 @@ func (h *AccountsHandler) UpdateAccount(c echo.Context) error {
 	}
 
 	now := time.Now().UTC().UnixMicro()
-	_, err := tenantDB.ExecContext(c.Request().Context(), `
-		UPDATE accounts_current SET name = ?, favicon_type = ?, favicon_value = ?, updated_at = ?, agent_id = ? WHERE id = ?`,
-		name, favType, favVal, now, userID, acctID,
+
+	tx, err := tenantDB.BeginTx(c.Request().Context(), nil)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "DB error")
+	}
+	defer tx.Rollback()
+
+	var curVer int
+	var partyID, aType, curr string
+	var iban, oldFavType, oldFavVal sql.NullString
+	var isClosed int
+	err = tx.QueryRowContext(c.Request().Context(), `
+		SELECT version, party_id, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed
+		FROM accounts_current WHERE id = ?`, acctID).Scan(&curVer, &partyID, &aType, &curr, &iban, &oldFavType, &oldFavVal, &isClosed)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, "Account not found")
+	}
+
+	newVer := curVer + 1
+
+	_, err = tx.ExecContext(c.Request().Context(), `
+		INSERT INTO accounts (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, action, agent_id, correlation_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'UPDATE', ?, ?, ?)`,
+		acctID, newVer, partyID, name, aType, curr, iban, favType, favVal, isClosed, userID, corrID, now,
+	)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed appending account version")
+	}
+
+	_, err = tx.ExecContext(c.Request().Context(), `
+		UPDATE accounts_current SET version = ?, name = ?, favicon_type = ?, favicon_value = ?, updated_at = ?, agent_id = ? WHERE id = ?`,
+		newVer, name, favType, favVal, now, userID, acctID,
 	)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Update error")
+	}
+
+	if err := tx.Commit(); err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Commit error")
 	}
 
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/accounts", budgetID))
@@ -1364,14 +1405,52 @@ func (h *AccountsHandler) ToggleCloseAccount(c echo.Context) error {
 	acctID := c.Param("id")
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	userID := c.Get(ContextUserIDKey).(string)
+	corrID, _ := c.Get("correlationID").(string)
+	if corrID == "" {
+		corrID = domain.NewUUIDv7()
+	}
 
 	now := time.Now().UTC().UnixMicro()
-	_, err := tenantDB.ExecContext(c.Request().Context(), `
-		UPDATE accounts_current SET is_closed = 1 - is_closed, updated_at = ?, agent_id = ? WHERE id = ?`,
-		now, userID, acctID,
+
+	tx, err := tenantDB.BeginTx(c.Request().Context(), nil)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "DB error")
+	}
+	defer tx.Rollback()
+
+	var curVer int
+	var partyID, name, aType, curr string
+	var iban, favType, favVal sql.NullString
+	var isClosed int
+	err = tx.QueryRowContext(c.Request().Context(), `
+		SELECT version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed
+		FROM accounts_current WHERE id = ?`, acctID).Scan(&curVer, &partyID, &name, &aType, &curr, &iban, &favType, &favVal, &isClosed)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, "Account not found")
+	}
+
+	newVer := curVer + 1
+	newClosed := 1 - isClosed
+
+	_, err = tx.ExecContext(c.Request().Context(), `
+		INSERT INTO accounts (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, action, agent_id, correlation_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'UPDATE', ?, ?, ?)`,
+		acctID, newVer, partyID, name, aType, curr, iban, favType.String, favVal.String, newClosed, userID, corrID, now,
+	)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed appending account version")
+	}
+
+	_, err = tx.ExecContext(c.Request().Context(), `
+		UPDATE accounts_current SET version = ?, is_closed = ?, updated_at = ?, agent_id = ? WHERE id = ?`,
+		newVer, newClosed, now, userID, acctID,
 	)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Status toggle error")
+	}
+
+	if err := tx.Commit(); err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Commit error")
 	}
 
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/accounts", budgetID))

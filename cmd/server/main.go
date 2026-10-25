@@ -87,6 +87,7 @@ func main() {
 	tokensHandler := handlers.NewTokensHandler(mainDB)
 	accountsHandler := handlers.NewAccountsHandler(mainDB, tenantMgr)
 	accountsHandler.SetService(appService)
+	historyHandler := handlers.NewHistoryHandler(mainDB, tenantMgr)
 
 	pwaHandler := handlers.NewPWAHandler()
 
@@ -147,6 +148,8 @@ func main() {
 	tenantViewer.POST("/settings/tokens", tokensHandler.CreateToken)
 	tenantViewer.POST("/settings/tokens/:tokenId/revoke", tokensHandler.RevokeToken)
 	tenantViewer.GET("/members", membersHandler.MembersView)
+	tenantViewer.GET("/history/:entityType/:entityId", historyHandler.HistoryDrawer)
+	tenantViewer.GET("/:entityType/:entityId/history", historyHandler.HistoryDrawer)
 
 	tenantEditor := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "EDITOR"))
 	tenantEditor.POST("/accounts", accountsHandler.CreateAccount)
@@ -189,6 +192,8 @@ func main() {
 	tenantAdmin := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "ADMIN"))
 	tenantAdmin.POST("/settings/members/invite", membersHandler.InviteMember)
 	tenantAdmin.POST("/members/invite", membersHandler.InviteMember)
+	tenantAdmin.POST("/history/:entityType/:entityId/restore", historyHandler.RestoreVersion)
+	tenantAdmin.POST("/:entityType/:entityId/restore", historyHandler.RestoreVersion)
 
 	tenantOwner := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "OWNER"))
 	tenantOwner.POST("/settings", workspaceHandler.UpdateBudget)

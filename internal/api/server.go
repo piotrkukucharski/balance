@@ -15,6 +15,7 @@ import (
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/fx"
+	"github.com/balance/balance/internal/history"
 	"github.com/balance/balance/internal/integration/csv"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/lua"
@@ -2734,7 +2735,6 @@ func (s *Server) RestoreEntityVersion(ctx echo.Context, budgetId BudgetIdPathPar
 		return err
 	}
 
-	table := strings.ToLower(string(entityType))
 	var req RestoreVersionRequest
 	if err := ctx.Bind(&req); err != nil || req.TargetVersion <= 0 {
 		return sendError(ctx, http.StatusBadRequest, "Invalid target version", "INVALID_INPUT", nil)
@@ -2743,44 +2743,24 @@ func (s *Server) RestoreEntityVersion(ctx echo.Context, budgetId BudgetIdPathPar
 	now := time.Now().UTC().UnixMicro()
 	corrID := domain.NewUUIDv7()
 
-	if table == "parties" {
-		var name, pType string
-		var owned int
-		var notes sql.NullString
-		err := tenantDB.QueryRowContext(ctx.Request().Context(), `
-			SELECT name, party_type, is_user_owned, notes
-			FROM parties WHERE id = ? AND version = ?`, id.String(), req.TargetVersion).Scan(&name, &pType, &owned, &notes)
-		if err != nil {
+	res, err := history.RestoreEntityVersion(ctx.Request().Context(), tenantDB, string(entityType), id.String(), req.TargetVersion, userID, corrID, now)
+	if err != nil {
+		if errors.Is(err, history.ErrNotFound) {
 			return sendError(ctx, http.StatusNotFound, "Historical version not found", "NOT_FOUND", nil)
 		}
-
-		var curVer int
-		tenantDB.QueryRowContext(ctx.Request().Context(), `SELECT version FROM parties_current WHERE id = ?`, id.String()).Scan(&curVer)
-		nextVer := curVer + 1
-
-		tx, _ := tenantDB.BeginTx(ctx.Request().Context(), nil)
-		defer tx.Rollback()
-
-		tx.ExecContext(ctx.Request().Context(), `
-			INSERT INTO parties (id, version, name, party_type, is_user_owned, notes, action, agent_id, correlation_id, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, 'RESTORE', ?, ?, ?)`,
-			id.String(), nextVer, name, pType, owned, notes, userID, corrID, now)
-		tx.ExecContext(ctx.Request().Context(), `
-			UPDATE parties_current SET version = ?, name = ?, party_type = ?, is_user_owned = ?, notes = ?, agent_id = ?, updated_at = ? WHERE id = ?`,
-			nextVer, name, pType, owned, notes, userID, now, id.String())
-		tx.Commit()
-
-		return ctx.JSON(http.StatusOK, RestoreVersionResponse{
-			Id:                  id.String(),
-			NewVersion:          nextVer,
-			RestoredFromVersion: req.TargetVersion,
-		})
+		if errors.Is(err, history.ErrSoftDelete) {
+			return sendError(ctx, http.StatusBadRequest, "Cannot restore a soft-delete version", "INVALID_INPUT", nil)
+		}
+		if errors.Is(err, history.ErrInvalidEntity) {
+			return sendError(ctx, http.StatusBadRequest, "Invalid entity type for history", "INVALID_ENTITY_TYPE", nil)
+		}
+		return sendError(ctx, http.StatusInternalServerError, "Failed restoring version: "+err.Error(), "INTERNAL_ERROR", nil)
 	}
 
 	return ctx.JSON(http.StatusOK, RestoreVersionResponse{
-		Id:                  id.String(),
-		NewVersion:          req.TargetVersion + 1,
-		RestoredFromVersion: req.TargetVersion,
+		Id:                  res.EntityID,
+		NewVersion:          res.NewVersion,
+		RestoredFromVersion: res.RestoredFromVersion,
 	})
 }
 

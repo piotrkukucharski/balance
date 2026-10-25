@@ -61,7 +61,13 @@ type bddTestContext struct {
 	reportsHandler   *handlers.ReportsHandler
 	partiesHandler   *handlers.PartiesHandler
 	membersHandler   *handlers.MembersHandler
+	historyHandler   *handlers.HistoryHandler
 	pwaHandler       *handlers.PWAHandler
+
+	activeAcctID   string
+	activePartyID  string
+	activeTxID     string
+	activeBucketID string
 
 	luaSnapshot            *lua.InMemoryBudgetSnapshot
 	luaScript              string
@@ -106,6 +112,7 @@ func (tc *bddTestContext) setup() error {
 	tc.txHandler = handlers.NewTransactionsHandler(mainDB, tenantMgr)
 	tc.partiesHandler = handlers.NewPartiesHandler(mainDB, tenantMgr)
 	tc.membersHandler = handlers.NewMembersHandler(mainDB, tenantMgr)
+	tc.historyHandler = handlers.NewHistoryHandler(mainDB, tenantMgr)
 	tc.pwaHandler = handlers.NewPWAHandler()
 
 	// Register REST API v1
@@ -3922,6 +3929,623 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		if resp.SyncedCount <= minCount {
 			return fmt.Errorf("expected synced_count > %d, got %d", minCount, resp.SyncedCount)
+		}
+		return nil
+	})
+
+	// 13_audit_history_and_rollback.feature steps
+	ctx.Step(`^an authenticated user "([^"]*)" with "([^"]*)" role on budget "([^"]*)"$`, func(email, role, budgetName string) error {
+		now := time.Now().UTC().UnixMicro()
+		userID := domain.NewUUIDv7()
+		pwHash, _ := auth.HashPassword("Pass12345!")
+
+		err := tc.mainDB.QueryRow(`SELECT id FROM users WHERE email = ?`, email).Scan(&userID)
+		if err != nil {
+			userID = domain.NewUUIDv7()
+			_, err = tc.mainDB.Exec(`
+				INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at)
+				VALUES (?, ?, ?, 'User', ?, ?)`, userID, email, pwHash, now, now)
+			if err != nil {
+				return err
+			}
+		}
+
+		budgetID := "01900000-0000-7000-8000-000000000001"
+		_, err = tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, created_by_agent_id, created_at, updated_at)
+			VALUES (?, ?, 'PLN', ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name`, budgetID, budgetName, userID, now, now)
+		if err != nil {
+			return err
+		}
+
+		_, err = tc.mainDB.Exec(`
+			INSERT INTO budget_members (budget_id, user_id, role, joined_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(budget_id, user_id) DO UPDATE SET role = excluded.role`, budgetID, userID, role, now)
+		if err != nil {
+			return err
+		}
+
+		sessionToken, _ := auth.GenerateCSPRNGToken()
+		sessionHash := auth.HashToken(sessionToken)
+		csrfToken, _ := auth.GenerateCSPRNGToken()
+		sessionID := domain.NewUUIDv7()
+		_, err = tc.mainDB.Exec(`
+			INSERT INTO sessions (id, token_hash, user_id, csrf_token, created_at, last_active_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, sessionID, sessionHash, userID, csrfToken, now, now, now+3600*1000000)
+		if err != nil {
+			return err
+		}
+
+		tc.activeUserID = userID
+		tc.activeBudgetID = budgetID
+		tc.activeCSRF = csrfToken
+		tc.sessionCookie = &http.Cookie{
+			Name:  handlers.SessionCookieName,
+			Value: sessionToken,
+		}
+		return nil
+	})
+
+	ctx.Step(`^an account "([^"]*)" was created and subsequently updated$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		var pID string
+		_ = bDB.QueryRow(`SELECT id FROM parties_current WHERE is_user_owned = 1 LIMIT 1`).Scan(&pID)
+		if pID == "" {
+			pID = domain.NewUUIDv7()
+			bDB.Exec(`INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at) VALUES (?, 1, 'Owner Party', 'INDIVIDUAL', 1, ?, ?)`, pID, tc.activeUserID, now)
+		}
+
+		acctID := domain.NewUUIDv7()
+		tc.activeAcctID = acctID
+
+		// v1: CREATE
+		_, err = bDB.Exec(`
+			INSERT INTO accounts (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, action, agent_id, correlation_id, created_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 'PL001', 'EMOJI', '💳', 0, 'CREATE', ?, ?, ?)`,
+			acctID, pID, acctName, tc.activeUserID, domain.NewUUIDv7(), now)
+		if err != nil {
+			return err
+		}
+		_, err = bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 'PL001', 'EMOJI', '💳', 0, ?, ?)`,
+			acctID, pID, acctName, tc.activeUserID, now)
+		if err != nil {
+			return err
+		}
+
+		// v2: UPDATE
+		updatedName := acctName + " (Updated)"
+		_, err = bDB.Exec(`
+			INSERT INTO accounts (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, action, agent_id, correlation_id, created_at)
+			VALUES (?, 2, ?, ?, 'CHECKING', 'PLN', 'PL001', 'EMOJI', '💳', 0, 'UPDATE', ?, ?, ?)`,
+			acctID, pID, updatedName, tc.activeUserID, domain.NewUUIDv7(), now+1000)
+		if err != nil {
+			return err
+		}
+		_, err = bDB.Exec(`
+			UPDATE accounts_current SET version = 2, name = ?, updated_at = ? WHERE id = ?`,
+			updatedName, now+1000, acctID)
+		return err
+	})
+
+	ctx.Step(`^I request the history drawer for account "([^"]*)"$`, func(acctName string) error {
+		req := httptest.NewRequest(http.MethodGet, "/budgets/"+tc.activeBudgetID+"/history/accounts/"+tc.activeAcctID, nil)
+		req.Header.Set("HX-Request", "true")
+		req.AddCookie(tc.sessionCookie)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "entityType", "entityId")
+		c.SetParamValues(tc.activeBudgetID, "accounts", tc.activeAcctID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		var role string
+		_ = tc.mainDB.QueryRow(`SELECT role FROM budget_members WHERE budget_id = ? AND user_id = ?`, tc.activeBudgetID, tc.activeUserID).Scan(&role)
+		c.Set(handlers.ContextRoleKey, role)
+
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.historyHandler.HistoryDrawer(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the history drawer should display version timeline in descending order$`, func() error {
+		body := tc.lastResponse.Body.String()
+		idxV2 := strings.Index(body, "v2")
+		idxV1 := strings.Index(body, "v1")
+		if idxV2 == -1 || idxV1 == -1 {
+			return fmt.Errorf("expected v2 and v1 in history drawer: %s", body)
+		}
+		if idxV2 > idxV1 {
+			return fmt.Errorf("expected v2 to appear before v1 (descending order)")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the history drawer should display the action badges and field diffs$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "CREATE") || !strings.Contains(body, "UPDATE") {
+			return fmt.Errorf("expected CREATE and UPDATE action badges in drawer")
+		}
+		if !strings.Contains(body, "Account Name") {
+			return fmt.Errorf("expected field diff for Account Name in drawer")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the history drawer should provide a restore action for prior versions$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "Restore v1") {
+			return fmt.Errorf("expected restore button for v1 in drawer: %s", body)
+		}
+		return nil
+	})
+
+	ctx.Step(`^a counterparty "([^"]*)" with initial name "([^"]*)" at version 1 and "([^"]*)" at version 2$`, func(partyKey, v1Name, v2Name string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		tc.activePartyID = pID
+
+		// v1
+		_, err = bDB.Exec(`
+			INSERT INTO parties (id, version, name, party_type, is_user_owned, action, agent_id, correlation_id, created_at)
+			VALUES (?, 1, ?, 'ORGANIZATION', 0, 'CREATE', ?, ?, ?)`,
+			pID, v1Name, tc.activeUserID, domain.NewUUIDv7(), now)
+		if err != nil {
+			return err
+		}
+		_, err = bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, ?, 'ORGANIZATION', 0, ?, ?)`,
+			pID, v1Name, tc.activeUserID, now)
+		if err != nil {
+			return err
+		}
+
+		// v2
+		_, err = bDB.Exec(`
+			INSERT INTO parties (id, version, name, party_type, is_user_owned, action, agent_id, correlation_id, created_at)
+			VALUES (?, 2, ?, 'ORGANIZATION', 0, 'UPDATE', ?, ?, ?)`,
+			pID, v2Name, tc.activeUserID, domain.NewUUIDv7(), now+1000)
+		if err != nil {
+			return err
+		}
+		_, err = bDB.Exec(`
+			UPDATE parties_current SET version = 2, name = ?, updated_at = ? WHERE id = ?`,
+			v2Name, now+1000, pID)
+		return err
+	})
+
+	ctx.Step(`^I submit a restore request for party "([^"]*)" to version (\d+)$`, func(partyKey string, targetVer int) error {
+		form := url.Values{}
+		form.Set("target_version", fmt.Sprint(targetVer))
+		form.Set("csrf_token", tc.activeCSRF)
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/"+tc.activeBudgetID+"/history/parties/"+tc.activePartyID+"/restore", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		req.Header.Set("HX-Request", "true")
+		req.AddCookie(tc.sessionCookie)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "entityType", "entityId")
+		c.SetParamValues(tc.activeBudgetID, "parties", tc.activePartyID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		var role string
+		_ = tc.mainDB.QueryRow(`SELECT role FROM budget_members WHERE budget_id = ? AND user_id = ?`, tc.activeBudgetID, tc.activeUserID).Scan(&role)
+		c.Set(handlers.ContextRoleKey, role)
+
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.historyHandler.RestoreVersion(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^a new version (\d+) with action "([^"]*)" should be appended to "([^"]*)"$`, func(ver int, act, tableName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var count int
+		query := fmt.Sprintf("SELECT count(*) FROM %s WHERE version = ? AND action = ?", tableName)
+		err = bDB.QueryRow(query, ver, act).Scan(&count)
+		if err != nil || count != 1 {
+			return fmt.Errorf("expected 1 record in %s with version %d and action %s, got %d (err: %v)", tableName, ver, act, count, err)
+		}
+		return nil
+	})
+
+	ctx.Step(`^"([^"]*)" should reflect the restored name "([^"]*)" with version (\d+)$`, func(tableName, expectedName string, ver int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var actualName string
+		var actualVer int
+		query := fmt.Sprintf("SELECT version, name FROM %s WHERE id = ?", tableName)
+		err = bDB.QueryRow(query, tc.activePartyID).Scan(&actualVer, &actualName)
+		if err != nil {
+			return fmt.Errorf("failed querying %s: %w", tableName, err)
+		}
+		if actualVer != ver || actualName != expectedName {
+			return fmt.Errorf("expected version %d and name %q in %s, got version %d and name %q", ver, expectedName, tableName, actualVer, actualName)
+		}
+		return nil
+	})
+
+	ctx.Step(`^historical versions 1 and 2 in "([^"]*)" should remain immutable$`, func(tableName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var v1Name, v2Name string
+		query := fmt.Sprintf("SELECT name FROM %s WHERE id = ? AND version = ?", tableName)
+		err = bDB.QueryRow(query, tc.activePartyID, 1).Scan(&v1Name)
+		if err != nil || v1Name != "Local Bakery" {
+			return fmt.Errorf("v1 corrupted in %s: %v (name: %s)", tableName, err, v1Name)
+		}
+		err = bDB.QueryRow(query, tc.activePartyID, 2).Scan(&v2Name)
+		if err != nil || v2Name != "Super Bakery" {
+			return fmt.Errorf("v2 corrupted in %s: %v (name: %s)", tableName, err, v2Name)
+		}
+		return nil
+	})
+
+	ctx.Step(`^a budget transaction of "([^"]*)" in bucket "([^"]*)" at version 1$`, func(amtStr, bucketName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+
+		// User account
+		userPID := domain.NewUUIDv7()
+		bDB.Exec(`INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at) VALUES (?, 1, 'Me', 'INDIVIDUAL', 1, ?, ?)`, userPID, tc.activeUserID, now)
+		userAID := domain.NewUUIDv7()
+		bDB.Exec(`INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at) VALUES (?, 1, ?, 'Checking', 'CHECKING', 'PLN', 0, ?, ?)`, userAID, userPID, tc.activeUserID, now)
+		bDB.Exec(`INSERT INTO account_currency_balances (account_id, currency, balance_minor, updated_at) VALUES (?, 'PLN', 90000, ?)`, userAID, now) // 900 PLN
+
+		// External account
+		extPID := domain.NewUUIDv7()
+		bDB.Exec(`INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at) VALUES (?, 1, 'Store', 'ORGANIZATION', 0, ?, ?)`, extPID, tc.activeUserID, now)
+		extAID := domain.NewUUIDv7()
+		bDB.Exec(`INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at) VALUES (?, 1, ?, 'POS', 'EXTERNAL', 'PLN', 0, ?, ?)`, extAID, extPID, tc.activeUserID, now)
+
+		// Bucket
+		bktID := domain.NewUUIDv7()
+		tc.activeBucketID = bktID
+		tc.activeAcctID = userAID
+		bDB.Exec(`INSERT INTO buckets_projection (id, name, group_name, version, updated_at) VALUES (?, ?, 'Default', 1, ?)`, bktID, bucketName, now)
+		bDB.Exec(`INSERT INTO bucket_currency_balances (bucket_id, currency, balance_minor) VALUES (?, 'PLN', 40000)`, bktID) // 400 PLN
+
+		txID := domain.NewUUIDv7()
+		tc.activeTxID = txID
+
+		minor := parseAmountStr(amtStr) // 10000
+
+		// Insert v1
+		bDB.Exec(`
+			INSERT INTO budget_transactions (
+				id, version, source_account_id, destination_account_id, source_amount_minor, source_currency,
+				destination_amount_minor, destination_currency, bucket_id, transaction_date, notes,
+				action, agent_id, correlation_id, created_at
+			) VALUES (?, 1, ?, ?, ?, 'PLN', ?, 'PLN', ?, ?, 'Weekly Groceries', 'CREATE', ?, ?, ?)`,
+			txID, userAID, extAID, minor, minor, bktID, now, tc.activeUserID, domain.NewUUIDv7(), now)
+
+		bDB.Exec(`
+			INSERT INTO budget_transactions_current (
+				id, version, source_account_id, destination_account_id, source_amount_minor, source_currency,
+				destination_amount_minor, destination_currency, bucket_id, transaction_date, notes, updated_at
+			) VALUES (?, 1, ?, ?, ?, 'PLN', ?, 'PLN', ?, ?, 'Weekly Groceries', ?)`,
+			txID, userAID, extAID, minor, minor, bktID, now, now)
+		return nil
+	})
+
+	ctx.Step(`^the transaction was updated to "([^"]*)" at version 2$`, func(amtStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		newMinor := parseAmountStr(amtStr) // 30000
+
+		var srcAcct, dstAcct string
+		bDB.QueryRow(`SELECT source_account_id, destination_account_id FROM budget_transactions_current WHERE id = ?`, tc.activeTxID).Scan(&srcAcct, &dstAcct)
+
+		// Append v2
+		bDB.Exec(`
+			INSERT INTO budget_transactions (
+				id, version, source_account_id, destination_account_id, source_amount_minor, source_currency,
+				destination_amount_minor, destination_currency, bucket_id, transaction_date, notes,
+				action, agent_id, correlation_id, created_at
+			) VALUES (?, 2, ?, ?, ?, 'PLN', ?, 'PLN', ?, ?, 'Weekly Groceries (Updated)', 'UPDATE', ?, ?, ?)`,
+			tc.activeTxID, srcAcct, dstAcct, newMinor, newMinor, tc.activeBucketID, now, tc.activeUserID, domain.NewUUIDv7(), now+1000)
+
+		bDB.Exec(`
+			UPDATE budget_transactions_current
+			SET version = 2, source_amount_minor = ?, destination_amount_minor = ?, notes = 'Weekly Groceries (Updated)', updated_at = ?
+			WHERE id = ?`, newMinor, newMinor, now+1000, tc.activeTxID)
+
+		// Reflect updated balances (200 PLN more deduction)
+		bDB.Exec(`UPDATE account_currency_balances SET balance_minor = 70000 WHERE account_id = ?`, srcAcct)
+		bDB.Exec(`UPDATE bucket_currency_balances SET balance_minor = 20000 WHERE bucket_id = ?`, tc.activeBucketID)
+		return nil
+	})
+
+	ctx.Step(`^I submit a restore request for the budget transaction to version (\d+)$`, func(targetVer int) error {
+		form := url.Values{}
+		form.Set("target_version", fmt.Sprint(targetVer))
+		form.Set("csrf_token", tc.activeCSRF)
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/"+tc.activeBudgetID+"/history/budget_transactions/"+tc.activeTxID+"/restore", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		req.Header.Set("HX-Request", "true")
+		req.AddCookie(tc.sessionCookie)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "entityType", "entityId")
+		c.SetParamValues(tc.activeBudgetID, "budget_transactions", tc.activeTxID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		var role string
+		_ = tc.mainDB.QueryRow(`SELECT role FROM budget_members WHERE budget_id = ? AND user_id = ?`, tc.activeBudgetID, tc.activeUserID).Scan(&role)
+		c.Set(handlers.ContextRoleKey, role)
+
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.historyHandler.RestoreVersion(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the transaction amount in "([^"]*)" should be "([^"]*)"$`, func(tableName, expectedAmtStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var actualMinor int64
+		err = bDB.QueryRow(`SELECT source_amount_minor FROM budget_transactions_current WHERE id = ?`, tc.activeTxID).Scan(&actualMinor)
+		if err != nil {
+			return err
+		}
+		expectedMinor := parseAmountStr(expectedAmtStr)
+		if actualMinor != expectedMinor {
+			return fmt.Errorf("expected amount %d, got %d", expectedMinor, actualMinor)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the bucket balance for "([^"]*)" should reflect the restored "([^"]*)" expense$`, func(bucketName, expAmtStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var actualBal int64
+		err = bDB.QueryRow(`SELECT balance_minor FROM bucket_currency_balances WHERE bucket_id = ?`, tc.activeBucketID).Scan(&actualBal)
+		if err != nil {
+			return err
+		}
+		// Started with 500 PLN, minus 100 PLN = 400 PLN (40000 minor)
+		if actualBal != 40000 {
+			return fmt.Errorf("expected bucket balance 40000, got %d", actualBal)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the source account balance should reflect the restored "([^"]*)" expense$`, func(expAmtStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var actualBal int64
+		err = bDB.QueryRow(`SELECT balance_minor FROM account_currency_balances WHERE account_id = ?`, tc.activeAcctID).Scan(&actualBal)
+		if err != nil {
+			return err
+		}
+		// Started with 1000 PLN, minus 100 PLN = 900 PLN (90000 minor)
+		if actualBal != 90000 {
+			return fmt.Errorf("expected account balance 90000, got %d", actualBal)
+		}
+		return nil
+	})
+
+	ctx.Step(`^an account "([^"]*)" was soft-deleted at version 2$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		bDB.Exec(`INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at) VALUES (?, 1, 'Vacation Party', 'INDIVIDUAL', 1, ?, ?)`, pID, tc.activeUserID, now)
+
+		acctID := domain.NewUUIDv7()
+		tc.activeAcctID = acctID
+
+		// v1: CREATE
+		bDB.Exec(`
+			INSERT INTO accounts (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, action, agent_id, correlation_id, created_at)
+			VALUES (?, 1, ?, ?, 'SAVINGS', 'PLN', 'PL999', 'EMOJI', '🏖️', 0, 'CREATE', ?, ?, ?)`,
+			acctID, pID, acctName, tc.activeUserID, domain.NewUUIDv7(), now)
+
+		// v2: SOFT_DELETE
+		bDB.Exec(`
+			INSERT INTO accounts (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, action, agent_id, correlation_id, created_at)
+			VALUES (?, 2, ?, ?, 'SAVINGS', 'PLN', 'PL999', 'EMOJI', '🏖️', 1, 'SOFT_DELETE', ?, ?, ?)`,
+			acctID, pID, acctName, tc.activeUserID, domain.NewUUIDv7(), now+1000)
+		return nil
+	})
+
+	ctx.Step(`^"([^"]*)" does not exist in "accounts_current"$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var count int
+		bDB.QueryRow(`SELECT count(*) FROM accounts_current WHERE name = ?`, acctName).Scan(&count)
+		if count != 0 {
+			return fmt.Errorf("expected account %q to not exist in accounts_current, got %d", acctName, count)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I submit a restore request for account "([^"]*)" to version (\d+)$`, func(acctName string, targetVer int) error {
+		form := url.Values{}
+		form.Set("target_version", fmt.Sprint(targetVer))
+		form.Set("csrf_token", tc.activeCSRF)
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/"+tc.activeBudgetID+"/history/accounts/"+tc.activeAcctID+"/restore", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		req.Header.Set("HX-Request", "true")
+		req.AddCookie(tc.sessionCookie)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "entityType", "entityId")
+		c.SetParamValues(tc.activeBudgetID, "accounts", tc.activeAcctID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		var role string
+		_ = tc.mainDB.QueryRow(`SELECT role FROM budget_members WHERE budget_id = ? AND user_id = ?`, tc.activeBudgetID, tc.activeUserID).Scan(&role)
+		c.Set(handlers.ContextRoleKey, role)
+
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.historyHandler.RestoreVersion(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^"([^"]*)" should be resurrected in "accounts_current" with version (\d+)$`, func(acctName string, ver int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var actualVer int
+		err = bDB.QueryRow(`SELECT version FROM accounts_current WHERE name = ?`, acctName).Scan(&actualVer)
+		if err != nil {
+			return fmt.Errorf("account not found in accounts_current: %w", err)
+		}
+		if actualVer != ver {
+			return fmt.Errorf("expected version %d, got %d", ver, actualVer)
+		}
+		return nil
+	})
+
+	ctx.Step(`^an account "([^"]*)" exists with 2 historical versions$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		bDB.Exec(`INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at) VALUES (?, 1, 'Owner Party', 'INDIVIDUAL', 1, ?, ?)`, pID, tc.activeUserID, now)
+
+		acctID := domain.NewUUIDv7()
+		tc.activeAcctID = acctID
+
+		bDB.Exec(`
+			INSERT INTO accounts (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, action, agent_id, correlation_id, created_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 'PL111', 'EMOJI', '💳', 0, 'CREATE', ?, ?, ?)`,
+			acctID, pID, acctName, tc.activeUserID, domain.NewUUIDv7(), now)
+
+		bDB.Exec(`
+			INSERT INTO accounts (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, action, agent_id, correlation_id, created_at)
+			VALUES (?, 2, ?, ?, 'CHECKING', 'PLN', 'PL111', 'EMOJI', '💳', 0, 'UPDATE', ?, ?, ?)`,
+			acctID, pID, acctName+" Updated", tc.activeUserID, domain.NewUUIDv7(), now+1000)
+
+		bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, agent_id, updated_at)
+			VALUES (?, 2, ?, ?, 'CHECKING', 'PLN', 'PL111', 'EMOJI', '💳', 0, ?, ?)`,
+			acctID, pID, acctName+" Updated", tc.activeUserID, now+1000)
+		return nil
+	})
+
+	ctx.Step(`^"([^"]*)" attempts to restore account "([^"]*)" to version (\d+)$`, func(email, acctName string, targetVer int) error {
+		form := url.Values{}
+		form.Set("target_version", fmt.Sprint(targetVer))
+		form.Set("csrf_token", tc.activeCSRF)
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/"+tc.activeBudgetID+"/history/accounts/"+tc.activeAcctID+"/restore", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		req.Header.Set("HX-Request", "true")
+		req.AddCookie(tc.sessionCookie)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "entityType", "entityId")
+		c.SetParamValues(tc.activeBudgetID, "accounts", tc.activeAcctID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		var role string
+		_ = tc.mainDB.QueryRow(`SELECT role FROM budget_members WHERE budget_id = ? AND user_id = ?`, tc.activeBudgetID, tc.activeUserID).Scan(&role)
+		c.Set(handlers.ContextRoleKey, role)
+
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.historyHandler.RestoreVersion(c)
+		if err != nil {
+			if he, ok := err.(*echo.HTTPError); ok {
+				rec.Code = he.Code
+			}
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^the action should be rejected with status 403 Forbidden$`, func() error {
+		if tc.lastResponse.Code != http.StatusForbidden {
+			return fmt.Errorf("expected 403 Forbidden, got %d", tc.lastResponse.Code)
+		}
+		return nil
+	})
+
+	ctx.Step(`^no new version should be created in "accounts"$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var maxVer int
+		err = bDB.QueryRow(`SELECT MAX(version) FROM accounts WHERE id = ?`, tc.activeAcctID).Scan(&maxVer)
+		if err != nil {
+			return err
+		}
+		if maxVer != 2 {
+			return fmt.Errorf("expected max version 2, got %d", maxVer)
 		}
 		return nil
 	})

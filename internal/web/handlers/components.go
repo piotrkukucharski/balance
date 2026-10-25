@@ -7,11 +7,12 @@ import (
 
 // TableActionItem represents a single item inside an action menu.
 type TableActionItem struct {
-	Label     string // e.g. "✏️ Edit"
-	OnClick   string // JS call e.g. "openEditModal(...)"
+	Label      string // e.g. "✏️ Edit"
+	OnClick    string // JS call e.g. "openEditModal(...)"
+	HXGet      string // e.g. "/budgets/.../history/..."
 	FormAction string // URL for POST form action (if is a form submit)
-	CSRFToken string
-	IsDanger  bool
+	CSRFToken  string
+	IsDanger   bool
 	ConfirmMsg string // Confirmation prompt before submitting
 }
 
@@ -42,6 +43,15 @@ func RenderPopoverActionMenu(prefix, id string, items []TableActionItem) string 
 					</form>
 				</li>`,
 				it.FormAction, confirmAttr, it.CSRFToken, dangerClass, it.Label,
+			))
+		} else if it.HXGet != "" {
+			dangerClass := ""
+			if it.IsDanger {
+				dangerClass = ` class="text-error"`
+			}
+			itemsHTML.WriteString(fmt.Sprintf(`
+				<li><button type="button"%s hx-get="%s" hx-target="body" hx-swap="beforeend">%s</button></li>`,
+				dangerClass, it.HXGet, it.Label,
 			))
 		} else {
 			dangerClass := ""

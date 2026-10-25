@@ -250,6 +250,10 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 
 		actionMenu := RenderPopoverActionMenu("tx", id, []TableActionItem{
 			{
+				Label: "🕒 History",
+				HXGet: fmt.Sprintf("/budgets/%s/history/budget_transactions/%s", budgetID, id),
+			},
+			{
 				Label:   "✏️ Edit",
 				OnClick: fmt.Sprintf("openEditTxModal('%s', '%.2f', '%s', '%s', '%s', '%s')", id, amountMajor, dateStr, escapedNotes, bucketIDVal, srcAcctID),
 			},
@@ -365,6 +369,10 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 			if rBookingStatus == "PENDING" {
 				rawActionItems = []TableActionItem{
 					{
+						Label: "🕒 History",
+						HXGet: fmt.Sprintf("/budgets/%s/history/raw_transactions/%s", budgetID, rID),
+					},
+					{
 						Label:      "🚫 Ignore Feed",
 						FormAction: fmt.Sprintf("/budgets/%s/transactions/raw/%s/ignore", budgetID, rID),
 						CSRFToken:  csrfToken,
@@ -374,6 +382,10 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 				}
 			} else {
 				rawActionItems = []TableActionItem{
+					{
+						Label: "🕒 History",
+						HXGet: fmt.Sprintf("/budgets/%s/history/raw_transactions/%s", budgetID, rID),
+					},
 					{
 						Label:   "➡️ Detailed Resolve Modal",
 						OnClick: fmt.Sprintf("openResolveRawModal('%s', '%s', '%.2f', '%s', '%s', '%s')", rID, rAcctID, rAmountMajor, rCurrency, escapedPayee, suggestedBucketID),

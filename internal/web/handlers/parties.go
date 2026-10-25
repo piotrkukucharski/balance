@@ -66,9 +66,17 @@ func (h *PartiesHandler) PartiesView(c echo.Context) error {
 				<td>%s</td>
 				<td class="text-center font-mono font-bold text-sm">%d</td>
 				<td class="text-right">
-					<button class="btn btn-ghost btn-xs text-primary font-semibold">Rules</button>
+					<div class="flex items-center justify-end gap-1">
+						<button class="btn btn-ghost btn-xs text-info font-semibold"
+							hx-get="/budgets/%s/history/parties/%s"
+							hx-target="body"
+							hx-swap="beforeend">
+							History
+						</button>
+						<button class="btn btn-ghost btn-xs text-primary font-semibold">Rules</button>
+					</div>
 				</td>
-			</tr>`, icon, name, pType, badge, acctCount))
+			</tr>`, icon, name, pType, badge, acctCount, budgetID, id))
 	}
 
 	if !hasParties {

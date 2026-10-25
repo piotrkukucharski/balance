@@ -263,7 +263,8 @@ func ExecuteResolution(ctx context.Context, tenantDB *sql.DB, input ResolveResol
 	return operationID, nil
 }
 
-func adjustAccountBalance(ctx context.Context, tx *sql.Tx, accountID, currency string, deltaMinor, now int64) error {
+// AdjustAccountBalance atomically updates balance for account & currency.
+func AdjustAccountBalance(ctx context.Context, tx *sql.Tx, accountID, currency string, deltaMinor, now int64) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO account_currency_balances (account_id, currency, balance_minor, updated_at)
 		VALUES (?, ?, ?, ?)
@@ -275,7 +276,8 @@ func adjustAccountBalance(ctx context.Context, tx *sql.Tx, accountID, currency s
 	return err
 }
 
-func adjustBucketBalance(ctx context.Context, tx *sql.Tx, bucketID, currency string, deltaMinor int64) error {
+// AdjustBucketBalance atomically updates envelope balance for bucket & currency.
+func AdjustBucketBalance(ctx context.Context, tx *sql.Tx, bucketID, currency string, deltaMinor int64) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO bucket_currency_balances (bucket_id, currency, balance_minor)
 		VALUES (?, ?, ?)
@@ -284,6 +286,14 @@ func adjustBucketBalance(ctx context.Context, tx *sql.Tx, bucketID, currency str
 		bucketID, currency, deltaMinor,
 	)
 	return err
+}
+
+func adjustAccountBalance(ctx context.Context, tx *sql.Tx, accountID, currency string, deltaMinor, now int64) error {
+	return AdjustAccountBalance(ctx, tx, accountID, currency, deltaMinor, now)
+}
+
+func adjustBucketBalance(ctx context.Context, tx *sql.Tx, bucketID, currency string, deltaMinor int64) error {
+	return AdjustBucketBalance(ctx, tx, bucketID, currency, deltaMinor)
 }
 
 // UpdateBudgetTxInput payload for editing an existing budget transaction.
