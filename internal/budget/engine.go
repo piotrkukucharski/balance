@@ -235,15 +235,27 @@ func computeCalendarRecurring(t *TargetDefinition, windowDays int, now time.Time
 
 	// Count occurrences within [nowInLoc, windowEnd]
 	occurrences := 0
+	lastOccurrence := time.Time{}
 	iter := curr
 	for !iter.After(windowEnd) {
 		occurrences++
+		lastOccurrence = iter
 		iter = iter.AddDate(yearsStep, monthsStep, 0)
 	}
 
 	var baseRequired int64
 	if occurrences > 0 {
 		baseRequired = int64(occurrences) * t.AmountMinor
+		// Tail pro-rating: if there are remaining days between lastOccurrence and windowEnd,
+		// pro-rate towards the next cycle.
+		remDays := CalendarDaysBetween(lastOccurrence, windowEnd, loc)
+		if remDays > 0 {
+			nextCycleDays := CalendarDaysBetween(lastOccurrence, iter, loc)
+			if nextCycleDays > 0 {
+				tailProrated := float64(t.AmountMinor) * (float64(remDays) / float64(nextCycleDays))
+				baseRequired += int64(math.Ceil(tailProrated))
+			}
+		}
 	} else {
 		// Target due date is beyond windowEnd: prorate proportional to windowDays / daysUntilNext
 		daysUntilNext := CalendarDaysBetween(nowInLoc, curr, loc)
@@ -286,11 +298,17 @@ func computeCalendarRecurring(t *TargetDefinition, windowDays int, now time.Time
 }
 
 func computeRecurring(t *TargetDefinition, windowDays, cycleDays int) int64 {
-	occurrences := windowDays / cycleDays
-	if occurrences < 1 {
-		occurrences = 1
+	if cycleDays < 1 {
+		cycleDays = 1
 	}
+	occurrences := windowDays / cycleDays
+	remDays := windowDays % cycleDays
+
 	baseRequired := int64(occurrences) * t.AmountMinor
+	if remDays > 0 {
+		tailProrated := float64(t.AmountMinor) * (float64(remDays) / float64(cycleDays))
+		baseRequired += int64(math.Ceil(tailProrated))
+	}
 
 	// Strategy specific adjustments
 	switch t.NonSpendingStrategy {

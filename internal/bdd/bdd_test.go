@@ -3300,6 +3300,54 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	ctx.Step(`^I add a recurring target "([^"]*)" with amount "([^"]*)" monthly and due in (\d+) days$`, func(name, amt string, dueDays int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		dueMicro := time.Now().UTC().AddDate(0, 0, dueDays).UnixMicro()
+		tID, err := budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:          activeBucketID,
+			Name:              name,
+			TargetType:        "EXPENSE",
+			Priority:          3,
+			AmountMinor:       parseAmountStr(amt),
+			Currency:          "PLN",
+			RecurrenceCadence: budget.CadenceMonthly,
+			DueDate:           &dueMicro,
+			AgentID:           tc.activeUserID,
+			CorrelationID:     domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		activeTargetID = tID
+		return nil
+	})
+
+	ctx.Step(`^the target requirement in a (\d+)-day window should be "([^"]*)"$`, func(windowDays int, expectedAmt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var target budget.TargetDefinition
+		err = bDB.QueryRow(`SELECT id, bucket_id, name, priority, sort_order, amount_minor, currency, recurrence_cadence, recurrence_interval, due_date, non_spending_strategy, current_funded_minor
+			FROM targets_projection WHERE id = ?`, activeTargetID).Scan(
+			&target.ID, &target.BucketID, &target.Name, &target.Priority, &target.SortOrder,
+			&target.AmountMinor, &target.Currency, &target.RecurrenceCadence, &target.RecurrenceInterval,
+			&target.DueDate, &target.NonSpendingStrategy, &target.CurrentFundedMinor,
+		)
+		if err != nil {
+			return fmt.Errorf("failed fetching active target %s: %w", activeTargetID, err)
+		}
+		req := budget.ComputeTargetRequirement(&target, windowDays, time.Now().UTC())
+		expectedMinor := parseAmountStr(expectedAmt)
+		if req != expectedMinor {
+			return fmt.Errorf("expected requirement %d, got %d", expectedMinor, req)
+		}
+		return nil
+	})
+
 	ctx.Step(`^target "([^"]*)" in projections should have cadence "([^"]*)" and recurrence interval (\d+)$`, func(name string, expectedCadence string, expectedInterval int) error {
 		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
 		if err != nil {

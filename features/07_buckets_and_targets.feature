@@ -158,4 +158,11 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     And I attempt to add a target "Amazon US" in currency "USD"
     Then the target creation should be rejected due to unsupported currency
 
+  Scenario: Continuous pro-rated target calculation for recurring cycles across horizon windows
+    Given an open budget "Family Home" with "5,000.00 PLN" in checking account
+    When I create a bucket "Subscriptions" in group "Needs"
+    And I add a recurring target "Streaming" with amount "100.00 PLN" monthly and due in 12 days
+    Then the target requirement in a 30-day window should be "160.00 PLN"
+
+
 

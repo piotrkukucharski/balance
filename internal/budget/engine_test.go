@@ -66,7 +66,7 @@ func TestRollingWindowTargetRequirement(t *testing.T) {
 	}
 
 	// 5. Custom Years target: Car insurance 1200 PLN every 1 year, anchor due in 60 days, evaluated in 90-day window
-	// Since anchor is within 90-day window, full 1 occurrence (1200 PLN) is required.
+	// Since anchor is within 90-day window, 1 occurrence (1200 PLN) + 30 days tail prorated for next year (30/365 * 120000 = 9864) = 129864 minor.
 	due60Days := now.AddDate(0, 0, 60).UnixMicro()
 	targetYears := &TargetDefinition{
 		ID:                  "t5",
@@ -77,8 +77,8 @@ func TestRollingWindowTargetRequirement(t *testing.T) {
 		NonSpendingStrategy: StrategyRollOver,
 	}
 	reqYears := ComputeTargetRequirement(targetYears, 90, now)
-	if reqYears != 120000 {
-		t.Fatalf("expected 120000 for annual target due in window, got %d", reqYears)
+	if reqYears != 129864 {
+		t.Fatalf("expected 129864 for annual target due in 60d in 90d window, got %d", reqYears)
 	}
 }
 
@@ -283,5 +283,43 @@ func TestDynamicHorizonCalculation_EdgeCases(t *testing.T) {
 	reqCeil := ComputeTargetRequirementInLoc(targetCeil, 10, now, loc)
 	if reqCeil != 304 {
 		t.Fatalf("expected ceil rounding to produce 304 minor, got %d", reqCeil)
+	}
+
+	// Edge case 7: Continuous pro-rating task example (BALANCE-65)
+	// now = 2026-10-25, horizon = 30d -> windowEnd = 2026-11-24, target = 100 PLN monthly (10000 minor)
+	// next due: 2026-11-06 (in 12 days) -> 100% required = 100 PLN
+	// remaining window after due date: 18 days (2026-11-24 - 2026-11-06)
+	// next cycle (2026-11-06 to 2026-12-06): 30 days
+	// tail prorated: 18/30 * 10000 = 6000 minor
+	// total required in 30d window: 10000 + 6000 = 16000 minor (160 PLN)
+	nowBalance65 := time.Date(2026, 10, 25, 0, 0, 0, 0, loc)
+	dueBalance65 := time.Date(2026, 11, 6, 0, 0, 0, 0, loc).UnixMicro()
+	targetBalance65 := &TargetDefinition{
+		ID:                  "t-b65",
+		AmountMinor:         10000, // 100 PLN
+		RecurrenceCadence:   CadenceMonthly,
+		DueDate:             dueBalance65,
+		NonSpendingStrategy: StrategyRollOver,
+	}
+	reqB65 := ComputeTargetRequirementInLoc(targetBalance65, 30, nowBalance65, loc)
+	if reqB65 != 16000 {
+		t.Fatalf("expected 16000 minor (160 PLN) for BALANCE-65 continuous pro-rating example, got %d", reqB65)
+	}
+
+	// Edge case 8: computeRecurring continuous pro-rating without due date
+	// target = 100 PLN every 20 days, evaluated in 30 days window:
+	// 1 occurrence = 100 PLN (10000 minor)
+	// remainder 10 days out of 20 days = 50% = 50 PLN (5000 minor)
+	// total = 15000 minor (150 PLN)
+	targetCustomUndated := &TargetDefinition{
+		ID:                  "t-undated-rec",
+		AmountMinor:         10000,
+		RecurrenceCadence:   CadenceCustomDays,
+		RecurrenceInterval:  20,
+		NonSpendingStrategy: StrategyRollOver,
+	}
+	reqUndatedRec := ComputeTargetRequirementInLoc(targetCustomUndated, 30, nowBalance65, loc)
+	if reqUndatedRec != 15000 {
+		t.Fatalf("expected 15000 minor for custom undated recurring target, got %d", reqUndatedRec)
 	}
 }
