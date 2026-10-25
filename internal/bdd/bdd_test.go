@@ -74,6 +74,7 @@ type bddTestContext struct {
 	activeAutomationID string
 
 	luaSnapshot            *lua.InMemoryBudgetSnapshot
+	luaTargetCtx           *lua.TargetFormulaContext
 	luaScript              string
 	evalResult             int64
 	evalError              error
@@ -546,6 +547,46 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^a dependent target "([^"]*)" with Lua formula:$`, func(targetName string, formula *godog.DocString) error {
 		tc.luaScript = strings.TrimSpace(formula.Content)
 		return nil
+	})
+	ctx.Step(`^a target "([^"]*)" with anchor due date "([^"]*)" and Lua formula:$`, func(targetName, dueDateStr string, formula *godog.DocString) error {
+		t, err := time.Parse("2006-01-02", dueDateStr)
+		if err != nil {
+			return err
+		}
+		sec := t.Unix()
+		tc.luaTargetCtx = &lua.TargetFormulaContext{
+			Name:          targetName,
+			AnchorDueDate: &sec,
+		}
+		tc.luaScript = strings.TrimSpace(formula.Content)
+		if tc.luaSnapshot == nil {
+			tc.luaSnapshot = &lua.InMemoryBudgetSnapshot{
+				Targets:        make(map[string]*lua.TargetMeta),
+				BucketBalances: make(map[string]int64),
+				FXRates:        make(map[string]int64),
+				InflowsPast:    make(map[string][]int64),
+				OutflowsPast:   make(map[string][]int64),
+				WindowDays:     30,
+				TargetCurrency: "PLN",
+			}
+		}
+		return nil
+	})
+	ctx.Step(`^the Lua sandbox evaluates the target formula with simulated today "([^"]*)"$`, func(todayStr string) error {
+		t, err := time.Parse("2006-01-02", todayStr)
+		if err != nil {
+			return err
+		}
+		if tc.luaSnapshot == nil {
+			tc.luaSnapshot = &lua.InMemoryBudgetSnapshot{
+				Targets: make(map[string]*lua.TargetMeta),
+			}
+		}
+		tc.luaSnapshot.NowTime = &t
+		val, err := lua.EvaluateFormulaWithContext(context.Background(), tc.luaScript, tc.luaSnapshot, tc.luaTargetCtx)
+		tc.evalResult = val
+		tc.evalError = err
+		return err
 	})
 	ctx.Step(`^the Lua sandbox evaluates the target formula$`, func() error {
 		val, err := lua.EvaluateFormula(context.Background(), tc.luaScript, tc.luaSnapshot)

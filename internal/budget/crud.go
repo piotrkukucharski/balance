@@ -300,7 +300,20 @@ func CreateTarget(ctx context.Context, tenantDB *sql.DB, input CreateTargetInput
 		if input.AmountMinor == 0 {
 			snap, _ := BuildBudgetSnapshot(ctx, tenantDB, input.Currency, 30)
 			if snap != nil {
-				evalVal, err := lua.EvaluateFormula(ctx, *input.LuaScript, snap)
+				var anchorDueDateSec *int64
+				if input.DueDate != nil && *input.DueDate > 0 {
+					sec := *input.DueDate / 1_000_000
+					anchorDueDateSec = &sec
+				}
+				targetCtx := &lua.TargetFormulaContext{
+					Name:          input.Name,
+					Planned:       input.AmountMinor,
+					Required:      input.AmountMinor,
+					Priority:      input.Priority,
+					Currency:      input.Currency,
+					AnchorDueDate: anchorDueDateSec,
+				}
+				evalVal, err := lua.EvaluateFormulaWithContext(ctx, *input.LuaScript, snap, targetCtx)
 				if err == nil {
 					input.AmountMinor = evalVal
 				}
@@ -455,7 +468,20 @@ func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput
 		if input.AmountMinor == 0 {
 			snap, _ := BuildBudgetSnapshot(ctx, tenantDB, "PLN", 30)
 			if snap != nil {
-				evalVal, err := lua.EvaluateFormula(ctx, *input.LuaScript, snap)
+				var anchorDueDateSec *int64
+				if input.DueDate != nil && *input.DueDate > 0 {
+					sec := *input.DueDate / 1_000_000
+					anchorDueDateSec = &sec
+				}
+				targetCtx := &lua.TargetFormulaContext{
+					Name:          input.Name,
+					Planned:       input.AmountMinor,
+					Required:      input.AmountMinor,
+					Priority:      input.Priority,
+					Currency:      "PLN",
+					AnchorDueDate: anchorDueDateSec,
+				}
+				evalVal, err := lua.EvaluateFormulaWithContext(ctx, *input.LuaScript, snap, targetCtx)
 				if err == nil {
 					input.AmountMinor = evalVal
 				}

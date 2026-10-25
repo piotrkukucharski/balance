@@ -33,15 +33,29 @@ var (
 
 // TargetMeta represents an in-memory target snapshot
 type TargetMeta struct {
-	ID       string
-	Name     string
-	BucketID string
-	Planned  int64
-	Required int64
-	Funded   int64
-	Spent    int64
-	Priority int
-	Currency string
+	ID            string
+	Name          string
+	BucketID      string
+	Planned       int64
+	Required      int64
+	Funded        int64
+	Spent         int64
+	Priority      int
+	Currency      string
+	AnchorDueDate *int64 // Unix epoch in seconds
+}
+
+// TargetFormulaContext represents the evaluation context for the target currently running a Lua formula.
+type TargetFormulaContext struct {
+	TargetID      string
+	Name          string
+	Planned       int64
+	Required      int64
+	Funded        int64
+	Spent         int64
+	Priority      int
+	Currency      string
+	AnchorDueDate *int64 // Unix epoch in seconds
 }
 
 // BucketMeta represents an in-memory bucket snapshot
@@ -119,6 +133,8 @@ type InMemoryBudgetSnapshot struct {
 	OutflowsPast   map[string][]int64      // currency -> daily outflow prefix sum
 	WindowDays     int
 	TargetCurrency string
+	Timezone       string
+	NowTime        *time.Time
 }
 
 // ValidateLuaScript tokens and syntax for security compliance.
@@ -193,6 +209,11 @@ var targetRefRegex = regexp.MustCompile(`target\(\s*["']([^"']+)["']\s*\)`)
 
 // EvaluateFormula executes a Lua formula inside the hardened 6-pillar sandbox.
 func EvaluateFormula(ctx context.Context, script string, snap *InMemoryBudgetSnapshot) (int64, error) {
+	return EvaluateFormulaWithContext(ctx, script, snap, nil)
+}
+
+// EvaluateFormulaWithContext executes a Lua formula inside the hardened 6-pillar sandbox with optional target context.
+func EvaluateFormulaWithContext(ctx context.Context, script string, snap *InMemoryBudgetSnapshot, targetCtx *TargetFormulaContext) (int64, error) {
 	if err := ValidateLuaScript(script); err != nil {
 		return 0, err
 	}
@@ -221,7 +242,7 @@ func EvaluateFormula(ctx context.Context, script string, snap *InMemoryBudgetSna
 	}
 
 	// Register Pillar 1: Whitelisted math library & domain functions
-	registerSandboxedEnvironment(L, snap, checkHostCall)
+	registerSandboxedEnvironment(L, snap, targetCtx, checkHostCall)
 
 	// Execute
 	if err := L.DoString(script); err != nil {
@@ -256,7 +277,7 @@ func EvaluateFormula(ctx context.Context, script string, snap *InMemoryBudgetSna
 	return int64(math.Round(f)), nil
 }
 
-func registerSandboxedEnvironment(L *glua.LState, snap *InMemoryBudgetSnapshot, checkCall func() error) {
+func registerSandboxedEnvironment(L *glua.LState, snap *InMemoryBudgetSnapshot, targetCtx *TargetFormulaContext, checkCall func() error) {
 	if snap == nil {
 		snap = &InMemoryBudgetSnapshot{}
 	}
@@ -290,6 +311,99 @@ func registerSandboxedEnvironment(L *glua.LState, snap *InMemoryBudgetSnapshot, 
 
 	// tonumber
 	L.SetGlobal("tonumber", L.NewFunction(luaToNumber))
+
+	// date library
+	registerDateLib(L, checkCall)
+
+	// financial library
+	financialTable := L.NewTable()
+	L.SetField(financialTable, "pmt", L.NewFunction(func(state *glua.LState) int {
+		if err := checkCall(); err != nil {
+			state.RaiseError("%s", err.Error())
+			return 0
+		}
+		rate := float64(state.CheckNumber(1))
+		nper := float64(state.CheckNumber(2))
+		if nper <= 0 {
+			state.RaiseError("nper must be positive")
+			return 0
+		}
+		pv := float64(state.CheckNumber(3))
+		fv := float64(state.OptNumber(4, 0))
+		pmtType := int(state.OptInt(5, 0))
+
+		var pmt float64
+		if rate == 0 {
+			pmt = -(pv + fv) / nper
+		} else {
+			temp := math.Pow(1.0+rate, nper)
+			pmt = -(rate * (pv*temp + fv)) / (temp - 1.0)
+			if pmtType == 1 {
+				pmt = pmt / (1.0 + rate)
+			}
+		}
+		if math.IsNaN(pmt) || math.IsInf(pmt, 0) {
+			state.RaiseError("financial.pmt calculation resulted in invalid number")
+			return 0
+		}
+		state.Push(glua.LNumber(pmt))
+		return 1
+	}))
+	L.SetGlobal("financial", financialTable)
+
+	// runtime table
+	runtimeTable := L.NewTable()
+	loc := time.UTC
+	if snap.Timezone != "" {
+		if l, err := time.LoadLocation(snap.Timezone); err == nil {
+			loc = l
+		}
+	}
+	nowInTz := time.Now().In(loc)
+	if snap.NowTime != nil {
+		nowInTz = snap.NowTime.In(loc)
+	}
+	todayMidnight := time.Date(nowInTz.Year(), nowInTz.Month(), nowInTz.Day(), 0, 0, 0, 0, loc)
+	L.SetField(runtimeTable, "today", glua.LNumber(todayMidnight.Unix()))
+	L.SetGlobal("runtime", runtimeTable)
+
+	// self table
+	selfTable := L.NewTable()
+	if targetCtx != nil {
+		L.SetField(selfTable, "name", glua.LString(targetCtx.Name))
+		L.SetField(selfTable, "planned", glua.LNumber(targetCtx.Planned))
+		L.SetField(selfTable, "required", glua.LNumber(targetCtx.Required))
+		L.SetField(selfTable, "funded", glua.LNumber(targetCtx.Funded))
+		L.SetField(selfTable, "spent", glua.LNumber(targetCtx.Spent))
+		L.SetField(selfTable, "priority", glua.LNumber(targetCtx.Priority))
+
+		if targetCtx.AnchorDueDate != nil {
+			L.SetField(selfTable, "anchor_due_date", glua.LNumber(*targetCtx.AnchorDueDate))
+		} else {
+			mt := L.NewTable()
+			L.SetField(mt, "__index", L.NewFunction(func(s *glua.LState) int {
+				key := s.CheckString(2)
+				if key == "anchor_due_date" {
+					s.RaiseError("anchor_due_date is not configured for target")
+					return 0
+				}
+				return 0
+			}))
+			L.SetMetatable(selfTable, mt)
+		}
+	} else {
+		mt := L.NewTable()
+		L.SetField(mt, "__index", L.NewFunction(func(s *glua.LState) int {
+			key := s.CheckString(2)
+			if key == "anchor_due_date" {
+				s.RaiseError("anchor_due_date is not configured for target")
+				return 0
+			}
+			return 0
+		}))
+		L.SetMetatable(selfTable, mt)
+	}
+	L.SetGlobal("self", selfTable)
 
 	// money(val)
 	L.SetGlobal("money", L.NewFunction(func(state *glua.LState) int {
@@ -339,6 +453,22 @@ func registerSandboxedEnvironment(L *glua.LState, snap *InMemoryBudgetSnapshot, 
 		state.SetField(tbl, "funded", glua.LNumber(meta.Funded))
 		state.SetField(tbl, "spent", glua.LNumber(meta.Spent))
 		state.SetField(tbl, "priority", glua.LNumber(meta.Priority))
+
+		if meta.AnchorDueDate != nil {
+			state.SetField(tbl, "anchor_due_date", glua.LNumber(*meta.AnchorDueDate))
+		} else {
+			mt := state.NewTable()
+			targetName := meta.Name
+			state.SetField(mt, "__index", state.NewFunction(func(s *glua.LState) int {
+				key := s.CheckString(2)
+				if key == "anchor_due_date" {
+					s.RaiseError("anchor_due_date is not set for target %q", targetName)
+					return 0
+				}
+				return 0
+			}))
+			state.SetMetatable(tbl, mt)
+		}
 		state.Push(tbl)
 		return 1
 	}))
@@ -759,6 +889,17 @@ func registerDateLib(L *glua.LState, checkCall func() error) {
 			return 1
 		}
 		state.Push(glua.LNumber(0))
+		return 1
+	}))
+	L.SetField(dateTable, "diff_months", L.NewFunction(func(state *glua.LState) int {
+		if err := checkCall(); err != nil {
+			state.RaiseError("%s", err.Error())
+			return 0
+		}
+		t1 := parseDateArg(state.Get(1))
+		t2 := parseDateArg(state.Get(2))
+		diff := (t1.Year()-t2.Year())*12 + int(t1.Month()-t2.Month())
+		state.Push(glua.LNumber(diff))
 		return 1
 	}))
 	L.SetGlobal("date", dateTable)
@@ -1217,7 +1358,7 @@ func EvaluateAutomationJudge(ctx context.Context, script string, txCtx Automatio
 		return nil
 	}
 
-	registerSandboxedEnvironment(L, snap, checkHostCall)
+	registerSandboxedEnvironment(L, snap, nil, checkHostCall)
 	registerTextLib(L, checkHostCall)
 	registerDateLib(L, checkHostCall)
 	registerAutomationTx(L, txCtx, snap, checkHostCall, true, nil)
@@ -1268,7 +1409,7 @@ func EvaluateAutomationExecutor(ctx context.Context, script string, txCtx Automa
 		UpdatedTx: txCtx,
 	}
 
-	registerSandboxedEnvironment(L, snap, checkHostCall)
+	registerSandboxedEnvironment(L, snap, nil, checkHostCall)
 	registerTextLib(L, checkHostCall)
 	registerDateLib(L, checkHostCall)
 	registerAutomationTx(L, txCtx, snap, checkHostCall, false, outcome)

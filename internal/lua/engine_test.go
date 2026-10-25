@@ -3,6 +3,7 @@ package lua
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestEvaluateFormulaBasic(t *testing.T) {
@@ -214,5 +215,178 @@ func TestEvaluateAutomationJudgeAndExecutor(t *testing.T) {
 	}
 	if !outcome.Deleted {
 		t.Fatalf("expected deleted = true")
+	}
+}
+
+func TestFinancialPMT(t *testing.T) {
+	ctx := context.Background()
+	snap := &InMemoryBudgetSnapshot{}
+
+	// Standard Excel PMT: rate = 0.05/12, nper = 360, pv = 100000 -> -536.82 PLN -> -53682 minor
+	script := `
+	local r = 0.05 / 12
+	local nper = 360
+	local pv = 100000
+	local pmt = financial.pmt(r, nper, pv)
+	return money(-pmt)
+	`
+	val, err := EvaluateFormula(ctx, script, snap)
+	if err != nil {
+		t.Fatalf("EvaluateFormula failed: %v", err)
+	}
+	// 536.82 * 100 = 53682
+	if val != 53682 {
+		t.Fatalf("expected 53682 minor units, got %d", val)
+	}
+
+	// Direct return of positive PMT using math.abs
+	scriptAbs := `
+	local pmt = financial.pmt(0.05 / 12, 360, 100000)
+	return money(math.abs(pmt))
+	`
+	valAbs, err := EvaluateFormula(ctx, scriptAbs, snap)
+	if err != nil {
+		t.Fatalf("EvaluateFormula with math.abs failed: %v", err)
+	}
+	if valAbs != 53682 {
+		t.Fatalf("expected 53682 minor units, got %d", valAbs)
+	}
+
+	// Zero interest rate
+	scriptZeroRate := `
+	local pmt = financial.pmt(0, 10, 1000)
+	return money(-pmt)
+	`
+	valZero, err := EvaluateFormula(ctx, scriptZeroRate, snap)
+	if err != nil {
+		t.Fatalf("EvaluateFormula zero rate failed: %v", err)
+	}
+	// 1000 / 10 = 100 -> 10000 minor
+	if valZero != 10000 {
+		t.Fatalf("expected 10000 minor units, got %d", valZero)
+	}
+
+	// Annuity due (type = 1)
+	scriptType1 := `
+	local pmt = financial.pmt(0.05 / 12, 360, 100000, 0, 1)
+	return money(-pmt)
+	`
+	valType1, err := EvaluateFormula(ctx, scriptType1, snap)
+	if err != nil {
+		t.Fatalf("EvaluateFormula type=1 failed: %v", err)
+	}
+	// In Excel: PMT(0.05/12, 360, 100000, 0, 1) = -534.59 -> 53459 minor
+	if valType1 != 53459 {
+		t.Fatalf("expected 53459 minor units, got %d", valType1)
+	}
+
+	// Invalid nper <= 0 raises error
+	scriptInvalidNper := `return financial.pmt(0.05, 0, 1000)`
+	_, err = EvaluateFormula(ctx, scriptInvalidNper, snap)
+	if err == nil {
+		t.Fatalf("expected error for non-positive nper")
+	}
+}
+
+func TestSelfAndRuntimeContext(t *testing.T) {
+	ctx := context.Background()
+
+	// Mock today as 2026-10-25 15:30:00 in Europe/Warsaw
+	loc, _ := time.LoadLocation("Europe/Warsaw")
+	mockNow := time.Date(2026, 10, 25, 15, 30, 0, 0, loc)
+	snap := &InMemoryBudgetSnapshot{
+		Timezone: "Europe/Warsaw",
+		NowTime:  &mockNow,
+	}
+
+	// Target due in 10 years: 2036-10-25
+	dueT := time.Date(2036, 10, 25, 0, 0, 0, 0, time.UTC)
+	dueSec := dueT.Unix()
+
+	targetCtx := &TargetFormulaContext{
+		Name:          "Mortgage Loan",
+		Planned:       30000000,
+		Required:      30000000,
+		Funded:        500000,
+		Priority:      3,
+		AnchorDueDate: &dueSec,
+	}
+
+	// Full formula with self.anchor_due_date, runtime.today, date.diff_months and financial.pmt
+	formula := `
+	local nper = date.diff_months(self.anchor_due_date, runtime.today)
+	local r = 0.06 / 12
+	local pv = 300000
+	local pmt = -financial.pmt(r, nper, pv)
+	return money(pmt)
+	`
+	val, err := EvaluateFormulaWithContext(ctx, formula, snap, targetCtx)
+	if err != nil {
+		t.Fatalf("EvaluateFormulaWithContext failed: %v", err)
+	}
+	// nper = 120 months.
+	// PMT(0.06/12, 120, 300000) = -3330.62 PLN -> 333062 minor
+	if val != 333062 {
+		t.Fatalf("expected 333062 minor units, got %d", val)
+	}
+
+	// Test missing anchor_due_date on self raises error
+	targetCtxNoDue := &TargetFormulaContext{
+		Name:     "No Due Target",
+		Priority: 1,
+	}
+	scriptMissingDue := `return self.anchor_due_date`
+	_, err = EvaluateFormulaWithContext(ctx, scriptMissingDue, snap, targetCtxNoDue)
+	if err == nil {
+		t.Fatalf("expected error when accessing missing self.anchor_due_date")
+	}
+
+	// Test other self properties
+	scriptSelfProps := `return self.priority + money(10)`
+	valProps, err := EvaluateFormulaWithContext(ctx, scriptSelfProps, snap, targetCtx)
+	if err != nil {
+		t.Fatalf("self properties access failed: %v", err)
+	}
+	if valProps != 1003 { // 3 + 1000
+		t.Fatalf("expected 1003, got %d", valProps)
+	}
+}
+
+func TestTargetAnchorDueDate(t *testing.T) {
+	ctx := context.Background()
+	dueT := time.Date(2028, 5, 1, 0, 0, 0, 0, time.UTC)
+	dueSec := dueT.Unix()
+
+	snap := &InMemoryBudgetSnapshot{
+		Targets: map[string]*TargetMeta{
+			"Car Loan": {
+				ID:            "t-car",
+				Name:          "Car Loan",
+				Required:      150000,
+				AnchorDueDate: &dueSec,
+			},
+			"Flexible Target": {
+				ID:       "t-flex",
+				Name:     "Flexible Target",
+				Required: 50000,
+			},
+		},
+	}
+
+	// 1. Target with anchor due date returns epoch seconds
+	script1 := `return target("Car Loan").anchor_due_date`
+	val, err := EvaluateFormula(ctx, script1, snap)
+	if err != nil {
+		t.Fatalf("failed reading target anchor_due_date: %v", err)
+	}
+	if val != dueSec {
+		t.Fatalf("expected %d, got %d", dueSec, val)
+	}
+
+	// 2. Target without anchor due date raises error
+	script2 := `return target("Flexible Target").anchor_due_date`
+	_, err = EvaluateFormula(ctx, script2, snap)
+	if err == nil {
+		t.Fatalf("expected error accessing anchor_due_date on target without due date")
 	}
 }

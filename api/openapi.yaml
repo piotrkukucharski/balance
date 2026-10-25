@@ -2787,6 +2787,13 @@ components:
       properties:
         lua_script:
           type: string
+        anchor_due_date:
+          type: integer
+          format: int64
+          description: Optional anchor due date timestamp in seconds or microseconds
+        due_date:
+          type: string
+          description: Optional anchor due date string YYYY-MM-DD
         context_data:
           type: object
 

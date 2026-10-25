@@ -1792,7 +1792,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
 	// 3. Fetch all active targets
 	nowUTC := time.Now().UTC()
-	snap, _ := budget.BuildBudgetSnapshot(c.Request().Context(), tenantDB, defaultCurr, windowDays)
+	snap, _ := budget.BuildBudgetSnapshot(c.Request().Context(), tenantDB, defaultCurr, windowDays, tz)
 
 	targetRows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT id, bucket_id, name, target_type, priority, sort_order, amount_minor, currency,
@@ -1837,7 +1837,22 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
 			// Dynamic Lua formula evaluation
 			if snap != nil && t.AmountMode == "LUA_FORMULA" && t.LuaScript != nil && *t.LuaScript != "" {
-				evalVal, evalErr := lua.EvaluateFormula(c.Request().Context(), *t.LuaScript, snap)
+				var anchorDueDateSec *int64
+				if dueDate.Valid && dueDate.Int64 > 0 {
+					sec := dueDate.Int64 / 1_000_000
+					anchorDueDateSec = &sec
+				}
+				targetCtx := &lua.TargetFormulaContext{
+					TargetID:      t.ID,
+					Name:          t.Name,
+					Planned:       t.AmountMinor,
+					Required:      t.AmountMinor,
+					Funded:        t.CurrentFundedMinor,
+					Priority:      t.Priority,
+					Currency:      t.Currency,
+					AnchorDueDate: anchorDueDateSec,
+				}
+				evalVal, evalErr := lua.EvaluateFormulaWithContext(c.Request().Context(), *t.LuaScript, snap, targetCtx)
 				if evalErr == nil {
 					t.AmountMinor = evalVal
 					t.LastFormulaError = nil
@@ -3272,6 +3287,9 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 return;
             }
 
+            const dueDateInput = document.getElementById('target_due_date');
+            const dueDateVal = dueDateInput ? dueDateInput.value : '';
+
             showFormulaPreview('info', '<div class="flex items-center gap-1"><span class="loading loading-spinner loading-xs"></span> Validating and running dry-run evaluation...</div>');
 
             fetch('/api/v1/budgets/' + currentBudgetID + '/targets/validate-formula', {
@@ -3281,7 +3299,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                     'X-CSRF-Token': csrfTokenVal
                 },
                 body: JSON.stringify({
-                    lua_script: script
+                    lua_script: script,
+                    due_date: dueDateVal
                 })
             })
             .then(res => res.json())

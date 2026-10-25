@@ -1425,9 +1425,34 @@ func (s *Server) ValidateFormula(ctx echo.Context, budgetId BudgetIdPathParam) e
 
 	deps, _ := lua.ExtractTargetDependencies(req.LuaScript)
 
-	snap, snapErr := budget.BuildBudgetSnapshot(ctx.Request().Context(), tenantDB, "PLN", 30)
+	var defaultCurr, tz string
+	_ = s.mainDB.QueryRowContext(ctx.Request().Context(), "SELECT default_currency, timezone FROM budgets WHERE id = ?", budgetID).Scan(&defaultCurr, &tz)
+	if defaultCurr == "" {
+		defaultCurr = "PLN"
+	}
+
+	snap, snapErr := budget.BuildBudgetSnapshot(ctx.Request().Context(), tenantDB, defaultCurr, 30, tz)
 	if snapErr == nil && snap != nil {
-		evalVal, evalErr := lua.EvaluateFormula(ctx.Request().Context(), req.LuaScript, snap)
+		var anchorDueDateSec *int64
+		if req.AnchorDueDate != nil && *req.AnchorDueDate > 0 {
+			sec := *req.AnchorDueDate
+			if sec > 1e14 {
+				sec = sec / 1_000_000
+			}
+			anchorDueDateSec = &sec
+		} else if req.DueDate != nil && *req.DueDate != "" {
+			if t, err := time.Parse("2006-01-02", *req.DueDate); err == nil {
+				sec := t.Unix()
+				anchorDueDateSec = &sec
+			}
+		}
+
+		targetCtx := &lua.TargetFormulaContext{
+			Currency:      defaultCurr,
+			AnchorDueDate: anchorDueDateSec,
+		}
+
+		evalVal, evalErr := lua.EvaluateFormulaWithContext(ctx.Request().Context(), req.LuaScript, snap, targetCtx)
 		if evalErr == nil {
 			return ctx.JSON(http.StatusOK, ValidateFormulaResponse{
 				Error:          nil,
@@ -1436,6 +1461,12 @@ func (s *Server) ValidateFormula(ctx echo.Context, budgetId BudgetIdPathParam) e
 				EvaluatedMinor: &evalVal,
 			})
 		}
+		errStr := evalErr.Error()
+		return ctx.JSON(http.StatusOK, ValidateFormulaResponse{
+			Error:        &errStr,
+			Valid:        false,
+			Dependencies: &deps,
+		})
 	}
 
 	return ctx.JSON(http.StatusOK, ValidateFormulaResponse{

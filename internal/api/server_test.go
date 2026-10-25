@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -235,6 +236,50 @@ func TestAPI_Auth_RegisterAndLoginAndTokenFlow(t *testing.T) {
 	}
 	if valResp.EvaluatedMinor == nil || *valResp.EvaluatedMinor != 200 {
 		t.Fatalf("expected EvaluatedMinor 200, got %v", valResp.EvaluatedMinor)
+	}
+
+	// 9b. Validate Formula with self.anchor_due_date and financial.pmt
+	valPMTBody, _ := json.Marshal(map[string]interface{}{
+		"lua_script": `
+			local nper = date.diff_months(self.anchor_due_date, runtime.today)
+			local r = 0.05 / 12
+			local pv = 100000
+			local pmt = -financial.pmt(r, nper, pv)
+			return money(pmt)
+		`,
+		"due_date": "2036-10-25",
+	})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/budgets/"+budgetID+"/targets/validate-formula", bytes.NewReader(valPMTBody))
+	req.Header.Set("Authorization", "Bearer "+tokResp.Token)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on validate-formula PMT, got %d", rec.Code)
+	}
+	var valPMTResp openapi.ValidateFormulaResponse
+	json.Unmarshal(rec.Body.Bytes(), &valPMTResp)
+	if !valPMTResp.Valid || valPMTResp.EvaluatedMinor == nil || *valPMTResp.EvaluatedMinor <= 0 {
+		t.Fatalf("expected valid PMT formula with positive evaluated minor, got valid=%v, minor=%v, err=%v",
+			valPMTResp.Valid, valPMTResp.EvaluatedMinor, valPMTResp.Error)
+	}
+
+	// 9c. Validate Formula with missing self.anchor_due_date
+	valMissingBody, _ := json.Marshal(map[string]interface{}{
+		"lua_script": "return self.anchor_due_date",
+	})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/budgets/"+budgetID+"/targets/validate-formula", bytes.NewReader(valMissingBody))
+	req.Header.Set("Authorization", "Bearer "+tokResp.Token)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	var valMissingResp openapi.ValidateFormulaResponse
+	json.Unmarshal(rec.Body.Bytes(), &valMissingResp)
+	if valMissingResp.Valid {
+		t.Fatalf("expected formula accessing missing anchor_due_date to be invalid, got valid=true")
+	}
+	if valMissingResp.Error == nil || !strings.Contains(*valMissingResp.Error, "anchor_due_date is not configured") {
+		t.Fatalf("expected error mentioning anchor_due_date is not configured, got %v", valMissingResp.Error)
 	}
 
 	// 10. Generate Formula Endpoint

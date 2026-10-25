@@ -56,3 +56,15 @@ Feature: Sandboxed Lua Formula Engine and AI Formula Assistant
       return money(2100)
       """
     And the target requirement in projections should be "2,100.00 PLN"
+
+  Scenario: Calculating loan installment using financial.pmt with self.anchor_due_date and runtime.today
+    Given a target "Hipoteka" with anchor due date "2036-10-25" and Lua formula:
+      """
+      local nper = date.diff_months(self.anchor_due_date, runtime.today)
+      local r = 0.06 / 12
+      local pv = 300000
+      local pmt = -financial.pmt(r, nper, pv)
+      return money(pmt)
+      """
+    When the Lua sandbox evaluates the target formula with simulated today "2026-10-25"
+    Then the result should be 333062 minor units ("3,330.62 PLN")

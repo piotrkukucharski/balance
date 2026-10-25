@@ -9,12 +9,16 @@ import (
 )
 
 // BuildBudgetSnapshot constructs an in-memory financial snapshot from tenantDB for the Lua sandbox.
-func BuildBudgetSnapshot(ctx context.Context, tenantDB *sql.DB, targetCurrency string, windowDays int) (*lua.InMemoryBudgetSnapshot, error) {
+func BuildBudgetSnapshot(ctx context.Context, tenantDB *sql.DB, targetCurrency string, windowDays int, timezone ...string) (*lua.InMemoryBudgetSnapshot, error) {
 	if targetCurrency == "" {
 		targetCurrency = "PLN"
 	}
 	if windowDays <= 0 {
 		windowDays = 30
+	}
+	tz := "UTC"
+	if len(timezone) > 0 && timezone[0] != "" {
+		tz = timezone[0]
 	}
 
 	snap := &lua.InMemoryBudgetSnapshot{
@@ -25,6 +29,7 @@ func BuildBudgetSnapshot(ctx context.Context, tenantDB *sql.DB, targetCurrency s
 		OutflowsPast:   make(map[string][]int64),
 		WindowDays:     windowDays,
 		TargetCurrency: targetCurrency,
+		Timezone:       tz,
 	}
 
 	if tenantDB == nil {
@@ -33,7 +38,7 @@ func BuildBudgetSnapshot(ctx context.Context, tenantDB *sql.DB, targetCurrency s
 
 	// 1. Fetch active targets
 	rows, err := tenantDB.QueryContext(ctx, `
-		SELECT id, name, priority, amount_minor, current_funded_minor, currency
+		SELECT id, name, priority, amount_minor, current_funded_minor, currency, due_date
 		FROM targets_projection
 		WHERE is_archived = 0`)
 	if err == nil {
@@ -42,16 +47,23 @@ func BuildBudgetSnapshot(ctx context.Context, tenantDB *sql.DB, targetCurrency s
 			var id, name, curr string
 			var priority int
 			var amt, funded int64
-			if err := rows.Scan(&id, &name, &priority, &amt, &funded, &curr); err == nil {
+			var dueDate sql.NullInt64
+			if err := rows.Scan(&id, &name, &priority, &amt, &funded, &curr, &dueDate); err == nil {
+				var anchorDueDateSec *int64
+				if dueDate.Valid && dueDate.Int64 > 0 {
+					sec := dueDate.Int64 / 1_000_000
+					anchorDueDateSec = &sec
+				}
 				meta := &lua.TargetMeta{
-					ID:       id,
-					Name:     name,
-					Planned:  amt,
-					Required: amt,
-					Funded:   funded,
-					Spent:    0,
-					Priority: priority,
-					Currency: curr,
+					ID:            id,
+					Name:          name,
+					Planned:       amt,
+					Required:      amt,
+					Funded:        funded,
+					Spent:         0,
+					Priority:      priority,
+					Currency:      curr,
+					AnchorDueDate: anchorDueDateSec,
 				}
 				snap.Targets[id] = meta
 				snap.Targets[name] = meta
