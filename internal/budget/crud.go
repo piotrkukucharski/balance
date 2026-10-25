@@ -103,18 +103,31 @@ type MoveFundsInput struct {
 
 // CreateBucket creates a new bucket in event store and synchronous projection.
 func CreateBucket(ctx context.Context, tenantDB *sql.DB, input CreateBucketInput) (string, error) {
+	tx, err := tenantDB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	bucketID, err := CreateBucketTx(ctx, tx, input)
+	if err != nil {
+		return "", err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return bucketID, nil
+}
+
+// CreateBucketTx creates a new bucket within an existing transaction.
+func CreateBucketTx(ctx context.Context, tx *sql.Tx, input CreateBucketInput) (string, error) {
 	if input.Name == "" {
 		return "", errors.New("bucket name cannot be empty")
 	}
 	if input.GroupName == "" {
 		input.GroupName = "Default"
 	}
-
-	tx, err := tenantDB.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
 
 	now := time.Now().UTC().UnixMicro()
 	bucketID := domain.NewUUIDv7()
@@ -149,9 +162,6 @@ func CreateBucket(ctx context.Context, tenantDB *sql.DB, input CreateBucketInput
 		return "", fmt.Errorf("failed writing buckets_projection: %w", err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return "", err
-	}
 	return bucketID, nil
 }
 
@@ -281,6 +291,40 @@ func ArchiveBucket(ctx context.Context, tenantDB *sql.DB, bucketID, agentID, cor
 
 // CreateTarget creates a new target within a bucket.
 func CreateTarget(ctx context.Context, tenantDB *sql.DB, input CreateTargetInput) (string, error) {
+	if input.AmountMode == "LUA_FORMULA" && input.LuaScript != nil && *input.LuaScript != "" {
+		if err := lua.ValidateLuaScript(*input.LuaScript); err != nil {
+			return "", fmt.Errorf("invalid lua script: %w", err)
+		}
+		if input.AmountMinor == 0 {
+			snap, _ := BuildBudgetSnapshot(ctx, tenantDB, input.Currency, 30)
+			if snap != nil {
+				evalVal, err := lua.EvaluateFormula(ctx, *input.LuaScript, snap)
+				if err == nil {
+					input.AmountMinor = evalVal
+				}
+			}
+		}
+	}
+
+	tx, err := tenantDB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	targetID, err := CreateTargetTx(ctx, tx, input)
+	if err != nil {
+		return "", err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return targetID, nil
+}
+
+// CreateTargetTx creates a new target within an existing transaction.
+func CreateTargetTx(ctx context.Context, tx *sql.Tx, input CreateTargetInput) (string, error) {
 	if input.BucketID == "" || input.Name == "" {
 		return "", errors.New("bucket id and target name are required")
 	}
@@ -303,34 +347,13 @@ func CreateTarget(ctx context.Context, tenantDB *sql.DB, input CreateTargetInput
 		input.AmountMode = "FIXED"
 	}
 
-	if input.AmountMode == "LUA_FORMULA" && input.LuaScript != nil && *input.LuaScript != "" {
-		if err := lua.ValidateLuaScript(*input.LuaScript); err != nil {
-			return "", fmt.Errorf("invalid lua script: %w", err)
-		}
-		if input.AmountMinor == 0 {
-			snap, _ := BuildBudgetSnapshot(ctx, tenantDB, input.Currency, 30)
-			if snap != nil {
-				evalVal, err := lua.EvaluateFormula(ctx, *input.LuaScript, snap)
-				if err == nil {
-					input.AmountMinor = evalVal
-				}
-			}
-		}
-	}
-
 	if err := domain.ValidateAmountMinor(input.AmountMinor, true); err != nil {
 		return "", fmt.Errorf("invalid target amount: %w", err)
 	}
 
-	tx, err := tenantDB.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
-
-	// Verify bucket exists and is not archived
+	// Verify bucket exists and is not archived in this transaction
 	var bucketExists int
-	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM buckets_projection WHERE id = ? AND is_archived = 0`, input.BucketID).Scan(&bucketExists)
+	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM buckets_projection WHERE id = ? AND is_archived = 0`, input.BucketID).Scan(&bucketExists)
 	if err != nil || bucketExists == 0 {
 		return "", errors.New("bucket not found or archived")
 	}
@@ -383,9 +406,6 @@ func CreateTarget(ctx context.Context, tenantDB *sql.DB, input CreateTargetInput
 		return "", fmt.Errorf("failed inserting targets_projection: %w", err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return "", err
-	}
 	return targetID, nil
 }
 

@@ -97,3 +97,93 @@ func TestApplyBudgetStructure_CustomDaysCadence(t *testing.T) {
 		t.Errorf("expected exported target 2 recurrence_days to be 14, got: %v", exportedTargets[1].RecurrenceDays)
 	}
 }
+
+func TestApplyBudgetStructure_AtomicityRollback(t *testing.T) {
+	ctx := context.Background()
+	tenantDB := setupTestTenantDB(t)
+	defer tenantDB.Close()
+
+	agentID := domain.NewUUIDv7()
+	corrID := domain.NewUUIDv7()
+
+	// Structure with a valid first bucket + target, followed by an invalid target in a second bucket
+	structure := &ai.BudgetStructure{
+		Groups: []ai.ProposedGroup{
+			{
+				GroupName: "Living",
+				Buckets: []ai.ProposedBucket{
+					{
+						Name: "Groceries",
+						Targets: []ai.ProposedTarget{
+							{
+								Name:                "Weekly Groceries",
+								TargetType:          "EXPENSE",
+								Priority:            1,
+								AmountMinor:         20000,
+								Currency:            "PLN",
+								RecurrenceCadence:   "WEEKLY",
+								NonSpendingStrategy: "RETURN_TO_POOL",
+							},
+						},
+					},
+					{
+						Name: "Utilities",
+						Targets: []ai.ProposedTarget{
+							{
+								Name:                "Faulty Target",
+								TargetType:          "EXPENSE",
+								Priority:            2,
+								AmountMinor:         -500, // Invalid negative amount causing failure
+								Currency:            "PLN",
+								RecurrenceCadence:   "MONTHLY",
+								NonSpendingStrategy: "RETURN_TO_POOL",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	bCreated, tCreated, err := ApplyBudgetStructure(ctx, tenantDB, structure, agentID, corrID)
+	if err == nil {
+		t.Fatalf("expected error from ApplyBudgetStructure due to invalid target, got nil (buckets=%d, targets=%d)", bCreated, tCreated)
+	}
+	if bCreated != 0 || tCreated != 0 {
+		t.Errorf("expected 0 buckets and 0 targets returned on failure, got buckets=%d, targets=%d", bCreated, tCreated)
+	}
+
+	// Verify complete rollback: no buckets, targets, or events should exist
+	var bucketCount int
+	if err := tenantDB.QueryRowContext(ctx, `SELECT count(*) FROM buckets_projection`).Scan(&bucketCount); err != nil {
+		t.Fatalf("failed querying buckets count: %v", err)
+	}
+	if bucketCount != 0 {
+		t.Errorf("expected 0 buckets in projection after rollback, got %d", bucketCount)
+	}
+
+	var targetCount int
+	if err := tenantDB.QueryRowContext(ctx, `SELECT count(*) FROM targets_projection`).Scan(&targetCount); err != nil {
+		t.Fatalf("failed querying targets count: %v", err)
+	}
+	if targetCount != 0 {
+		t.Errorf("expected 0 targets in projection after rollback, got %d", targetCount)
+	}
+
+	var bucketEventsCount int
+	if err := tenantDB.QueryRowContext(ctx, `SELECT count(*) FROM bucket_events`).Scan(&bucketEventsCount); err != nil {
+		t.Fatalf("failed querying bucket_events count: %v", err)
+	}
+	if bucketEventsCount != 0 {
+		t.Errorf("expected 0 events in bucket_events after rollback, got %d", bucketEventsCount)
+	}
+
+	var targetEventsCount int
+	if err := tenantDB.QueryRowContext(ctx, `SELECT count(*) FROM target_events`).Scan(&targetEventsCount); err != nil {
+		t.Fatalf("failed querying target_events count: %v", err)
+	}
+	if targetEventsCount != 0 {
+		t.Errorf("expected 0 events in target_events after rollback, got %d", targetEventsCount)
+	}
+}
+

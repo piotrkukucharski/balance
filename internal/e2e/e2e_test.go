@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/balance/balance/internal/ai"
 	openapi "github.com/balance/balance/internal/api"
 	"github.com/balance/balance/internal/auth"
 	"github.com/balance/balance/internal/budget"
@@ -146,6 +147,7 @@ func (tc *e2eScenarioContext) setup() error {
 	reportsHandler := handlers.NewReportsHandler(mainDB, tenantMgr)
 	workspaceHandler := handlers.NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
 	workspaceHandler.SetService(appService)
+	workspaceHandler.SetStructureAIProvider(ai.NewMockBudgetStructureAIProvider())
 
 	txHandler := handlers.NewTransactionsHandler(mainDB, tenantMgr)
 	txHandler.SetService(appService)

@@ -9,12 +9,19 @@ import (
 	"github.com/balance/balance/internal/ai"
 )
 
-// ApplyBudgetStructure applies a hierarchical budget structure (groups, buckets, targets) to a tenant database.
+// ApplyBudgetStructure applies a hierarchical budget structure (groups, buckets, targets) to a tenant database in a single atomic transaction.
 // Existing buckets with the same name are reused without duplication; existing targets with the same name in a bucket are skipped.
+// If any error occurs, the entire transaction is rolled back so that all items are created atomically or none.
 func ApplyBudgetStructure(ctx context.Context, tenantDB *sql.DB, structure *ai.BudgetStructure, agentID, correlationID string) (int, int, error) {
 	if structure == nil || len(structure.Groups) == 0 {
 		return 0, 0, nil
 	}
+
+	tx, err := tenantDB.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed starting transaction for budget structure: %w", err)
+	}
+	defer tx.Rollback()
 
 	bucketsCreated := 0
 	targetsCreated := 0
@@ -31,22 +38,22 @@ func ApplyBudgetStructure(ctx context.Context, tenantDB *sql.DB, structure *ai.B
 				continue
 			}
 
-			// Check if bucket with the same name already exists
+			// Check if bucket with the same name already exists in this transaction
 			var bucketID string
-			err := tenantDB.QueryRowContext(ctx, `SELECT id FROM buckets_projection WHERE name = ? AND is_archived = 0 LIMIT 1`, bucketName).Scan(&bucketID)
+			err := tx.QueryRowContext(ctx, `SELECT id FROM buckets_projection WHERE name = ? AND is_archived = 0 LIMIT 1`, bucketName).Scan(&bucketID)
 			if err != nil && err != sql.ErrNoRows {
-				return bucketsCreated, targetsCreated, fmt.Errorf("failed checking existing bucket '%s': %w", bucketName, err)
+				return 0, 0, fmt.Errorf("failed checking existing bucket '%s': %w", bucketName, err)
 			}
 
 			if bucketID == "" {
-				newID, err := CreateBucket(ctx, tenantDB, CreateBucketInput{
+				newID, err := CreateBucketTx(ctx, tx, CreateBucketInput{
 					GroupName:     groupName,
 					Name:          bucketName,
 					AgentID:       agentID,
 					CorrelationID: correlationID,
 				})
 				if err != nil {
-					return bucketsCreated, targetsCreated, fmt.Errorf("failed creating bucket '%s': %w", bucketName, err)
+					return 0, 0, fmt.Errorf("failed creating bucket '%s': %w", bucketName, err)
 				}
 				bucketID = newID
 				bucketsCreated++
@@ -59,11 +66,11 @@ func ApplyBudgetStructure(ctx context.Context, tenantDB *sql.DB, structure *ai.B
 					continue
 				}
 
-				// Check if target with the same name already exists in this bucket
+				// Check if target with the same name already exists in this bucket in this transaction
 				var targetCount int
-				err := tenantDB.QueryRowContext(ctx, `SELECT count(*) FROM targets_projection WHERE bucket_id = ? AND name = ? AND is_archived = 0`, bucketID, targetName).Scan(&targetCount)
+				err := tx.QueryRowContext(ctx, `SELECT count(*) FROM targets_projection WHERE bucket_id = ? AND name = ? AND is_archived = 0`, bucketID, targetName).Scan(&targetCount)
 				if err != nil {
-					return bucketsCreated, targetsCreated, fmt.Errorf("failed checking existing target '%s': %w", targetName, err)
+					return 0, 0, fmt.Errorf("failed checking existing target '%s': %w", targetName, err)
 				}
 				if targetCount > 0 {
 					// Skip existing target
@@ -120,7 +127,7 @@ func ApplyBudgetStructure(ctx context.Context, tenantDB *sql.DB, structure *ai.B
 					rDays = 0
 				}
 
-				_, err = CreateTarget(ctx, tenantDB, CreateTargetInput{
+				_, err = CreateTargetTx(ctx, tx, CreateTargetInput{
 					BucketID:            bucketID,
 					Name:                targetName,
 					TargetType:          tType,
@@ -135,11 +142,15 @@ func ApplyBudgetStructure(ctx context.Context, tenantDB *sql.DB, structure *ai.B
 					CorrelationID:       correlationID,
 				})
 				if err != nil {
-					return bucketsCreated, targetsCreated, fmt.Errorf("failed creating target '%s': %w", targetName, err)
+					return 0, 0, fmt.Errorf("failed creating target '%s': %w", targetName, err)
 				}
 				targetsCreated++
 			}
 		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, 0, fmt.Errorf("failed committing budget structure transaction: %w", err)
 	}
 
 	return bucketsCreated, targetsCreated, nil
