@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  balance:
+    image: ghcr.io/balance/balance:latest
+    container_name: balance-server
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      - PORT=8080
+      - DATA_DIR=/app/data
+      - ALLOW_MOCK_PROVIDERS=false
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.8-flash}
+      - GEMINI_TIMEOUT_SECONDS=${GEMINI_TIMEOUT_SECONDS:-90}
+      - GOCARDLESS_SECRET_ID=${GOCARDLESS_SECRET_ID:-}
+      - GOCARDLESS_SECRET_KEY=${GOCARDLESS_SECRET_KEY:-}
+      - GOCARDLESS_ENVIRONMENT=${GOCARDLESS_ENVIRONMENT:-live}
+      - GOCARDLESS_REDIRECT_URL=${GOCARDLESS_REDIRECT_URL:-}
+    volumes:
+      - balance-data:/app/data
+
+volumes:
+  balance-data:
+    name: balance-prod-data
