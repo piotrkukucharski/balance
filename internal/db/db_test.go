@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -105,5 +106,67 @@ func TestMainDBAndTenantDBManager(t *testing.T) {
 	_, err = mgr.GetTenantDB("../other", false)
 	if err == nil {
 		t.Fatalf("expected error on path traversal")
+	}
+
+	// Verify backward compatibility for older tenant databases without booking_status column
+	legacyBudgetID := domain.NewUUIDv7()
+	legacyDBPath := filepath.Join(budgetsDir, legacyBudgetID+".db")
+	legacyDB, err := OpenDB(fmt.Sprintf("file:%s?_journal=WAL", legacyDBPath))
+	if err != nil {
+		t.Fatalf("failed creating legacy db: %v", err)
+	}
+	// Create table without booking_status column
+	_, err = legacyDB.Exec(`
+		CREATE TABLE raw_transactions_current (
+			id TEXT PRIMARY KEY,
+			version INTEGER NOT NULL,
+			account_id TEXT NOT NULL,
+			external_transaction_id TEXT,
+			dedup_hash TEXT NOT NULL,
+			booking_date INTEGER NOT NULL,
+			value_date INTEGER,
+			amount_minor INTEGER NOT NULL,
+			currency TEXT NOT NULL,
+			raw_payee TEXT NOT NULL,
+			counterparty_iban TEXT,
+			reference TEXT,
+			status TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
+		CREATE TABLE raw_transactions (
+			id TEXT NOT NULL,
+			version INTEGER NOT NULL,
+			account_id TEXT NOT NULL,
+			external_transaction_id TEXT,
+			dedup_hash TEXT NOT NULL,
+			booking_date INTEGER NOT NULL,
+			value_date INTEGER,
+			amount_minor INTEGER NOT NULL,
+			currency TEXT NOT NULL,
+			raw_payee TEXT NOT NULL,
+			counterparty_iban TEXT,
+			reference TEXT,
+			status TEXT NOT NULL,
+			action TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
+			correlation_id TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (id, version)
+		);
+	`)
+	if err != nil {
+		t.Fatalf("failed initializing legacy schema: %v", err)
+	}
+	legacyDB.Close()
+
+	// Open legacy database via TenantDBManager
+	openedLegacyDB, err := mgr.GetTenantDB(legacyBudgetID, false)
+	if err != nil {
+		t.Fatalf("expected GetTenantDB on legacy db to succeed, got: %v", err)
+	}
+	var hasBookingStatus int
+	err = openedLegacyDB.QueryRow("SELECT count(*) FROM pragma_table_info('raw_transactions_current') WHERE name = 'booking_status'").Scan(&hasBookingStatus)
+	if err != nil || hasBookingStatus != 1 {
+		t.Fatalf("expected booking_status column to be migrated, got count=%d, err=%v", hasBookingStatus, err)
 	}
 }

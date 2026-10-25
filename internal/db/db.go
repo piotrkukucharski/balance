@@ -187,13 +187,15 @@ func (m *TenantDBManager) GetTenantDB(budgetID string, allowCreate bool) (*sql.D
 		return nil, err
 	}
 
+	// Ensure backward-compatibility schema migrations for older tenant databases
+	_ = ensureTenantSchemaCompat(ctx, db)
+
 	// Always ensure schema is applied
 	if err := ApplyMigrations(db, "migrations/tenant"); err != nil {
 		db.Close()
 		logger.Error(ctx, "Tenant migrations failed", "budget_id", budgetID, "error", err.Error())
 		return nil, fmt.Errorf("tenant migrations failed: %w", err)
 	}
-	_ = ensureTenantSchemaCompat(ctx, db)
 
 	entry := &tenantEntry{
 		budgetID: budgetID,
@@ -305,17 +307,29 @@ func (m *TenantDBManager) CloseAll() {
 }
 
 func ensureTenantSchemaCompat(ctx context.Context, db *sql.DB) error {
-	var hasBookingStatusCurr int
-	_ = db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('raw_transactions_current') WHERE name = 'booking_status'").Scan(&hasBookingStatusCurr)
-	if hasBookingStatusCurr == 0 {
-		_, _ = db.ExecContext(ctx, "ALTER TABLE raw_transactions_current ADD COLUMN booking_status TEXT NOT NULL DEFAULT 'BOOKED'")
-		_, _ = db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_raw_tx_curr_booking_status ON raw_transactions_current(booking_status)")
+	var tableCount int
+	_ = db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='raw_transactions_current'").Scan(&tableCount)
+	if tableCount > 0 {
+		var hasBookingStatusCurr int
+		_ = db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('raw_transactions_current') WHERE name = 'booking_status'").Scan(&hasBookingStatusCurr)
+		if hasBookingStatusCurr == 0 {
+			if _, err := db.ExecContext(ctx, "ALTER TABLE raw_transactions_current ADD COLUMN booking_status TEXT NOT NULL DEFAULT 'BOOKED'"); err != nil {
+				logger.Error(ctx, "Failed adding booking_status to raw_transactions_current", "error", err.Error())
+			}
+			_, _ = db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_raw_tx_curr_booking_status ON raw_transactions_current(booking_status)")
+		}
 	}
 
-	var hasBookingStatusAudit int
-	_ = db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('raw_transactions') WHERE name = 'booking_status'").Scan(&hasBookingStatusAudit)
-	if hasBookingStatusAudit == 0 {
-		_, _ = db.ExecContext(ctx, "ALTER TABLE raw_transactions ADD COLUMN booking_status TEXT NOT NULL DEFAULT 'BOOKED'")
+	var auditTableCount int
+	_ = db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='raw_transactions'").Scan(&auditTableCount)
+	if auditTableCount > 0 {
+		var hasBookingStatusAudit int
+		_ = db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('raw_transactions') WHERE name = 'booking_status'").Scan(&hasBookingStatusAudit)
+		if hasBookingStatusAudit == 0 {
+			if _, err := db.ExecContext(ctx, "ALTER TABLE raw_transactions ADD COLUMN booking_status TEXT NOT NULL DEFAULT 'BOOKED'"); err != nil {
+				logger.Error(ctx, "Failed adding booking_status to raw_transactions", "error", err.Error())
+			}
+		}
 	}
 	return nil
 }
