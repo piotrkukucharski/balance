@@ -53,6 +53,8 @@ func TestNormalizeEntityType(t *testing.T) {
 		{"budget_transactions", "budget_transactions", false},
 		{"transactions", "budget_transactions", false},
 		{"saved_reports", "saved_reports", false},
+		{"automation", "automations", false},
+		{"automations", "automations", false},
 		{"invalid_type", "", true},
 	}
 
@@ -333,5 +335,103 @@ func TestAccountHistoryAndRestore(t *testing.T) {
 	}
 	if curVer != 4 || curName != "Main Checking" || isClosed != 0 {
 		t.Errorf("expected restored v4 'Main Checking' open (0), got v%d %q closed=%d", curVer, curName, isClosed)
+	}
+}
+
+func TestAutomationsHistoryAndRestore(t *testing.T) {
+	tenantDB, cleanup := setupTestTenantDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	autoID := domain.NewUUIDv7()
+	agentID := "user-123"
+	corrID := "corr-1"
+	now := time.Now().UTC().UnixMicro()
+
+	// 1. Insert version 1
+	_, err := tenantDB.ExecContext(ctx, `
+		INSERT INTO automations (id, version, name, judge_script, executor_script, comment, action, agent_id, correlation_id, created_at)
+		VALUES (?, 1, 'Auto Uber', 'text.contains(tx.notes, "Uber")', 'tx.set_bucket("Transport")', 'Init v1', 'CREATE', ?, ?, ?)`,
+		autoID, agentID, corrID, now)
+	if err != nil {
+		t.Fatalf("insert v1: %v", err)
+	}
+	_, err = tenantDB.ExecContext(ctx, `
+		INSERT INTO automations_current (id, version, name, judge_script, executor_script, comment, is_active, sort_order, agent_id, updated_at)
+		VALUES (?, 1, 'Auto Uber', 'text.contains(tx.notes, "Uber")', 'tx.set_bucket("Transport")', 'Init v1', 1, 0, ?, ?)`,
+		autoID, agentID, now)
+	if err != nil {
+		t.Fatalf("insert current v1: %v", err)
+	}
+
+	// 2. Insert version 2
+	_, err = tenantDB.ExecContext(ctx, `
+		INSERT INTO automations (id, version, name, judge_script, executor_script, comment, action, agent_id, correlation_id, created_at)
+		VALUES (?, 2, 'Auto Uber & Bolt', 'text.contains(tx.notes, "Uber") or text.contains(tx.notes, "Bolt")', 'tx.set_bucket("Transport")', 'Add Bolt', 'UPDATE', ?, ?, ?)`,
+		autoID, agentID, corrID, now+1000)
+	if err != nil {
+		t.Fatalf("insert v2: %v", err)
+	}
+	_, err = tenantDB.ExecContext(ctx, `
+		UPDATE automations_current SET version = 2, name = 'Auto Uber & Bolt',
+		judge_script = 'text.contains(tx.notes, "Uber") or text.contains(tx.notes, "Bolt")', comment = 'Add Bolt', updated_at = ?
+		WHERE id = ?`, now+1000, autoID)
+	if err != nil {
+		t.Fatalf("update current v2: %v", err)
+	}
+
+	// 3. GetEntityHistory
+	hist, err := GetEntityHistory(ctx, tenantDB, "automations", autoID)
+	if err != nil {
+		t.Fatalf("GetEntityHistory failed: %v", err)
+	}
+	if hist.CurrentVersion != 2 {
+		t.Errorf("expected current version 2, got %d", hist.CurrentVersion)
+	}
+	if len(hist.Items) != 2 {
+		t.Fatalf("expected 2 history items, got %d", len(hist.Items))
+	}
+	// Check latest item (v2) has diff for judge_script and name
+	v2Item := hist.Items[0]
+	if v2Item.Version != 2 {
+		t.Errorf("expected latest item to be v2, got v%d", v2Item.Version)
+	}
+	foundJudgeDiff := false
+	for _, diff := range v2Item.FieldDiffs {
+		if diff.FieldName == "judge_script" {
+			foundJudgeDiff = true
+			if diff.OldValue != `text.contains(tx.notes, "Uber")` {
+				t.Errorf("unexpected old judge_script: %s", diff.OldValue)
+			}
+		}
+	}
+	if !foundJudgeDiff {
+		t.Errorf("expected judge_script diff in v2")
+	}
+
+	// 4. Restore v1 -> should produce v3
+	res, err := RestoreEntityVersion(ctx, tenantDB, "automations", autoID, 1, agentID, "corr-restore", now+2000)
+	if err != nil {
+		t.Fatalf("RestoreEntityVersion failed: %v", err)
+	}
+	if res.NewVersion != 3 || res.RestoredFromVersion != 1 {
+		t.Errorf("expected new version 3 restored from 1, got %+v", res)
+	}
+
+	// Verify current projection is at v3 with v1 content
+	var curVer int
+	var curJudge, curComment string
+	err = tenantDB.QueryRowContext(ctx, `SELECT version, judge_script, comment FROM automations_current WHERE id = ?`, autoID).Scan(&curVer, &curJudge, &curComment)
+	if err != nil {
+		t.Fatalf("query automations_current: %v", err)
+	}
+	if curVer != 3 {
+		t.Errorf("expected current version 3, got %d", curVer)
+	}
+	if curJudge != `text.contains(tx.notes, "Uber")` {
+		t.Errorf("expected restored v1 judge script, got %s", curJudge)
+	}
+	if curComment != "Restored from version 1" {
+		t.Errorf("expected restore comment, got %s", curComment)
 	}
 }

@@ -817,6 +817,57 @@ paths:
         '404':
           $ref: '#/components/responses/NotFoundError'
 
+  /budgets/{budgetId}/automations/{id}/versions/{version}:
+    get:
+      summary: Get specific historical version of an automation
+      operationId: getAutomationVersion
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/IdPathParam'
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Historical automation details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Automation'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /budgets/{budgetId}/automations/{id}/squash:
+    post:
+      summary: Squash a range of automation versions
+      operationId: squashAutomationVersions
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/IdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SquashAutomationRequest'
+      responses:
+        '200':
+          description: Automation after squashing versions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Automation'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
   /budgets/{budgetId}/automations/batch-run:
     post:
       summary: Batch run automations on transactions
@@ -2295,6 +2346,21 @@ components:
         squash:
           type: boolean
           default: false
+
+    SquashAutomationRequest:
+      type: object
+      required:
+        - start_version
+        - end_version
+      properties:
+        start_version:
+          type: integer
+          minimum: 1
+        end_version:
+          type: integer
+          minimum: 2
+        comment:
+          type: string
 
     BatchRunAutomationsRequest:
       type: object

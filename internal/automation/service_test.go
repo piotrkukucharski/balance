@@ -3,6 +3,7 @@ package automation
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -343,5 +344,111 @@ func TestInTxPipelineOnExecuteResolution(t *testing.T) {
 	tenantDB.QueryRow("SELECT count(*) FROM budget_transactions_current WHERE notes = ?", failNote).Scan(&count)
 	if count != 0 {
 		t.Fatalf("expected 0 transactions created due to rollback, got %d", count)
+	}
+}
+
+func TestMultiVersionSquashAndGetVersion(t *testing.T) {
+	tenantDB, cleanup := setupTestTenantDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// 1. Create automation v1
+	created, err := CreateAutomation(ctx, tenantDB, CreateAutomationInput{
+		Name:           "Multi Squash Rule",
+		JudgeScript:    `text.contains(tx.notes, "A")`,
+		ExecutorScript: `tx.set_notes("A")`,
+		Comment:        "v1",
+		AgentID:        "user-1",
+		CorrelationID:  "c1",
+	})
+	if err != nil {
+		t.Fatalf("create automation: %v", err)
+	}
+
+	// 2. Add v2, v3, v4, v5
+	for i := 2; i <= 5; i++ {
+		_, err := UpdateAutomation(ctx, tenantDB, UpdateAutomationInput{
+			ID:             created.ID,
+			Name:           "Multi Squash Rule",
+			JudgeScript:    fmt.Sprintf(`text.contains(tx.notes, "V%d")`, i),
+			ExecutorScript: fmt.Sprintf(`tx.set_notes("V%d")`, i),
+			Comment:        fmt.Sprintf("v%d comment", i),
+			AgentID:        "user-1",
+			CorrelationID:  fmt.Sprintf("c%d", i),
+		})
+		if err != nil {
+			t.Fatalf("update v%d: %v", i, err)
+		}
+	}
+
+	// Verify we have 5 versions in table
+	var count int
+	tenantDB.QueryRow("SELECT count(*) FROM automations WHERE id = ?", created.ID).Scan(&count)
+	if count != 5 {
+		t.Fatalf("expected 5 versions, got %d", count)
+	}
+
+	// 3. Test GetAutomationVersion
+	v3, err := GetAutomationVersion(ctx, tenantDB, created.ID, 3)
+	if err != nil {
+		t.Fatalf("GetAutomationVersion v3 failed: %v", err)
+	}
+	if v3.Version != 3 || v3.Comment != "v3 comment" || v3.JudgeScript != `text.contains(tx.notes, "V3")` {
+		t.Fatalf("unexpected v3 data: %+v", v3)
+	}
+
+	// 4. Test validation error when start >= end or missing versions
+	_, err = SquashAutomationVersions(ctx, tenantDB, MultiSquashInput{
+		ID:           created.ID,
+		StartVersion: 4,
+		EndVersion:   2,
+	})
+	if err == nil {
+		t.Fatalf("expected error when start >= end")
+	}
+
+	// 5. Multi-Version Squash v2..v4 (should delete v2, v3, and keep v4 with new comment)
+	squashed, err := SquashAutomationVersions(ctx, tenantDB, MultiSquashInput{
+		ID:            created.ID,
+		StartVersion:  2,
+		EndVersion:    4,
+		Comment:       "Squashed v2-v4 changes",
+		AgentID:       "user-1",
+		CorrelationID: "c-squash",
+	})
+	if err != nil {
+		t.Fatalf("SquashAutomationVersions failed: %v", err)
+	}
+	if squashed.Version != 4 || squashed.Comment != "Squashed v2-v4 changes" {
+		t.Fatalf("unexpected squashed result: %+v", squashed)
+	}
+
+	// Verify versions remaining in automations table: should be 3 versions (v1, v4, v5)
+	rows, err := tenantDB.Query("SELECT version, comment, action FROM automations WHERE id = ? ORDER BY version ASC", created.ID)
+	if err != nil {
+		t.Fatalf("query remaining versions: %v", err)
+	}
+	defer rows.Close()
+
+	type verRecord struct {
+		v   int
+		c   string
+		act string
+	}
+	var rem []verRecord
+	for rows.Next() {
+		var r verRecord
+		rows.Scan(&r.v, &r.c, &r.act)
+		rem = append(rem, r)
+	}
+
+	if len(rem) != 3 {
+		t.Fatalf("expected 3 remaining versions, got %d: %+v", len(rem), rem)
+	}
+	if rem[0].v != 1 || rem[1].v != 4 || rem[2].v != 5 {
+		t.Fatalf("expected versions [1, 4, 5], got %+v", rem)
+	}
+	if rem[1].act != "SQUASH" || rem[1].c != "Squashed v2-v4 changes" {
+		t.Fatalf("expected v4 action 'SQUASH' and updated comment, got %+v", rem[1])
 	}
 }

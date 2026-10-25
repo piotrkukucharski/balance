@@ -74,6 +74,8 @@ func NormalizeEntityType(raw string) (string, error) {
 		return "budget_transactions", nil
 	case "saved_report", "saved_reports", "saved-report", "saved-reports":
 		return "saved_reports", nil
+	case "automation", "automations":
+		return "automations", nil
 	default:
 		return "", fmt.Errorf("%w: %s", ErrInvalidEntity, raw)
 	}
@@ -128,6 +130,8 @@ func GetEntityHistory(ctx context.Context, tenantDB *sql.DB, entityTypeRaw, enti
 		return loadBudgetTransactionsHistory(ctx, tenantDB, res)
 	case "saved_reports":
 		return loadSavedReportsHistory(ctx, tenantDB, res)
+	case "automations":
+		return loadAutomationsHistory(ctx, tenantDB, res)
 	default:
 		return nil, ErrInvalidEntity
 	}
@@ -165,6 +169,8 @@ func RestoreEntityVersion(ctx context.Context, tenantDB *sql.DB, entityTypeRaw, 
 		return restoreBudgetTransaction(ctx, tenantDB, entityID, targetVersion, agentID, correlationID, now)
 	case "saved_reports":
 		return restoreSavedReport(ctx, tenantDB, entityID, targetVersion, agentID, correlationID, now)
+	case "automations":
+		return restoreAutomation(ctx, tenantDB, entityID, targetVersion, agentID, correlationID, now)
 	default:
 		return nil, ErrInvalidEntity
 	}
@@ -1300,6 +1306,177 @@ func restoreSavedReport(ctx context.Context, db *sql.DB, entityID string, target
 		entityID, nextVer, name, rType, cfg, isPinned, agentID, now)
 	if err != nil {
 		return nil, fmt.Errorf("upsert saved_reports_current: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return &RestoreResult{
+		EntityID:            entityID,
+		NewVersion:          nextVer,
+		RestoredFromVersion: targetVersion,
+		Action:              "RESTORE",
+	}, nil
+}
+
+// -------------------------------------------------------------
+// Automations
+// -------------------------------------------------------------
+
+type automationRecord struct {
+	id             string
+	version        int
+	name           string
+	judgeScript    string
+	executorScript string
+	comment        string
+	action         string
+	agentID        string
+	correlationID  string
+	createdAt      int64
+}
+
+func loadAutomationsHistory(ctx context.Context, db *sql.DB, res *EntityHistoryResult) (*EntityHistoryResult, error) {
+	var curVer int
+	var curName string
+	err := db.QueryRowContext(ctx, `SELECT version, name FROM automations_current WHERE id = ?`, res.EntityID).Scan(&curVer, &curName)
+	if err == nil {
+		res.CurrentVersion = curVer
+		res.EntityName = curName
+	} else {
+		res.IsDeleted = true
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, version, name, judge_script, executor_script, comment, action, agent_id, correlation_id, created_at
+		FROM automations WHERE id = ? ORDER BY version ASC`, res.EntityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []automationRecord
+	for rows.Next() {
+		var r automationRecord
+		if err := rows.Scan(&r.id, &r.version, &r.name, &r.judgeScript, &r.executorScript, &r.comment, &r.action, &r.agentID, &r.correlationID, &r.createdAt); err != nil {
+			return nil, err
+		}
+		records = append(records, r)
+		if res.EntityName == "" {
+			res.EntityName = r.name
+		}
+	}
+
+	if len(records) == 0 {
+		return nil, ErrNotFound
+	}
+
+	var items []HistoryItem
+	for i, r := range records {
+		item := HistoryItem{
+			ID:            r.id,
+			Version:       r.version,
+			Action:        r.action,
+			AgentID:       r.agentID,
+			CorrelationID: r.correlationID,
+			CreatedAt:     r.createdAt,
+			CreatedAtTime: time.UnixMicro(r.createdAt).UTC(),
+			IsCurrent:     r.version == res.CurrentVersion && !res.IsDeleted,
+			Payload: map[string]any{
+				"name":            r.name,
+				"judge_script":    r.judgeScript,
+				"executor_script": r.executorScript,
+				"comment":         r.comment,
+			},
+		}
+
+		if i == 0 {
+			item.FieldDiffs = append(item.FieldDiffs,
+				FieldDiff{FieldName: "name", Label: "Rule Name", NewValue: r.name},
+				FieldDiff{FieldName: "judge_script", Label: "Judge Script", NewValue: r.judgeScript},
+				FieldDiff{FieldName: "executor_script", Label: "Executor Script", NewValue: r.executorScript},
+			)
+			if r.comment != "" {
+				item.FieldDiffs = append(item.FieldDiffs, FieldDiff{FieldName: "comment", Label: "Comment", NewValue: r.comment})
+			}
+		} else {
+			prev := records[i-1]
+			if prev.name != r.name {
+				item.FieldDiffs = append(item.FieldDiffs, FieldDiff{FieldName: "name", Label: "Rule Name", OldValue: prev.name, NewValue: r.name})
+			}
+			if prev.judgeScript != r.judgeScript {
+				item.FieldDiffs = append(item.FieldDiffs, FieldDiff{FieldName: "judge_script", Label: "Judge Script", OldValue: prev.judgeScript, NewValue: r.judgeScript})
+			}
+			if prev.executorScript != r.executorScript {
+				item.FieldDiffs = append(item.FieldDiffs, FieldDiff{FieldName: "executor_script", Label: "Executor Script", OldValue: prev.executorScript, NewValue: r.executorScript})
+			}
+			if prev.comment != r.comment {
+				item.FieldDiffs = append(item.FieldDiffs, FieldDiff{FieldName: "comment", Label: "Comment", OldValue: prev.comment, NewValue: r.comment})
+			}
+		}
+
+		items = append(items, item)
+	}
+
+	res.Items = reverseItems(items)
+	return res, nil
+}
+
+func restoreAutomation(ctx context.Context, db *sql.DB, entityID string, targetVersion int, agentID, correlationID string, now int64) (*RestoreResult, error) {
+	var name, judgeScript, executorScript, comment, act string
+	err := db.QueryRowContext(ctx, `
+		SELECT name, judge_script, executor_script, comment, action
+		FROM automations WHERE id = ? AND version = ?`, entityID, targetVersion).Scan(&name, &judgeScript, &executorScript, &comment, &act)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if act == "SOFT_DELETE" {
+		return nil, ErrSoftDelete
+	}
+
+	var maxVer int
+	_ = db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM automations WHERE id = ?`, entityID).Scan(&maxVer)
+	nextVer := maxVer + 1
+
+	var isActive, sortOrder int = 1, 0
+	_ = db.QueryRowContext(ctx, `SELECT is_active, sort_order FROM automations_current WHERE id = ?`, entityID).Scan(&isActive, &sortOrder)
+
+	restoreComment := fmt.Sprintf("Restored from version %d", targetVersion)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO automations (id, version, name, judge_script, executor_script, comment, action, agent_id, correlation_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, 'RESTORE', ?, ?, ?)`,
+		entityID, nextVer, name, judgeScript, executorScript, restoreComment, agentID, correlationID, now)
+	if err != nil {
+		return nil, fmt.Errorf("append automations restore: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO automations_current (id, version, name, judge_script, executor_script, comment, is_active, sort_order, agent_id, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			version = excluded.version,
+			name = excluded.name,
+			judge_script = excluded.judge_script,
+			executor_script = excluded.executor_script,
+			comment = excluded.comment,
+			is_active = excluded.is_active,
+			sort_order = excluded.sort_order,
+			agent_id = excluded.agent_id,
+			updated_at = excluded.updated_at`,
+		entityID, nextVer, name, judgeScript, executorScript, restoreComment, isActive, sortOrder, agentID, now)
+	if err != nil {
+		return nil, fmt.Errorf("upsert automations_current: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

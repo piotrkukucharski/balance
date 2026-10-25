@@ -212,6 +212,37 @@ func renderHistoryDrawerMarkup(budgetID string, hist *history.EntityHistoryResul
 
 	// Timeline
 	sb.WriteString(`<div class="flex-1">`)
+
+	if hist.EntityType == "automations" && len(hist.Items) >= 2 {
+		sb.WriteString(fmt.Sprintf(`
+            <div id="multi_squash_panel" class="bg-base-200 border border-primary/30 p-3 rounded-xl mb-4 text-xs">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="font-bold flex items-center gap-1.5 text-primary">
+                        <span>🗜️</span> Multi-Version Squash
+                    </span>
+                    <span id="squash_selection_badge" class="badge badge-sm badge-neutral">Select versions below</span>
+                </div>
+                <form id="multi_squash_form" hx-post="/budgets/%s/automations/%s/squash" hx-target="#history_drawer_backdrop" hx-swap="outerHTML" class="space-y-2">
+                    <input type="hidden" name="csrf_token" value="%s">
+                    <input type="hidden" id="squash_start_ver" name="start_version" value="">
+                    <input type="hidden" id="squash_end_ver" name="end_version" value="">
+                    <div class="flex gap-2">
+                        <input type="text" id="squash_comment_input" name="comment" placeholder="Summary comment for squashed versions..." class="input input-xs input-bordered flex-1" />
+                        <button type="button" id="btn_ai_squash_comment" class="btn btn-xs btn-outline btn-secondary gap-1" disabled onclick="generateAISquashComment('%s', '%s')">
+                            ✨ AI Summary
+                        </button>
+                    </div>
+                    <div class="flex justify-between items-center pt-1">
+                        <span class="text-[11px] text-base-content/60">Selected range will be consolidated into the highest version.</span>
+                        <button type="submit" id="btn_submit_squash" class="btn btn-xs btn-primary font-bold" disabled>
+                            Squash Selected
+                        </button>
+                    </div>
+                </form>
+            </div>
+        `, budgetID, hist.EntityID, csrfToken, budgetID, hist.EntityID))
+	}
+
 	sb.WriteString(`<ul class="timeline timeline-vertical timeline-compact">`)
 
 	for _, item := range hist.Items {
@@ -220,9 +251,14 @@ func renderHistoryDrawerMarkup(budgetID string, hist *history.EntityHistoryResul
 		sb.WriteString(`<div class="timeline-end timeline-box w-full bg-base-200 border-base-300 p-4 mb-4 rounded-xl shadow-xs">`)
 
 		// Version header
+		versionCheck := ""
+		if hist.EntityType == "automations" {
+			versionCheck = fmt.Sprintf(`<input type="checkbox" class="checkbox checkbox-xs checkbox-primary squash-check mr-2" value="%d" onchange="handleSquashCheckChange()">`, item.Version)
+		}
 		sb.WriteString(`
             <div class="flex items-center justify-between gap-2 mb-2">
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-1.5">
+                    ` + versionCheck + `
                     <span class="font-extrabold font-mono text-sm text-primary">v` + fmt.Sprint(item.Version) + `</span>
                     ` + actionBadge(item.Action) + `
                     ` + currentBadge(item.IsCurrent) + `
@@ -243,39 +279,82 @@ func renderHistoryDrawerMarkup(budgetID string, hist *history.EntityHistoryResul
 		if len(item.FieldDiffs) > 0 {
 			sb.WriteString(`<div class="space-y-1.5 my-2">`)
 			for _, diff := range item.FieldDiffs {
-				sb.WriteString(`
-                    <div class="text-xs bg-base-100 p-2 rounded-lg border border-base-300/60 flex items-start justify-between gap-2">
-                        <span class="font-semibold text-base-content/70">` + escape(diff.Label) + `:</span>
-                        <div class="text-right font-mono">
-                `)
-				if diff.OldValue != "" {
-					sb.WriteString(`<span class="line-through text-error/70 mr-1.5">` + escape(diff.OldValue) + `</span> ➔ `)
+				if diff.FieldName == "judge_script" || diff.FieldName == "executor_script" {
+					sb.WriteString(fmt.Sprintf(`
+                        <div class="text-xs bg-base-100 p-2.5 rounded-lg border border-base-300/60 my-1">
+                            <div class="flex justify-between items-center mb-1 font-semibold text-base-content/70">
+                                <span>%s</span>
+                                <span class="badge badge-xs badge-neutral font-mono">Lua</span>
+                            </div>`, escape(diff.Label)))
+					if diff.OldValue != "" {
+						sb.WriteString(fmt.Sprintf(`
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mt-1 font-mono text-[11px]">
+                                <div class="bg-error/10 border border-error/20 p-2 rounded text-error overflow-x-auto">
+                                    <div class="font-bold text-[10px] uppercase opacity-70 mb-0.5">Previous</div>
+                                    <pre class="whitespace-pre-wrap">%s</pre>
+                                </div>
+                                <div class="bg-success/10 border border-success/20 p-2 rounded text-success overflow-x-auto">
+                                    <div class="font-bold text-[10px] uppercase opacity-70 mb-0.5">Updated</div>
+                                    <pre class="whitespace-pre-wrap">%s</pre>
+                                </div>
+                            </div>`, escape(diff.OldValue), escape(diff.NewValue)))
+					} else {
+						sb.WriteString(fmt.Sprintf(`
+                            <div class="bg-success/10 border border-success/20 p-2 rounded text-success font-mono text-[11px] overflow-x-auto">
+                                <pre class="whitespace-pre-wrap">%s</pre>
+                            </div>`, escape(diff.NewValue)))
+					}
+					sb.WriteString(`</div>`)
+				} else {
+					sb.WriteString(`
+                        <div class="text-xs bg-base-100 p-2 rounded-lg border border-base-300/60 flex items-start justify-between gap-2">
+                            <span class="font-semibold text-base-content/70">` + escape(diff.Label) + `:</span>
+                            <div class="text-right font-mono">
+                    `)
+					if diff.OldValue != "" {
+						sb.WriteString(`<span class="line-through text-error/70 mr-1.5">` + escape(diff.OldValue) + `</span> ➔ `)
+					}
+					sb.WriteString(`<span class="text-success font-bold">` + escape(diff.NewValue) + `</span>`)
+					sb.WriteString(`</div></div>`)
 				}
-				sb.WriteString(`<span class="text-success font-bold">` + escape(diff.NewValue) + `</span>`)
-				sb.WriteString(`</div></div>`)
 			}
 			sb.WriteString(`</div>`)
 		} else if item.Action == "SOFT_DELETE" {
 			sb.WriteString(`<div class="text-xs text-error font-semibold italic my-1">Entity soft-deleted from current projection.</div>`)
 		} else if item.Action == "RESTORE" {
 			sb.WriteString(`<div class="text-xs text-primary font-semibold italic my-1">Restored from prior state.</div>`)
+		} else if item.Action == "SQUASH" {
+			sb.WriteString(`<div class="text-xs text-primary font-semibold italic my-1">Consolidated multi-version squash.</div>`)
 		}
 
-		// Restore Action Button
-		// Allowed if user has permission AND this version is not the active current version AND not a SOFT_DELETE
+		// Action buttons (Restore & Load into Editor)
+		var btnRow strings.Builder
+		if hist.EntityType == "automations" {
+			btnRow.WriteString(fmt.Sprintf(`
+                <button type="button" class="btn btn-xs btn-outline btn-info gap-1" onclick="loadHistoricalVersionIntoEditor('%s', '%s', %d)">
+                    📥 Load into Editor
+                </button>
+            `, budgetID, hist.EntityID, item.Version))
+		}
 		if canRestore && item.Action != "SOFT_DELETE" && (!item.IsCurrent || hist.IsDeleted) {
 			restoreURL := fmt.Sprintf("/budgets/%s/history/%s/%s/restore", budgetID, hist.EntityType, hist.EntityID)
-			sb.WriteString(fmt.Sprintf(`
-                <div class="mt-3 pt-2 border-t border-base-300 flex justify-end">
-                    <form hx-post="%s" hx-target="#history_drawer_backdrop" hx-swap="outerHTML">
-                        <input type="hidden" name="csrf_token" value="%s">
-                        <input type="hidden" name="target_version" value="%d">
-                        <button type="submit" class="btn btn-xs btn-outline btn-warning gap-1.5 font-bold">
-                            ↺ Restore v%d
-                        </button>
-                    </form>
-                </div>
+			btnRow.WriteString(fmt.Sprintf(`
+                <form hx-post="%s" hx-target="#history_drawer_backdrop" hx-swap="outerHTML">
+                    <input type="hidden" name="csrf_token" value="%s">
+                    <input type="hidden" name="target_version" value="%d">
+                    <button type="submit" class="btn btn-xs btn-outline btn-warning gap-1.5 font-bold">
+                        ↺ Restore v%d
+                    </button>
+                </form>
             `, restoreURL, csrfToken, item.Version, item.Version))
+		}
+
+		if btnRow.Len() > 0 {
+			sb.WriteString(fmt.Sprintf(`
+                <div class="mt-3 pt-2 border-t border-base-300 flex items-center justify-end gap-2">
+                    %s
+                </div>
+            `, btnRow.String()))
 		}
 
 		sb.WriteString(`</div>`)
@@ -294,6 +373,82 @@ func renderHistoryDrawerMarkup(budgetID string, hist *history.EntityHistoryResul
             </button>
         </div>
     `)
+
+	if hist.EntityType == "automations" {
+		sb.WriteString(fmt.Sprintf(`
+            <script>
+                function handleSquashCheckChange() {
+                    const checks = Array.from(document.querySelectorAll('.squash-check:checked')).map(c => parseInt(c.value)).sort((a,b) => a - b);
+                    const badge = document.getElementById('squash_selection_badge');
+                    const btnAi = document.getElementById('btn_ai_squash_comment');
+                    const btnSubmit = document.getElementById('btn_submit_squash');
+                    const startInp = document.getElementById('squash_start_ver');
+                    const endInp = document.getElementById('squash_end_ver');
+
+                    if (checks.length < 2) {
+                        badge.innerText = 'Select 2+ versions';
+                        badge.className = 'badge badge-sm badge-neutral';
+                        if (btnAi) btnAi.disabled = true;
+                        if (btnSubmit) btnSubmit.disabled = true;
+                        if (startInp) startInp.value = '';
+                        if (endInp) endInp.value = '';
+                        return;
+                    }
+
+                    const min = checks[0];
+                    const max = checks[checks.length - 1];
+                    const isContiguous = (max - min + 1) === checks.length;
+
+                    if (!isContiguous) {
+                        badge.innerText = '⚠️ Range must be contiguous';
+                        badge.className = 'badge badge-sm badge-warning';
+                        if (btnAi) btnAi.disabled = true;
+                        if (btnSubmit) btnSubmit.disabled = true;
+                        if (startInp) startInp.value = '';
+                        if (endInp) endInp.value = '';
+                        return;
+                    }
+
+                    badge.innerText = 'v' + min + ' .. v' + max + ' (' + checks.length + ' versions)';
+                    badge.className = 'badge badge-sm badge-primary font-bold';
+                    if (btnAi) btnAi.disabled = false;
+                    if (btnSubmit) btnSubmit.disabled = false;
+                    if (startInp) startInp.value = min;
+                    if (endInp) endInp.value = max;
+                }
+
+                function generateAISquashComment(bID, aID) {
+                    const startVer = document.getElementById('squash_start_ver').value;
+                    const endVer = document.getElementById('squash_end_ver').value;
+                    if (!startVer || !endVer) return;
+
+                    const btn = document.getElementById('btn_ai_squash_comment');
+                    const origText = btn.innerHTML;
+                    btn.innerHTML = '⏳ Generating...';
+                    btn.disabled = true;
+
+                    const formData = new FormData();
+                    formData.append('start_version', startVer);
+                    formData.append('end_version', endVer);
+
+                    fetch('/budgets/' + bID + '/automations/' + aID + '/ai/squash-comment', {
+                        method: 'POST',
+                        headers: { 'X-CSRF-Token': '%s' },
+                        body: formData
+                    })
+                    .then(r => r.text())
+                    .then(comment => {
+                        document.getElementById('squash_comment_input').value = comment;
+                    })
+                    .catch(err => alert('AI comment error: ' + err))
+                    .finally(() => {
+                        btn.innerHTML = origText;
+                        btn.disabled = false;
+                    });
+                }
+            </script>
+        `, csrfToken))
+	}
 
 	sb.WriteString(`</div></div>`)
 	return sb.String()

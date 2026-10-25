@@ -479,6 +479,67 @@ func TestAPI_Automations(t *testing.T) {
 		t.Fatalf("expected version 2, got %d", updatedAuto.Version)
 	}
 
+	// 5b. Update again to version 3
+	updatePayload3, _ := json.Marshal(map[string]interface{}{
+		"name":            "Auto Uber Transport v3",
+		"judge_script":    `text.contains(tx.notes, "Uber")`,
+		"executor_script": `tx.set_bucket("Transport v3")`,
+		"comment":         "v3 update",
+	})
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/budgets/"+bID+"/automations/"+createdAuto.Id.String(), bytes.NewReader(updatePayload3))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set("X-CSRF-Token", csrfToken)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for update v3, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 5c. Get Automation Version 1
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/budgets/"+bID+"/automations/"+createdAuto.Id.String()+"/versions/1", nil)
+	req.Header.Set("Cookie", cookie)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for get version 1, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var v1Auto openapi.Automation
+	json.Unmarshal(rec.Body.Bytes(), &v1Auto)
+	if v1Auto.Version != 1 || v1Auto.Name != "Auto Uber Transport" {
+		t.Fatalf("expected v1 auto, got version %d name %s", v1Auto.Version, v1Auto.Name)
+	}
+
+	// 5d. Squash versions 1..3
+	squashPayload, _ := json.Marshal(map[string]interface{}{
+		"start_version": 1,
+		"end_version":   3,
+		"comment":       "Squashed v1..v3 via API",
+	})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/budgets/"+bID+"/automations/"+createdAuto.Id.String()+"/squash", bytes.NewReader(squashPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set("X-CSRF-Token", csrfToken)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for squash, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var squashedAuto openapi.Automation
+	json.Unmarshal(rec.Body.Bytes(), &squashedAuto)
+	if squashedAuto.Version != 3 || squashedAuto.Comment == nil || *squashedAuto.Comment != "Squashed v1..v3 via API" {
+		t.Fatalf("expected squashed version 3, got %+v", squashedAuto)
+	}
+
+	// Verify that version 1 is no longer found (deleted by squash)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/budgets/"+bID+"/automations/"+createdAuto.Id.String()+"/versions/1", nil)
+	req.Header.Set("Cookie", cookie)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 NotFound for squashed version 1, got %d", rec.Code)
+	}
+
 	// 6. Delete Automation
 	req = httptest.NewRequest(http.MethodDelete, "/api/v1/budgets/"+bID+"/automations/"+createdAuto.Id.String(), nil)
 	req.Header.Set("Cookie", cookie)

@@ -55,6 +55,16 @@ type UpdateAutomationInput struct {
 	CorrelationID  string `json:"correlation_id"`
 }
 
+// MultiSquashInput defines the input parameters for squashing a continuous range of versions.
+type MultiSquashInput struct {
+	ID            string `json:"id"`
+	StartVersion  int    `json:"start_version"`
+	EndVersion    int    `json:"end_version"`
+	Comment       string `json:"comment"`
+	AgentID       string `json:"agent_id"`
+	CorrelationID string `json:"correlation_id"`
+}
+
 // TxChange represents the diff of a transaction before and after automations.
 type TxChange struct {
 	TxID            string `json:"tx_id"`
@@ -294,6 +304,147 @@ func UpdateAutomation(ctx context.Context, tenantDB *sql.DB, input UpdateAutomat
 		AgentID:        input.AgentID,
 		UpdatedAt:      time.UnixMicro(now).UTC(),
 	}, nil
+}
+
+// SquashAutomationVersions squashes a contiguous range of versions (startVersion..endVersion).
+// Versions from startVersion up to endVersion - 1 are deleted from append-only table.
+// The endVersion row retains its judge and executor scripts, but its comment is updated,
+// action is set to 'SQUASH', and automations_current is kept in sync if endVersion was current.
+func SquashAutomationVersions(ctx context.Context, tenantDB *sql.DB, input MultiSquashInput) (*Automation, error) {
+	if !domain.IsValidUUIDv7(input.ID) {
+		return nil, fmt.Errorf("invalid automation id: %s", input.ID)
+	}
+	if input.StartVersion <= 0 || input.EndVersion <= input.StartVersion {
+		return nil, fmt.Errorf("invalid version range: start (%d) must be > 0 and < end (%d)", input.StartVersion, input.EndVersion)
+	}
+	if input.CorrelationID == "" {
+		input.CorrelationID = domain.NewUUIDv7()
+	}
+
+	tx, err := tenantDB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// 1. Verify all versions in range exist and are contiguous
+	rows, err := tx.QueryContext(ctx, `
+		SELECT version FROM automations WHERE id = ? AND version BETWEEN ? AND ? ORDER BY version ASC`,
+		input.ID, input.StartVersion, input.EndVersion,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query version range: %w", err)
+	}
+	defer rows.Close()
+
+	var existingVersions []int
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		existingVersions = append(existingVersions, v)
+	}
+
+	expectedCount := input.EndVersion - input.StartVersion + 1
+	if len(existingVersions) != expectedCount {
+		return nil, fmt.Errorf("version range is not contiguous or some versions are missing: expected %d versions, found %d", expectedCount, len(existingVersions))
+	}
+
+	for i, v := range existingVersions {
+		if v != input.StartVersion+i {
+			return nil, fmt.Errorf("non-contiguous version sequence found in range")
+		}
+	}
+
+	// 2. Fetch endVersion record details
+	var endName, endJudge, endExec string
+	var endCreatedAt int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT name, judge_script, executor_script, created_at
+		FROM automations WHERE id = ? AND version = ?`, input.ID, input.EndVersion,
+	).Scan(&endName, &endJudge, &endExec, &endCreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("query target version %d: %w", input.EndVersion, err)
+	}
+
+	now := time.Now().UTC().UnixMicro()
+
+	// 3. Delete intermediate versions (startVersion .. endVersion - 1)
+	_, err = tx.ExecContext(ctx, `
+		DELETE FROM automations WHERE id = ? AND version >= ? AND version < ?`,
+		input.ID, input.StartVersion, input.EndVersion,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("delete intermediate versions for squash: %w", err)
+	}
+
+	// 4. Update endVersion record in automations
+	_, err = tx.ExecContext(ctx, `
+		UPDATE automations
+		SET comment = ?, action = 'SQUASH', agent_id = ?, correlation_id = ?
+		WHERE id = ? AND version = ?`,
+		input.Comment, input.AgentID, input.CorrelationID, input.ID, input.EndVersion,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update target version for squash: %w", err)
+	}
+
+	// 5. Update automations_current if endVersion is current version
+	var curVersion int
+	var isActive, sortOrder int
+	err = tx.QueryRowContext(ctx, `
+		SELECT version, is_active, sort_order FROM automations_current WHERE id = ?`, input.ID,
+	).Scan(&curVersion, &isActive, &sortOrder)
+	if err == nil && curVersion == input.EndVersion {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE automations_current
+			SET comment = ?, updated_at = ?
+			WHERE id = ?`, input.Comment, now, input.ID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("update automations_current: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return &Automation{
+		ID:             input.ID,
+		Version:        input.EndVersion,
+		Name:           endName,
+		JudgeScript:    endJudge,
+		ExecutorScript: endExec,
+		Comment:        input.Comment,
+		IsActive:       isActive == 1,
+		SortOrder:      sortOrder,
+		AgentID:        input.AgentID,
+		UpdatedAt:      time.UnixMicro(now).UTC(),
+	}, nil
+}
+
+// GetAutomationVersion retrieves a specific version from the append-only table.
+func GetAutomationVersion(ctx context.Context, tenantDB *sql.DB, id string, version int) (*Automation, error) {
+	var a Automation
+	var createdMicros int64
+	err := tenantDB.QueryRowContext(ctx, `
+		SELECT id, version, name, judge_script, executor_script, comment, agent_id, created_at
+		FROM automations
+		WHERE id = ? AND version = ?`, id, version,
+	).Scan(
+		&a.ID, &a.Version, &a.Name, &a.JudgeScript, &a.ExecutorScript, &a.Comment,
+		&a.AgentID, &createdMicros,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrAutomationNotFound
+		}
+		return nil, fmt.Errorf("query automation version: %w", err)
+	}
+	a.UpdatedAt = time.UnixMicro(createdMicros).UTC()
+	return &a, nil
 }
 
 // DeleteAutomation deletes an automation by adding a SOFT_DELETE entry and removing from projection.

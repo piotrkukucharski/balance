@@ -54,4 +54,22 @@ func TestMockAutomationAIProvider(t *testing.T) {
 	if comment == "" {
 		t.Fatalf("expected non-empty comment")
 	}
+
+	// 5. Multi-version squash comment generation
+	multiComment, err := p.GenerateMultiVersionComment(ctx, MultiVersionCommentRequest{
+		AutomationName: "Uber rule",
+		StartVersion:   2,
+		EndVersion:     4,
+		Versions: []AutomationVersionSummary{
+			{Version: 2, Comment: "Add Bolt support", JudgeScript: `text.contains(tx.notes, "Bolt")`},
+			{Version: 3, Comment: "Add FreeNow support", JudgeScript: `text.contains(tx.notes, "FreeNow")`},
+			{Version: 4, Comment: "Refine Transport bucket", ExecutorScript: `tx.set_bucket("Transport")`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateMultiVersionComment failed: %v", err)
+	}
+	if multiComment == "" {
+		t.Fatalf("expected non-empty multiComment")
+	}
 }

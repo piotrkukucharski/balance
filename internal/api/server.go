@@ -3215,3 +3215,55 @@ func (s *Server) BatchRunAutomations(ctx echo.Context, budgetId BudgetIdPathPara
 		"split_count":     res.SplitCount,
 	})
 }
+
+// GetAutomationVersion (GET /budgets/{budgetId}/automations/{id}/versions/{version})
+func (s *Server) GetAutomationVersion(ctx echo.Context, budgetId BudgetIdPathParam, id IdPathParam, version int) error {
+	budgetID := budgetId.String()
+	autoID := id.String()
+	tenantDB, _, err := s.verifyBudgetAccess(ctx, budgetID, "VIEWER")
+	if err != nil {
+		return err
+	}
+	a, err := automation.GetAutomationVersion(ctx.Request().Context(), tenantDB, autoID, version)
+	if err != nil {
+		if errors.Is(err, automation.ErrAutomationNotFound) {
+			return sendError(ctx, http.StatusNotFound, "Automation version not found", "NOT_FOUND", nil)
+		}
+		return sendError(ctx, http.StatusInternalServerError, err.Error(), "INTERNAL_ERROR", nil)
+	}
+	return ctx.JSON(http.StatusOK, toAPIAutomation(*a))
+}
+
+// SquashAutomationVersions (POST /budgets/{budgetId}/automations/{id}/squash)
+func (s *Server) SquashAutomationVersions(ctx echo.Context, budgetId BudgetIdPathParam, id IdPathParam) error {
+	budgetID := budgetId.String()
+	autoID := id.String()
+	tenantDB, userID, err := s.verifyBudgetAccess(ctx, budgetID, "EDITOR")
+	if err != nil {
+		return err
+	}
+	var req SquashAutomationRequest
+	if err := ctx.Bind(&req); err != nil || req.StartVersion <= 0 || req.EndVersion <= req.StartVersion {
+		return sendError(ctx, http.StatusBadRequest, "Invalid squash versions range", "INVALID_INPUT", nil)
+	}
+	comment := ""
+	if req.Comment != nil {
+		comment = *req.Comment
+	}
+	corrID := domain.NewUUIDv7()
+	a, err := automation.SquashAutomationVersions(ctx.Request().Context(), tenantDB, automation.MultiSquashInput{
+		ID:            autoID,
+		StartVersion:  req.StartVersion,
+		EndVersion:    req.EndVersion,
+		Comment:       comment,
+		AgentID:       userID,
+		CorrelationID: corrID,
+	})
+	if err != nil {
+		if errors.Is(err, automation.ErrAutomationNotFound) {
+			return sendError(ctx, http.StatusNotFound, "Automation not found", "NOT_FOUND", nil)
+		}
+		return sendError(ctx, http.StatusBadRequest, err.Error(), "VALIDATION_FAILED", nil)
+	}
+	return ctx.JSON(http.StatusOK, toAPIAutomation(*a))
+}

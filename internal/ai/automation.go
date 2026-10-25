@@ -31,12 +31,29 @@ type VersionCommentRequest struct {
 	PreviousComments  []string `json:"previous_comments"`
 }
 
+// AutomationVersionSummary describes a version included in a multi-version squash.
+type AutomationVersionSummary struct {
+	Version        int    `json:"version"`
+	Comment        string `json:"comment"`
+	JudgeScript    string `json:"judge_script"`
+	ExecutorScript string `json:"executor_script"`
+}
+
+// MultiVersionCommentRequest encapsulates context needed to generate an AI summary comment when squashing multiple versions.
+type MultiVersionCommentRequest struct {
+	AutomationName string                     `json:"automation_name"`
+	StartVersion   int                        `json:"start_version"`
+	EndVersion     int                        `json:"end_version"`
+	Versions       []AutomationVersionSummary `json:"versions"`
+}
+
 // AutomationAIProvider generates scripts and version comments.
 type AutomationAIProvider interface {
 	GenerateJudge(ctx context.Context, prompt string, snap *lua.InMemoryBudgetSnapshot) (string, error)
 	GenerateExecutor(ctx context.Context, prompt string, snap *lua.InMemoryBudgetSnapshot) (string, error)
 	GeneratePair(ctx context.Context, prompt string, snap *lua.InMemoryBudgetSnapshot) (*AutomationAIPairResult, error)
 	GenerateComment(ctx context.Context, req VersionCommentRequest) (string, error)
+	GenerateMultiVersionComment(ctx context.Context, req MultiVersionCommentRequest) (string, error)
 }
 
 // NewAutomationAIProvider constructs the active AutomationAIProvider based on configuration.
@@ -114,6 +131,16 @@ func (m *MockAutomationAIProvider) GenerateComment(ctx context.Context, req Vers
 		return "Updated transaction modification rules in executor", nil
 	}
 	return "Minor optimization to automation script", nil
+}
+
+func (m *MockAutomationAIProvider) GenerateMultiVersionComment(ctx context.Context, req MultiVersionCommentRequest) (string, error) {
+	if len(req.Versions) == 0 {
+		return fmt.Sprintf("Squashed versions %d..%d", req.StartVersion, req.EndVersion), nil
+	}
+	first := req.Versions[0]
+	last := req.Versions[len(req.Versions)-1]
+	return fmt.Sprintf("Squashed versions %d..%d: consolidated rule logic from %q up to %q",
+		req.StartVersion, req.EndVersion, first.Comment, last.Comment), nil
 }
 
 // GeminiAutomationProvider calls Google Gemini API with validation and fallback.
@@ -230,6 +257,24 @@ Return ONLY the comment text.`
 	raw, err := g.callGemini(ctx, sysPrompt, string(userMsg))
 	if err != nil {
 		return NewMockAutomationAIProvider().GenerateComment(ctx, req)
+	}
+	clean := strings.TrimSpace(raw)
+	clean = strings.Trim(clean, `"'`)
+	if len(clean) > 200 {
+		clean = clean[:200]
+	}
+	return clean, nil
+}
+
+func (g *GeminiAutomationProvider) GenerateMultiVersionComment(ctx context.Context, req MultiVersionCommentRequest) (string, error) {
+	sysPrompt := `You are an automated changelog generator for financial automation scripts.
+Given a list of consecutive versions of a transaction automation rule that are being squashed together, produce a single concise sentence (max 140 characters) summarizing the cumulative evolution and logic changes.
+Return ONLY the comment text.`
+
+	userMsg, _ := json.Marshal(req)
+	raw, err := g.callGemini(ctx, sysPrompt, string(userMsg))
+	if err != nil {
+		return NewMockAutomationAIProvider().GenerateMultiVersionComment(ctx, req)
 	}
 	clean := strings.TrimSpace(raw)
 	clean = strings.Trim(clean, `"'`)

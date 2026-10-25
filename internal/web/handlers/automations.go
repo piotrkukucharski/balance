@@ -12,7 +12,9 @@ import (
 	"github.com/balance/balance/internal/ai"
 	"github.com/balance/balance/internal/automation"
 	"github.com/balance/balance/internal/db"
+	"github.com/balance/balance/internal/history"
 	"github.com/labstack/echo/v4"
+	"strconv"
 )
 
 type AutomationsHandler struct {
@@ -358,6 +360,119 @@ func (h *AutomationsHandler) AIComment(c echo.Context) error {
 	return c.String(http.StatusOK, comment)
 }
 
+// SquashAutomation handles POST /budgets/:budgetId/automations/:id/squash.
+func (h *AutomationsHandler) SquashAutomation(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	autoID := c.Param("id")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID, _ := c.Get(ContextUserIDKey).(string)
+	corrID, _ := c.Get("correlationId").(string)
+
+	startVer, err := strconv.Atoi(c.FormValue("start_version"))
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid start_version")
+	}
+	endVer, err := strconv.Atoi(c.FormValue("end_version"))
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid end_version")
+	}
+	comment := strings.TrimSpace(c.FormValue("comment"))
+
+	_, err = automation.SquashAutomationVersions(c.Request().Context(), tenantDB, automation.MultiSquashInput{
+		ID:            autoID,
+		StartVersion:  startVer,
+		EndVersion:    endVer,
+		Comment:       comment,
+		AgentID:       userID,
+		CorrelationID: corrID,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Squash failed: "+err.Error())
+	}
+
+	if c.Request().Header.Get("HX-Request") == "true" {
+		histResult, _ := history.GetEntityHistory(c.Request().Context(), tenantDB, "automations", autoID)
+		csrfToken, _ := c.Get("csrfToken").(string)
+		msg := fmt.Sprintf("Versions %d..%d were successfully squashed into v%d!", startVer, endVer, endVer)
+		c.Response().Header().Set("HX-Trigger", `{"automationsApplied": true}`)
+		return c.HTML(http.StatusOK, renderHistoryDrawerMarkup(budgetID, histResult, true, csrfToken, msg, c))
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/automations/%s/history", budgetID, autoID))
+}
+
+// AISquashComment handles POST /budgets/:budgetId/automations/:id/ai/squash-comment.
+func (h *AutomationsHandler) AISquashComment(c echo.Context) error {
+	autoID := c.Param("id")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+
+	startVer, err := strconv.Atoi(c.FormValue("start_version"))
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid start_version")
+	}
+	endVer, err := strconv.Atoi(c.FormValue("end_version"))
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid end_version")
+	}
+
+	var autoName string
+	_ = tenantDB.QueryRowContext(c.Request().Context(), `SELECT name FROM automations_current WHERE id = ?`, autoID).Scan(&autoName)
+
+	rows, err := tenantDB.QueryContext(c.Request().Context(), `
+		SELECT version, comment, judge_script, executor_script
+		FROM automations
+		WHERE id = ? AND version BETWEEN ? AND ?
+		ORDER BY version ASC`, autoID, startVer, endVer)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to load versions: "+err.Error())
+	}
+	defer rows.Close()
+
+	var versions []ai.AutomationVersionSummary
+	for rows.Next() {
+		var s ai.AutomationVersionSummary
+		if err := rows.Scan(&s.Version, &s.Comment, &s.JudgeScript, &s.ExecutorScript); err == nil {
+			versions = append(versions, s)
+		}
+	}
+
+	comment, err := h.aiProvider.GenerateMultiVersionComment(c.Request().Context(), ai.MultiVersionCommentRequest{
+		AutomationName: autoName,
+		StartVersion:   startVer,
+		EndVersion:     endVer,
+		Versions:       versions,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "AI squash comment failed: "+err.Error())
+	}
+	return c.String(http.StatusOK, comment)
+}
+
+// LoadVersion handles GET /budgets/:budgetId/automations/:id/version/:ver/load.
+func (h *AutomationsHandler) LoadVersion(c echo.Context) error {
+	autoID := c.Param("id")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	verStr := c.Param("ver")
+	ver, err := strconv.Atoi(verStr)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid version")
+	}
+
+	a, err := automation.GetAutomationVersion(c.Request().Context(), tenantDB, autoID, ver)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, "Version not found: "+err.Error())
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{
+		"id":              a.ID,
+		"version":         a.Version,
+		"name":            a.Name,
+		"judge_script":    a.JudgeScript,
+		"executor_script": a.ExecutorScript,
+		"comment":         a.Comment,
+	})
+}
+
 // BatchDryRun handles POST /budgets/:budgetId/automations/batch-dry-run.
 func (h *AutomationsHandler) BatchDryRun(c echo.Context) error {
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
@@ -667,7 +782,12 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
                 <h3 id="modal_title" class="font-extrabold text-xl tracking-tight flex items-center gap-2">
                     <span>⚡</span> <span>New Automation</span>
                 </h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+                <div class="flex items-center gap-2">
+                    <button type="button" id="modal_history_btn" class="btn btn-ghost btn-xs text-info gap-1 hidden" onclick="openHistoryFromModal()">
+                        🕒 History
+                    </button>
+                    <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+                </div>
             </div>
 
             <!-- UNIFIED AI PROMPT GENERATOR -->
@@ -801,6 +921,7 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
             document.getElementById("form_comment").value = "";
             document.getElementById("squash_container").classList.add("hidden");
             document.getElementById("form_squash").checked = false;
+            document.getElementById("modal_history_btn").classList.add("hidden");
             document.getElementById("dry_run_results").innerHTML = '<div class="text-[11px] text-base-content/50 italic">Select a transaction and click Test to preview Judge and Executor results.</div>';
 
             const form = document.getElementById("automation_form");
@@ -817,6 +938,7 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
             document.getElementById("form_judge_script").value = auto.judge_script;
             document.getElementById("form_executor_script").value = auto.executor_script;
             document.getElementById("form_comment").value = "";
+            document.getElementById("modal_history_btn").classList.remove("hidden");
             document.getElementById("dry_run_results").innerHTML = '<div class="text-[11px] text-base-content/50 italic">Select a transaction and click Test to preview Judge and Executor results.</div>';
 
             // Squash is enabled only for versions > 1 (per /grill-me decision)
@@ -833,6 +955,40 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
             htmx.process(form);
 
             document.getElementById("automation_modal").showModal();
+        }
+
+        function openHistoryFromModal() {
+            const id = document.getElementById("form_auto_id").value;
+            if (id) {
+                htmx.ajax('GET', '/budgets/' + budgetID + '/automations/' + id + '/history', {target: 'body', swap: 'beforeend'});
+            }
+        }
+
+        function loadHistoricalVersionIntoEditor(bID, aID, ver) {
+            fetch('/budgets/' + bID + '/automations/' + aID + '/version/' + ver + '/load')
+                .then(r => {
+                    if (!r.ok) throw new Error("Failed loading version " + ver);
+                    return r.json();
+                })
+                .then(data => {
+                    document.getElementById("form_auto_id").value = data.id;
+                    document.getElementById("form_name").value = data.name;
+                    document.getElementById("form_judge_script").value = data.judge_script;
+                    document.getElementById("form_executor_script").value = data.executor_script;
+                    document.getElementById("form_comment").value = "Based on v" + ver;
+                    document.getElementById("modal_title").innerHTML = "<span>✏️</span> <span>Edit Automation (loaded v" + ver + ")</span>";
+                    document.getElementById("squash_container").classList.remove("hidden");
+                    document.getElementById("form_squash").checked = false;
+                    document.getElementById("modal_history_btn").classList.remove("hidden");
+
+                    const form = document.getElementById("automation_form");
+                    form.setAttribute("hx-post", "/budgets/" + bID + "/automations/" + data.id + "/update");
+                    htmx.process(form);
+
+                    document.getElementById("history_drawer_backdrop")?.remove();
+                    document.getElementById("automation_modal").showModal();
+                })
+                .catch(err => alert(err.message));
         }
 
         function closeAutomationModal() {

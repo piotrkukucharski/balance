@@ -5508,6 +5508,242 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		return nil
 	})
+
+	ctx.Step(`^I request the history drawer for automation "([^"]*)"$`, func(name string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var autoID string
+		_ = bDB.QueryRowContext(context.Background(), `SELECT id FROM automations_current WHERE name = ?`, name).Scan(&autoID)
+		tc.activeAutomationID = autoID
+
+		req := httptest.NewRequest(http.MethodGet, "/budgets/"+tc.activeBudgetID+"/history/automations/"+autoID, nil)
+		req.Header.Set("HX-Request", "true")
+		if tc.sessionCookie != nil {
+			req.AddCookie(tc.sessionCookie)
+		}
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "entityType", "entityId")
+		c.SetParamValues(tc.activeBudgetID, "automations", autoID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		var role string
+		_ = tc.mainDB.QueryRow(`SELECT role FROM budget_members WHERE budget_id = ? AND user_id = ?`, tc.activeBudgetID, tc.activeUserID).Scan(&role)
+		if role == "" {
+			role = "OWNER"
+		}
+		c.Set(handlers.ContextRoleKey, role)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.historyHandler.HistoryDrawer(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the history drawer should display the diff for "([^"]*)"$`, func(fieldName string) error {
+		body := tc.lastResponse.Body.String()
+		normalized := strings.ToLower(strings.ReplaceAll(fieldName, "_", " "))
+		if !strings.Contains(strings.ToLower(body), normalized) && !strings.Contains(body, fieldName) {
+			return fmt.Errorf("expected field diff for %q in drawer", fieldName)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the history drawer should display the action badges and restore buttons$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "CREATE") {
+			return fmt.Errorf("expected CREATE badge in drawer")
+		}
+		if !strings.Contains(body, "Restore") {
+			return fmt.Errorf("expected Restore action in drawer")
+		}
+		return nil
+	})
+
+	ctx.Step(`^I submit a restore request for automation "([^"]*)" to version (\d+)$`, func(name string, targetVer int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var autoID string
+		_ = bDB.QueryRowContext(context.Background(), `SELECT id FROM automations_current WHERE name = ?`, name).Scan(&autoID)
+		tc.activeAutomationID = autoID
+
+		form := url.Values{}
+		form.Set("target_version", fmt.Sprint(targetVer))
+		form.Set("csrf_token", tc.activeCSRF)
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/"+tc.activeBudgetID+"/history/automations/"+autoID+"/restore", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		req.Header.Set("HX-Request", "true")
+		if tc.sessionCookie != nil {
+			req.AddCookie(tc.sessionCookie)
+		}
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "entityType", "entityId")
+		c.SetParamValues(tc.activeBudgetID, "automations", autoID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		var role string
+		_ = tc.mainDB.QueryRow(`SELECT role FROM budget_members WHERE budget_id = ? AND user_id = ?`, tc.activeBudgetID, tc.activeUserID).Scan(&role)
+		if role == "" {
+			role = "OWNER"
+		}
+		c.Set(handlers.ContextRoleKey, role)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.historyHandler.RestoreVersion(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the current judge script for "([^"]*)" should be '([^']*)'$`, func(name, expectedScript string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var script string
+		err = bDB.QueryRowContext(context.Background(), `SELECT judge_script FROM automations_current WHERE name = ?`, name).Scan(&script)
+		if err != nil {
+			return err
+		}
+		if script != expectedScript {
+			return fmt.Errorf("expected judge_script %q, got %q", expectedScript, script)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the latest action in "automations" should be "([^"]*)"$`, func(expectedAction string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var act string
+		err = bDB.QueryRowContext(context.Background(), `
+			SELECT action FROM automations
+			ORDER BY version DESC, created_at DESC
+			LIMIT 1`).Scan(&act)
+		if err != nil {
+			return err
+		}
+		if act != expectedAction {
+			return fmt.Errorf("expected action %q, got %q", expectedAction, act)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I submit a multi-version squash for automation "([^"]*)" from version (\d+) to (\d+) with comment "([^"]*)"$`, func(name string, startVer, endVer int, comment string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var autoID string
+		_ = bDB.QueryRowContext(context.Background(), `SELECT id FROM automations_current WHERE name = ?`, name).Scan(&autoID)
+		tc.activeAutomationID = autoID
+
+		form := url.Values{}
+		form.Set("start_version", fmt.Sprint(startVer))
+		form.Set("end_version", fmt.Sprint(endVer))
+		form.Set("comment", comment)
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/"+tc.activeBudgetID+"/automations/"+autoID+"/squash", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		req.Header.Set("HX-Request", "true")
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "id")
+		c.SetParamValues(tc.activeBudgetID, autoID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("correlationId", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.automationsHandler.SquashAutomation(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^I submit an invalid multi-version squash from version (\d+) to (\d+)$`, func(startVer, endVer int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		autoID := tc.activeAutomationID
+
+		form := url.Values{}
+		form.Set("start_version", fmt.Sprint(startVer))
+		form.Set("end_version", fmt.Sprint(endVer))
+		form.Set("comment", "invalid range squash")
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/"+tc.activeBudgetID+"/automations/"+autoID+"/squash", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "id")
+		c.SetParamValues(tc.activeBudgetID, autoID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("correlationId", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.automationsHandler.SquashAutomation(c)
+		if err != nil {
+			if he, ok := err.(*echo.HTTPError); ok {
+				rec.Code = he.Code
+			}
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^the action should be rejected with status (\d+) Bad Request$`, func(expectedStatus int) error {
+		if tc.lastResponse.Code != expectedStatus {
+			return fmt.Errorf("expected status %d, got %d", expectedStatus, tc.lastResponse.Code)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I fetch historical version (\d+) for automation "([^"]*)"$`, func(ver int, name string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var autoID string
+		_ = bDB.QueryRowContext(context.Background(), `SELECT id FROM automations_current WHERE name = ?`, name).Scan(&autoID)
+		tc.activeAutomationID = autoID
+
+		req := httptest.NewRequest(http.MethodGet, "/budgets/"+tc.activeBudgetID+"/automations/"+autoID+"/version/"+strconv.Itoa(ver)+"/load", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "id", "ver")
+		c.SetParamValues(tc.activeBudgetID, autoID, strconv.Itoa(ver))
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.automationsHandler.LoadVersion(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the JSON response should have judge_script '([^']*)' and version (\d+)$`, func(expectedScript string, expectedVer int) error {
+		var resp struct {
+			JudgeScript string `json:"judge_script"`
+			Version     int    `json:"version"`
+		}
+		if err := json.Unmarshal(tc.lastResponse.Body.Bytes(), &resp); err != nil {
+			return fmt.Errorf("failed to unmarshal JSON response: %w, body: %s", err, tc.lastResponse.Body.String())
+		}
+		if resp.JudgeScript != expectedScript {
+			return fmt.Errorf("expected judge_script %q, got %q", expectedScript, resp.JudgeScript)
+		}
+		if resp.Version != expectedVer {
+			return fmt.Errorf("expected version %d, got %d", expectedVer, resp.Version)
+		}
+		return nil
+	})
 }
 
 func TestFeatures(t *testing.T) {

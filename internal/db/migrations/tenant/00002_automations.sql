@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS automations (
     judge_script TEXT NOT NULL,
     executor_script TEXT NOT NULL,
     comment TEXT NOT NULL DEFAULT '',
-    action TEXT NOT NULL CHECK(action IN ('CREATE', 'UPDATE', 'RESTORE', 'SOFT_DELETE')),
+    action TEXT NOT NULL CHECK(action IN ('CREATE', 'UPDATE', 'RESTORE', 'SQUASH', 'SOFT_DELETE')),
     agent_id TEXT NOT NULL,
     correlation_id TEXT NOT NULL,
     created_at INTEGER NOT NULL,

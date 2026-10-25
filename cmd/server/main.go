@@ -148,6 +148,7 @@ func main() {
 	tenantViewer.GET("/parties", partiesHandler.PartiesView)
 	tenantViewer.GET("/parties/:partyId/rules", partiesHandler.PartyRulesView)
 	tenantViewer.GET("/automations", automationsHandler.AutomationsView)
+	tenantViewer.GET("/automations/:id/version/:ver/load", automationsHandler.LoadVersion)
 	tenantViewer.GET("/settings", workspaceHandler.SettingsView)
 	tenantViewer.GET("/settings/members", membersHandler.MembersView)
 	tenantViewer.GET("/settings/tokens", tokensHandler.TokensView)
@@ -208,6 +209,8 @@ func main() {
 	tenantEditor.POST("/automations/ai/comment", automationsHandler.AIComment)
 	tenantEditor.POST("/automations/batch-dry-run", automationsHandler.BatchDryRun)
 	tenantEditor.POST("/automations/batch-run", automationsHandler.BatchRun)
+	tenantEditor.POST("/automations/:id/squash", automationsHandler.SquashAutomation)
+	tenantEditor.POST("/automations/:id/ai/squash-comment", automationsHandler.AISquashComment)
 
 
 	tenantAdmin := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "ADMIN"))
