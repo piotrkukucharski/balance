@@ -119,3 +119,27 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     And target "Source Target" in bucket "Source Envelope" should have funded amount "0.00 PLN"
     And the bucket "Dest Envelope" balance should be "500.00 PLN"
     And target "Dest Target" in bucket "Dest Envelope" should have funded amount "500.00 PLN"
+
+  Scenario: Evaluating bucket unassigned buffer and health status with over-allocation
+    Given an open budget "Family Home" with "5,000.00 PLN" in checking account
+    When I create a bucket "Car Maintenance" in group "Needs"
+    And I add a mandatory target "Oil Change" with priority 3, cadence "MONTHLY", amount "300.00 PLN"
+    And I assign "400.00 PLN" from ready to assign to bucket "Car Maintenance"
+    Then the bucket "Car Maintenance" should have unassigned buffer "100.00 PLN"
+    And the bucket "Car Maintenance" should have health status "Funded / On Track"
+
+  Scenario: Evaluating bucket health status with optional target remaining
+    Given an open budget "Family Home" with "5,000.00 PLN" in checking account
+    When I create a bucket "Hobbies" in group "Wants"
+    And I add an optional target "Books" with priority 1, cadence "MONTHLY", amount "100.00 PLN"
+    Then the bucket "Hobbies" should have health status "Optional remaining"
+
+  Scenario: Evaluating bucket health status with over-allocated buffer
+    Given an open budget "Family Home" with "5,000.00 PLN" in checking account
+    When I create a bucket "Pet Care" in group "Needs"
+    And I add a mandatory target "Vet" with priority 3, cadence "MONTHLY", amount "300.00 PLN"
+    And target "Vet" in bucket "Pet Care" has funded amount "300.00 PLN" with bucket balance "200.00 PLN"
+    Then the bucket "Pet Care" should have unassigned buffer "-100.00 PLN"
+    And the bucket "Pet Care" should have health status "Over-allocated"
+    And the bucket "Pet Care" should be marked with P3 at risk
+

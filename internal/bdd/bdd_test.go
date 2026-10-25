@@ -3152,6 +3152,110 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	ctx.Step(`^target "([^"]*)" in bucket "([^"]*)" has funded amount "([^"]*)" with bucket balance "([^"]*)"$`, func(targetName, bucketName, fundedStr, balStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var bID string
+		if err := bDB.QueryRow(`SELECT id FROM buckets_projection WHERE name = ? AND is_archived = 0`, bucketName).Scan(&bID); err != nil {
+			return fmt.Errorf("bucket %s not found: %w", bucketName, err)
+		}
+		fundedMinor := parseAmountStr(fundedStr)
+		balMinor := parseAmountStr(balStr)
+		now := time.Now().UTC().UnixMicro()
+
+		_, err = bDB.Exec(`UPDATE targets_projection SET current_funded_minor = ?, updated_at = ? WHERE name = ? AND bucket_id = ?`, fundedMinor, now, targetName, bID)
+		if err != nil {
+			return fmt.Errorf("failed to update target funded minor: %w", err)
+		}
+
+		_, err = bDB.Exec(`INSERT INTO bucket_currency_balances (bucket_id, currency, balance_minor)
+			VALUES (?, 'PLN', ?)
+			ON CONFLICT(bucket_id, currency) DO UPDATE SET balance_minor = excluded.balance_minor`, bID, balMinor)
+		if err != nil {
+			return fmt.Errorf("failed to update bucket balance: %w", err)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the bucket "([^"]*)" should have unassigned buffer "([^"]*)"$`, func(bucketName, expBufferStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var bID string
+		var balMinor int64
+		if err := bDB.QueryRow(`
+			SELECT b.id, COALESCE(bcb.balance_minor, 0)
+			FROM buckets_projection b
+			LEFT JOIN bucket_currency_balances bcb ON b.id = bcb.bucket_id AND bcb.currency = 'PLN'
+			WHERE b.name = ? AND b.is_archived = 0`, bucketName).Scan(&bID, &balMinor); err != nil {
+			return fmt.Errorf("bucket %s not found: %w", bucketName, err)
+		}
+		var fundedMinor int64
+		if err := bDB.QueryRow(`
+			SELECT COALESCE(SUM(current_funded_minor), 0)
+			FROM targets_projection
+			WHERE bucket_id = ? AND currency = 'PLN' AND is_archived = 0`, bID).Scan(&fundedMinor); err != nil {
+			return fmt.Errorf("failed to query targets for bucket %s: %w", bucketName, err)
+		}
+		unassignedBuffer := balMinor - fundedMinor
+		expectedBuffer := parseAmountStr(expBufferStr)
+		if unassignedBuffer != expectedBuffer {
+			return fmt.Errorf("expected bucket %s unassigned buffer %d, got %d", bucketName, expectedBuffer, unassignedBuffer)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the bucket "([^"]*)" should have health status "([^"]*)"$`, func(bucketName, expStatus string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		reqView := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/budgets/%s/budget", tc.activeBudgetID), nil)
+		recView := httptest.NewRecorder()
+		cView := tc.echoEngine.NewContext(reqView, recView)
+		cView.SetParamNames("budgetId")
+		cView.SetParamValues(tc.activeBudgetID)
+		cView.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		cView.Set(handlers.ContextRoleKey, "OWNER")
+		cView.Set(handlers.ContextBudgetDBKey, bDB)
+		if err := tc.workspaceHandler.BudgetView(cView); err != nil {
+			return err
+		}
+		tc.lastResponse = recView
+		body := recView.Body.String()
+		if !strings.Contains(body, expStatus) {
+			return fmt.Errorf("expected health status %q in budget view for bucket %s", expStatus, bucketName)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the bucket "([^"]*)" should be marked with P3 at risk$`, func(bucketName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		reqView := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/budgets/%s/budget", tc.activeBudgetID), nil)
+		recView := httptest.NewRecorder()
+		cView := tc.echoEngine.NewContext(reqView, recView)
+		cView.SetParamNames("budgetId")
+		cView.SetParamValues(tc.activeBudgetID)
+		cView.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		cView.Set(handlers.ContextRoleKey, "OWNER")
+		cView.Set(handlers.ContextBudgetDBKey, bDB)
+		if err := tc.workspaceHandler.BudgetView(cView); err != nil {
+			return err
+		}
+		tc.lastResponse = recView
+		body := recView.Body.String()
+		if !strings.Contains(body, "P3 at risk") {
+			return fmt.Errorf("expected bucket %s to be marked with P3 at risk in budget view", bucketName)
+		}
+		return nil
+	})
+
 	ctx.Step(`^an open budget "([^"]*)" with "([^"]*)" in checking account$`, func(budgetName, checkingStr string) error {
 		now := time.Now().UTC().UnixMicro()
 		budgetID := domain.NewUUIDv7()

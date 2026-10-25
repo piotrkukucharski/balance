@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -920,12 +921,22 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 }
 
 type bucketViewData struct {
-	ID           string
-	GroupName    string
-	Name         string
-	BalanceMinor int64
-	Currency     string
-	Targets      []targetViewData
+	ID                    string           `json:"ID"`
+	GroupName             string           `json:"GroupName"`
+	Name                  string           `json:"Name"`
+	BalanceMinor          int64            `json:"BalanceMinor"`
+	Currency              string           `json:"Currency"`
+	TotalRequiredMinor    int64            `json:"TotalRequiredMinor"`
+	TotalFundedMinor      int64            `json:"TotalFundedMinor"`
+	TotalNeededMinor      int64            `json:"TotalNeededMinor"`
+	UnassignedBufferMinor int64            `json:"UnassignedBufferMinor"`
+	HealthStatus          string           `json:"HealthStatus"`
+	HealthBadge           string           `json:"HealthBadge"`
+	HealthBadgeClass      string           `json:"HealthBadgeClass"`
+	HasP3AtRisk           bool             `json:"HasP3AtRisk"`
+	DefaultExpanded       bool             `json:"DefaultExpanded"`
+	ProgressPercent       int              `json:"ProgressPercent"`
+	Targets               []targetViewData `json:"Targets"`
 }
 
 type targetViewData struct {
@@ -948,8 +959,772 @@ type targetViewData struct {
 	CeilingAmountMinor  *int64  `json:"CeilingAmountMinor"`
 	CurrentFundedMinor  int64   `json:"CurrentFundedMinor"`
 	RequiredMinor       int64   `json:"RequiredMinor"`
+	NeededMinor         int64   `json:"NeededMinor"`
+	ProgressPercent     int     `json:"ProgressPercent"`
 	HealthBadge         string  `json:"HealthBadge"`
 	HealthBadgeClass    string  `json:"HealthBadgeClass"`
+}
+
+type bucketGroupViewData struct {
+	GroupName           string
+	GroupID             string
+	Buckets             []bucketViewData
+	TotalAvailableMinor int64
+	TotalRequiredMinor  int64
+	TotalFundedMinor    int64
+	TotalNeededMinor    int64
+	ProgressPercent     int
+}
+
+func budgetRedirectURL(budgetID string, c echo.Context, flashCode string, anchorBucketID string) string {
+	horizon := c.QueryParam("horizon")
+	if horizon == "" {
+		horizon = c.FormValue("horizon")
+	}
+	filter := c.QueryParam("filter")
+	if filter == "" {
+		filter = c.FormValue("filter")
+	}
+
+	q := url.Values{}
+	if horizon != "" && horizon != "monthly" {
+		q.Set("horizon", horizon)
+	}
+	if filter != "" && filter != "all" {
+		q.Set("filter", filter)
+	}
+	if flashCode != "" {
+		q.Set("flash", flashCode)
+	}
+
+	res := fmt.Sprintf("/budgets/%s/budget", budgetID)
+	if encoded := q.Encode(); encoded != "" {
+		res += "?" + encoded
+	}
+	if anchorBucketID != "" {
+		res += "#bucket-" + anchorBucketID
+	}
+	return res
+}
+
+func getFlashMessage(code string) string {
+	switch code {
+	case "created":
+		return "Envelope created successfully."
+	case "updated":
+		return "Envelope updated successfully."
+	case "archived":
+		return "Envelope archived successfully."
+	case "assigned":
+		return "Funds assigned successfully."
+	case "moved":
+		return "Funds moved successfully."
+	case "auto_assigned":
+		return "Funds auto-assigned by priority waterfall."
+	case "target_created":
+		return "Target created successfully."
+	case "target_updated":
+		return "Target updated successfully."
+	case "target_deleted":
+		return "Target deleted successfully."
+	default:
+		return ""
+	}
+}
+
+func safeDOMID(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	res := b.String()
+	if res == "" {
+		return "default"
+	}
+	return res
+}
+
+func renderBudgetStatsBanner(budgetID string, defaultRTA int64, defaultCurr, rtaOtherBadges, horizonParam string, windowDays int, totalNeededMinor, mandatoryP3NeededMinor int64, filterParam, csrfToken string) string {
+	rtaColor := "text-success"
+	rtaDescClass := "text-base-content/60"
+	rtaDesc := "Unallocated liquid funds across budget accounts"
+	if defaultRTA < 0 {
+		rtaColor = "text-error"
+		rtaDescClass = "text-error font-semibold"
+		rtaDesc = "Assigned more than you have (over-assigned)"
+	}
+
+	monthlyActive := "btn-ghost"
+	d30Active := "btn-ghost"
+	d90Active := "btn-ghost"
+	horizonTitle := "Monthly"
+	switch horizonParam {
+	case "30d":
+		d30Active = "btn-primary"
+		horizonTitle = "30d"
+	case "90d":
+		d90Active = "btn-primary"
+		horizonTitle = "90d"
+	default:
+		monthlyActive = "btn-primary"
+	}
+
+	p3Desc := `<span class="text-success font-medium">✓ All mandatory targets funded</span>`
+	if mandatoryP3NeededMinor > 0 {
+		p3Desc = fmt.Sprintf(`of which Mandatory: <span class="font-mono font-bold text-error">%.2f %s</span>`, float64(mandatoryP3NeededMinor)/100.0, defaultCurr)
+	}
+
+	return fmt.Sprintf(`
+		<div class="stats stats-horizontal shadow-md w-full bg-base-100 border border-base-300 mb-6 grid grid-cols-1 md:grid-cols-4">
+			<div class="stat">
+				<div class="stat-figure text-success text-3xl">💵</div>
+				<div class="stat-title text-xs font-bold uppercase tracking-wider">Ready to Assign</div>
+				<div class="stat-value %s text-2xl font-black">
+					%.2f %s
+					%s
+				</div>
+				<div class="stat-desc text-xs %s">%s</div>
+			</div>
+
+			<div class="stat">
+				<div class="stat-figure text-primary text-3xl">🎯</div>
+				<div class="stat-title text-xs font-bold uppercase tracking-wider">Needed (%s)</div>
+				<div class="stat-value text-primary text-2xl font-black">
+					%.2f <span class="text-xs font-normal text-base-content/60">%s</span>
+				</div>
+				<div class="stat-desc text-xs">%s</div>
+			</div>
+
+			<div class="stat">
+				<div class="stat-title text-xs font-bold uppercase tracking-wider">Active Horizon</div>
+				<div class="stat-actions mt-2">
+					<div class="join">
+						<a href="/budgets/%s/budget?horizon=monthly&filter=%s" class="btn btn-xs join-item %s">Monthly</a>
+						<a href="/budgets/%s/budget?horizon=30d&filter=%s" class="btn btn-xs join-item %s">30d</a>
+						<a href="/budgets/%s/budget?horizon=90d&filter=%s" class="btn btn-xs join-item %s">90d</a>
+					</div>
+				</div>
+				<div class="stat-desc text-[11px] mt-1">%d days requirement window</div>
+			</div>
+
+			<div class="stat">
+				<div class="stat-title text-xs font-bold uppercase tracking-wider">Quick Actions</div>
+				<div class="stat-actions mt-2">
+					<form method="POST" action="/budgets/%s/budget/auto-assign" class="inline">
+						<input type="hidden" name="csrf_token" value="%s" />
+						<input type="hidden" name="currency" value="%s" />
+						<input type="hidden" name="horizon" value="%s" />
+						<input type="hidden" name="filter" value="%s" />
+						<button type="submit" class="btn btn-xs btn-outline btn-primary font-semibold shadow-xs">Auto-Assign by Priority</button>
+					</form>
+				</div>
+				<div class="stat-desc text-[11px] mt-1">Waterfall funding by priority</div>
+			</div>
+		</div>
+	`,
+		rtaColor, float64(defaultRTA)/100.0, defaultCurr, rtaOtherBadges, rtaDescClass, rtaDesc,
+		horizonTitle, float64(totalNeededMinor)/100.0, defaultCurr, p3Desc,
+		budgetID, filterParam, monthlyActive, budgetID, filterParam, d30Active, budgetID, filterParam, d90Active, windowDays,
+		budgetID, csrfToken, defaultCurr, horizonParam, filterParam,
+	)
+}
+
+func renderBudgetFilterToolbar(budgetID, horizonParam, filterParam string, countAll, countAttention, countOverspent, countBuffer int) string {
+	btnAll := "btn-ghost border border-base-300"
+	btnAtt := "btn-ghost border border-base-300"
+	btnOvr := "btn-ghost border border-base-300"
+	btnBuf := "btn-ghost border border-base-300"
+
+	switch filterParam {
+	case "attention":
+		btnAtt = "btn-primary"
+	case "overspent":
+		btnOvr = "btn-primary"
+	case "buffer":
+		btnBuf = "btn-primary"
+	default:
+		btnAll = "btn-primary"
+	}
+
+	return fmt.Sprintf(`
+		<div class="flex flex-wrap justify-between items-center gap-3 mb-4">
+			<div class="flex flex-wrap items-center gap-3">
+				<div class="join">
+					<a href="/budgets/%s/budget?horizon=%s&filter=all" class="btn btn-sm join-item %s">
+						All <span class="badge badge-sm font-mono">%d</span>
+					</a>
+					<a href="/budgets/%s/budget?horizon=%s&filter=attention" class="btn btn-sm join-item %s">
+						Needs attention <span class="badge badge-sm font-mono badge-warning">%d</span>
+					</a>
+					<a href="/budgets/%s/budget?horizon=%s&filter=overspent" class="btn btn-sm join-item %s">
+						Overspent <span class="badge badge-sm font-mono badge-error">%d</span>
+					</a>
+					<a href="/budgets/%s/budget?horizon=%s&filter=buffer" class="btn btn-sm join-item %s">
+						Has buffer <span class="badge badge-sm font-mono badge-info">%d</span>
+					</a>
+				</div>
+				<div class="join">
+					<button type="button" class="btn btn-sm btn-ghost border border-base-300 join-item text-xs" onclick="expandAllEnvelopes()">Expand all</button>
+					<button type="button" class="btn btn-sm btn-ghost border border-base-300 join-item text-xs" onclick="collapseAllEnvelopes()">Collapse all</button>
+				</div>
+			</div>
+			<div class="flex items-center gap-2">
+				<div class="relative">
+					<input type="text" id="envelope_search_input" placeholder="Search envelopes..." class="input input-bordered input-sm w-44 text-xs pl-8" oninput="filterEnvelopeSearch(this.value)" />
+					<span class="absolute left-2.5 top-2 text-xs opacity-50 select-none">🔍</span>
+				</div>
+				<button type="button" class="btn btn-outline btn-primary btn-sm gap-1.5 shadow-xs font-semibold" onclick="openStructureModal('ai')">
+					<span>✨</span>
+					<span>AI / Import</span>
+				</button>
+				<button type="button" class="btn btn-primary btn-sm gap-1.5 shadow font-semibold" onclick="new_bucket_modal.showModal()">
+					<span>+</span>
+					<span>New Bucket</span>
+				</button>
+			</div>
+		</div>
+	`,
+		budgetID, horizonParam, btnAll, countAll,
+		budgetID, horizonParam, btnAtt, countAttention,
+		budgetID, horizonParam, btnOvr, countOverspent,
+		budgetID, horizonParam, btnBuf, countBuffer,
+	)
+}
+
+func renderBucketRowsDesktop(allBucketsCount int, bucketGroups []bucketGroupViewData, defaultCurr, horizonParam, filterParam, csrfToken, budgetID string) string {
+	if allBucketsCount == 0 {
+		return `
+			<tr>
+				<td colspan="5" class="p-8">
+					<div class="card card-border bg-base-100 border-dashed border-base-300 p-8 text-center flex flex-col items-center justify-center gap-4">
+						<div class="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-3xl font-bold">✨</div>
+						<div>
+							<h3 class="font-extrabold text-lg tracking-tight">No Envelopes Created Yet</h3>
+							<p class="text-xs text-base-content/60 max-w-md mx-auto mt-1">Get started quickly by generating a complete envelope structure with AI, importing from another budget, or adding envelopes manually.</p>
+						</div>
+						<div class="flex flex-wrap items-center justify-center gap-2 mt-2">
+							<button type="button" class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('ai')">
+								<span>✨</span>
+								<span>Create from Description (AI)</span>
+							</button>
+							<button type="button" class="btn btn-outline btn-secondary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('import')">
+								<span>📥</span>
+								<span>Import from Another Budget</span>
+							</button>
+							<button type="button" class="btn btn-ghost btn-sm" onclick="new_bucket_modal.showModal()">
+								<span>+</span>
+								<span>New Bucket Manually</span>
+							</button>
+						</div>
+					</div>
+				</td>
+			</tr>
+		`
+	}
+
+	totalDisplayBuckets := 0
+	for _, bg := range bucketGroups {
+		totalDisplayBuckets += len(bg.Buckets)
+	}
+
+	if totalDisplayBuckets == 0 {
+		return fmt.Sprintf(`
+			<tr>
+				<td colspan="5" class="p-8 text-center text-xs text-base-content/60">
+					No envelopes match the selected filter (<strong>%s</strong>).
+					<a href="/budgets/%s/budget?horizon=%s&filter=all" class="link link-primary ml-1">View all envelopes</a>
+				</td>
+			</tr>
+		`, html.EscapeString(filterParam), budgetID, horizonParam)
+	}
+
+	var sb strings.Builder
+	for _, bg := range bucketGroups {
+		grpProgClass := "progress-warning"
+		if bg.ProgressPercent >= 100 {
+			grpProgClass = "progress-success"
+		}
+
+		sb.WriteString(fmt.Sprintf(`
+			<tr class="bg-base-200/80 font-bold border-t-2 border-base-300 group-header select-none">
+				<td class="py-2.5">
+					<div class="flex items-center gap-2 cursor-pointer" onclick="toggleGroup('%s')">
+						<span id="group-icon-%s" class="text-xs transition-transform duration-200">▼</span>
+						<span class="uppercase tracking-wider text-xs font-black text-base-content/80">%s</span>
+						<span class="badge badge-neutral badge-xs font-mono font-normal">%d envelopes</span>
+					</div>
+				</td>
+				<td class="py-2.5">
+					<div class="flex items-center gap-2 max-w-[200px]" title="%d%%%% funded">
+						<progress class="progress %s h-1.5 w-24" value="%d" max="100"></progress>
+						<span class="text-xs font-mono text-base-content/70">%.2f / %.2f</span>
+					</div>
+				</td>
+				<td class="py-2.5 text-right font-mono text-xs font-bold text-base-content/80">
+					%.2f <span class="text-[10px] font-normal text-base-content/50">%s</span>
+				</td>
+				<td class="py-2.5 text-right font-mono text-xs font-bold">
+					%.2f <span class="text-[10px] font-normal text-base-content/50">%s</span>
+				</td>
+				<td class="py-2.5"></td>
+			</tr>
+		`,
+			bg.GroupID, bg.GroupID, html.EscapeString(bg.GroupName), len(bg.Buckets),
+			bg.ProgressPercent, grpProgClass, bg.ProgressPercent,
+			float64(bg.TotalFundedMinor)/100.0, float64(bg.TotalRequiredMinor)/100.0,
+			float64(bg.TotalNeededMinor)/100.0, defaultCurr,
+			float64(bg.TotalAvailableMinor)/100.0, defaultCurr,
+		))
+
+		for _, b := range bg.Buckets {
+			statusDot := "bg-success"
+			switch b.HealthStatus {
+			case "Overspent":
+				statusDot = "bg-error"
+			case "Over-allocated":
+				statusDot = "bg-warning"
+			case "Underfunded":
+				statusDot = "bg-warning"
+			case "Optional remaining":
+				statusDot = "bg-base-300"
+			}
+
+			p3RiskBadge := ""
+			if b.HasP3AtRisk {
+				p3RiskBadge = `<span class="badge badge-error badge-outline badge-xs font-bold gap-1" title="Mandatory commitments are at risk"><span>⚠</span><span>P3 at risk</span></span>`
+			}
+
+			bufferBadge := ""
+			if b.UnassignedBufferMinor > 0 {
+				bufferBadge = fmt.Sprintf(`<span class="text-[11px] font-mono text-base-content/60">Buffer: <span class="text-success font-semibold">+%.2f %s</span></span>`, float64(b.UnassignedBufferMinor)/100.0, b.Currency)
+			} else if b.UnassignedBufferMinor < 0 {
+				bufferBadge = fmt.Sprintf(`<span class="text-[11px] font-mono text-error font-semibold">⚠ Over-allocated: %.2f %s</span>`, float64(b.UnassignedBufferMinor)/100.0, b.Currency)
+			} else {
+				bufferBadge = fmt.Sprintf(`<span class="text-[11px] font-mono text-base-content/40">Buffer: 0.00 %s</span>`, b.Currency)
+			}
+
+			bProgClass := "progress-warning"
+			if b.HealthStatus == "Overspent" || b.HealthStatus == "Over-allocated" {
+				bProgClass = "progress-error"
+			} else if b.ProgressPercent >= 100 {
+				bProgClass = "progress-success"
+			}
+
+			neededCell := `<span class="text-[11px] font-mono text-base-content/40">✓ Fully funded</span>`
+			if b.TotalNeededMinor > 0 {
+				neededCell = fmt.Sprintf(`<span class="text-[11px] font-mono text-warning font-semibold">Needs %.2f %s</span>`, float64(b.TotalNeededMinor)/100.0, b.Currency)
+			}
+
+			availColor := "text-base-content"
+			if b.BalanceMinor < 0 {
+				availColor = "text-error"
+			}
+
+			var searchTokens []string
+			searchTokens = append(searchTokens, b.Name, b.GroupName, b.HealthStatus)
+			for _, t := range b.Targets {
+				searchTokens = append(searchTokens, t.Name)
+			}
+			searchAttr := html.EscapeString(strings.ToLower(strings.Join(searchTokens, " ")))
+
+			toggleIcon := "▶"
+			subrowHidden := "hidden"
+			ariaExp := false
+			if b.DefaultExpanded {
+				toggleIcon = "▼"
+				subrowHidden = ""
+				ariaExp = true
+			}
+
+			var targetsSublist strings.Builder
+			if len(b.Targets) > 0 {
+				for _, t := range b.Targets {
+					priorityText := "Optional"
+					prioBadgeClass := "badge-ghost"
+					if t.Priority == 3 {
+						priorityText = "Mandatory"
+						prioBadgeClass = "badge-error"
+					} else if t.Priority == 2 {
+						priorityText = "Recommended"
+						prioBadgeClass = "badge-primary"
+					}
+
+					rInt := t.RecurrenceInterval
+					if rInt == 0 {
+						rInt = t.RecurrenceDays
+					}
+					cadenceDisplay := t.RecurrenceCadence
+					if t.RecurrenceCadence == "CUSTOM_DAYS" {
+						if rInt == 0 {
+							rInt = 90
+						}
+						cadenceDisplay = fmt.Sprintf("%dd", rInt)
+					} else if t.RecurrenceCadence == "CUSTOM_MONTHS" {
+						if rInt == 0 {
+							rInt = 3
+						}
+						cadenceDisplay = fmt.Sprintf("%dm", rInt)
+					} else if t.RecurrenceCadence == "CUSTOM_YEARS" {
+						if rInt == 0 {
+							rInt = 1
+						}
+						cadenceDisplay = fmt.Sprintf("%dy", rInt)
+					}
+
+					dueText := ""
+					if t.DueDate > 0 {
+						dTime := time.UnixMicro(t.DueDate).UTC()
+						dueText = fmt.Sprintf(` • Due: %s`, dTime.Format("2006-01-02"))
+					}
+					goalText := ""
+					if t.CeilingAmountMinor != nil {
+						goalText = fmt.Sprintf(` • Goal: %.2f %s`, float64(*t.CeilingAmountMinor)/100.0, t.Currency)
+					}
+					luaBadge := ""
+					if t.AmountMode == "LUA_FORMULA" {
+						luaBadge = `<span class="badge badge-outline badge-xs font-mono text-secondary border-secondary">LUA</span>`
+					}
+
+					tProgClass := "progress-warning"
+					if t.CurrentFundedMinor < 0 {
+						tProgClass = "progress-error"
+					} else if t.ProgressPercent >= 100 {
+						tProgClass = "progress-success"
+					}
+
+					neededText := `<span class="font-mono text-xs text-base-content/40">✓ Funded</span>`
+					if t.NeededMinor > 0 {
+						neededText = fmt.Sprintf(`<span class="font-mono text-xs font-semibold text-warning">Needs %.2f %s</span>`, float64(t.NeededMinor)/100.0, t.Currency)
+					}
+
+					targetsSublist.WriteString(fmt.Sprintf(`
+						<div class="flex items-center justify-between py-1 border-b border-base-200/60 last:border-0 text-xs">
+							<div class="flex items-center gap-2 min-w-0">
+								<span class="text-base-content/40 font-mono select-none">├</span>
+								<span class="font-medium truncate">%s</span>
+								<span class="badge %s badge-xs">%s</span>
+								<span class="text-[11px] text-base-content/50 truncate">%s%s%s</span>
+								%s
+							</div>
+							<div class="flex items-center gap-4 shrink-0">
+								<div class="flex items-center gap-2" title="%d%%%% funded">
+									<progress class="progress %s h-1.5 w-16" value="%d" max="100"></progress>
+									<span class="font-mono text-[11px] text-base-content/70">%.2f / %.2f %s</span>
+								</div>
+								<span class="badge %s badge-xs font-semibold">%s</span>
+								<div class="text-right min-w-[90px]">%s</div>
+							</div>
+						</div>
+					`,
+						html.EscapeString(t.Name), prioBadgeClass, priorityText,
+						cadenceDisplay, dueText, goalText, luaBadge,
+						t.ProgressPercent, tProgClass, t.ProgressPercent,
+						float64(t.CurrentFundedMinor)/100.0, float64(t.RequiredMinor)/100.0, t.Currency,
+						t.HealthBadgeClass, t.HealthBadge,
+						neededText,
+					))
+				}
+			} else {
+				targetsSublist.WriteString(`<div class="text-xs text-base-content/40 italic py-1">No targets defined in this envelope.</div>`)
+			}
+
+			actionMenu := RenderPopoverActionMenu("bucket", b.ID, []TableActionItem{
+				{
+					Label:   "✏️ Edit Bucket",
+					OnClick: fmt.Sprintf("openEditBucketModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), strings.ReplaceAll(b.GroupName, "'", "\\'")),
+				},
+				{
+					Label:   "💵 Assign Funds",
+					OnClick: fmt.Sprintf("openAssignModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
+				},
+				{
+					Label:   "↔️ Move Money",
+					OnClick: fmt.Sprintf("openMoveModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
+				},
+				{
+					Label:      "📁 Archive Bucket",
+					FormAction: fmt.Sprintf("/budgets/%s/buckets/%s/archive", budgetID, b.ID),
+					CSRFToken:  csrfToken,
+					IsDanger:   true,
+					ConfirmMsg: "Archive this bucket? It must have zero balance and zero targets.",
+				},
+			})
+
+			sb.WriteString(fmt.Sprintf(`
+				<tr id="bucket-%s" class="hover transition-colors bucket-row group-item-%s" data-bucket-id="%s" data-group-id="%s" data-search="%s">
+					<td>
+						<div class="flex flex-col gap-1">
+							<div class="flex items-center gap-2">
+								<button type="button" class="btn btn-ghost btn-xs btn-circle p-0 h-6 w-6 target-toggle-btn" onclick="toggleBucketTargets('%s')" aria-expanded="%t" aria-controls="targets-%s" aria-label="Toggle targets for %s">
+									<span id="bucket-toggle-icon-%s" class="text-xs transition-transform duration-200 font-mono select-none">%s</span>
+								</button>
+								<span class="w-2.5 h-2.5 rounded-full shrink-0 %s"></span>
+								<div class="font-bold text-sm flex items-center gap-1.5">
+									<span>%s</span>
+									%s
+								</div>
+							</div>
+							<div class="pl-8 flex items-center gap-2 text-xs">
+								%s
+							</div>
+						</div>
+					</td>
+					<td>
+						<div class="flex flex-col gap-1 max-w-[180px]">
+							<div class="flex items-center justify-between text-[11px] font-mono text-base-content/70">
+								<span>%d%%%%</span>
+								<span>%.2f / %.2f</span>
+							</div>
+							<progress class="progress %s h-1.5 w-full" value="%d" max="100" title="%d%%%% funded"></progress>
+						</div>
+					</td>
+					<td class="text-right">
+						<div class="flex flex-col items-end gap-0.5">
+							<span class="badge %s badge-sm font-semibold">%s</span>
+							%s
+						</div>
+					</td>
+					<td class="font-mono text-right font-bold text-sm">
+						<span class="%s">%.2f</span> <span class="text-xs font-normal text-base-content/60">%s</span>
+					</td>
+					<td class="text-right">
+						<div class="flex items-center justify-end gap-1">
+							<button type="button" class="btn btn-ghost btn-xs text-primary font-semibold" onclick="openBucketDrawer('%s', '%s', '%s', '%.2f', '%s')">Inspect</button>
+							%s
+						</div>
+					</td>
+				</tr>
+				<tr id="targets-%s" class="target-subrows group-item-%s %s" data-bucket-id="%s">
+					<td colspan="5" class="p-0 border-0">
+						<div class="bg-base-200/40 border-y border-base-200 pl-10 pr-4 py-2 space-y-1">
+							%s
+						</div>
+					</td>
+				</tr>
+			`,
+				b.ID, bg.GroupID, b.ID, bg.GroupID, searchAttr,
+				b.ID, ariaExp, b.ID, html.EscapeString(b.Name),
+				b.ID, toggleIcon, statusDot,
+				html.EscapeString(b.Name), p3RiskBadge,
+				bufferBadge,
+				b.ProgressPercent, float64(b.TotalFundedMinor)/100.0, float64(b.TotalRequiredMinor)/100.0,
+				bProgClass, b.ProgressPercent, b.ProgressPercent,
+				b.HealthBadgeClass, b.HealthBadge, neededCell,
+				availColor, float64(b.BalanceMinor)/100.0, b.Currency,
+				b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), strings.ReplaceAll(b.GroupName, "'", "\\'"), float64(b.BalanceMinor)/100.0, b.Currency,
+				actionMenu,
+				b.ID, bg.GroupID, subrowHidden, b.ID,
+				targetsSublist.String(),
+			))
+		}
+	}
+
+	return sb.String()
+}
+
+func renderBucketCardsMobile(allBucketsCount int, displayBuckets []bucketViewData, defaultCurr, horizonParam, filterParam, csrfToken, budgetID string) string {
+	if len(displayBuckets) == 0 {
+		return fmt.Sprintf(`
+			<div class="card card-border bg-base-100 border-base-300 p-6 text-center text-xs text-base-content/60">
+				No envelopes match the selected filter (<strong>%s</strong>).
+				<a href="/budgets/%s/budget?horizon=%s&filter=all" class="link link-primary ml-1">View all envelopes</a>
+			</div>
+		`, html.EscapeString(filterParam), budgetID, horizonParam)
+	}
+
+	var sb strings.Builder
+	for _, b := range displayBuckets {
+		statusDot := "bg-success"
+		switch b.HealthStatus {
+		case "Overspent":
+			statusDot = "bg-error"
+		case "Over-allocated":
+			statusDot = "bg-warning"
+		case "Underfunded":
+			statusDot = "bg-warning"
+		case "Optional remaining":
+			statusDot = "bg-base-300"
+		}
+
+		p3RiskBadge := ""
+		if b.HasP3AtRisk {
+			p3RiskBadge = `<span class="badge badge-error badge-outline badge-xs font-bold gap-1" title="Mandatory commitments are at risk"><span>⚠</span><span>P3 at risk</span></span>`
+		}
+
+		bufferStr := fmt.Sprintf("Buffer: +%.2f %s", float64(b.UnassignedBufferMinor)/100.0, b.Currency)
+		if b.UnassignedBufferMinor < 0 {
+			bufferStr = fmt.Sprintf("⚠ Over-allocated: %.2f %s", float64(b.UnassignedBufferMinor)/100.0, b.Currency)
+		} else if b.UnassignedBufferMinor == 0 {
+			bufferStr = fmt.Sprintf("Buffer: 0.00 %s", b.Currency)
+		}
+
+		bProgClass := "progress-warning"
+		if b.HealthStatus == "Overspent" || b.HealthStatus == "Over-allocated" {
+			bProgClass = "progress-error"
+		} else if b.ProgressPercent >= 100 {
+			bProgClass = "progress-success"
+		}
+
+		availColor := "text-base-content"
+		if b.BalanceMinor < 0 {
+			availColor = "text-error"
+		}
+
+		neededColor := "text-base-content/60"
+		if b.TotalNeededMinor > 0 {
+			neededColor = "text-warning"
+		}
+
+		var searchTokens []string
+		searchTokens = append(searchTokens, b.Name, b.GroupName, b.HealthStatus)
+		for _, t := range b.Targets {
+			searchTokens = append(searchTokens, t.Name)
+		}
+		searchAttr := html.EscapeString(strings.ToLower(strings.Join(searchTokens, " ")))
+
+		toggleIcon := "▶"
+		sublistHidden := "hidden"
+		if b.DefaultExpanded {
+			toggleIcon = "▼"
+			sublistHidden = ""
+		}
+
+		var mobileTargets strings.Builder
+		if len(b.Targets) > 0 {
+			for _, t := range b.Targets {
+				priorityText := "Optional"
+				prioBadgeClass := "badge-ghost"
+				if t.Priority == 3 {
+					priorityText = "Mandatory"
+					prioBadgeClass = "badge-error"
+				} else if t.Priority == 2 {
+					priorityText = "Recommended"
+					prioBadgeClass = "badge-primary"
+				}
+
+				tProgClass := "progress-warning"
+				if t.CurrentFundedMinor < 0 {
+					tProgClass = "progress-error"
+				} else if t.ProgressPercent >= 100 {
+					tProgClass = "progress-success"
+				}
+
+				mobileTargets.WriteString(fmt.Sprintf(`
+					<div class="flex items-center justify-between text-xs py-1 border-b border-base-200/50 last:border-0">
+						<div class="flex items-center gap-1.5 min-w-0">
+							<span class="font-medium truncate">%s</span>
+							<span class="badge %s badge-xs">%s</span>
+						</div>
+						<div class="flex items-center gap-2 shrink-0">
+							<progress class="progress %s h-1.5 w-12" value="%d" max="100"></progress>
+							<span class="font-mono text-[10px] text-base-content/70">%.2f / %.2f %s</span>
+						</div>
+					</div>
+				`,
+					html.EscapeString(t.Name), prioBadgeClass, priorityText,
+					tProgClass, t.ProgressPercent,
+					float64(t.CurrentFundedMinor)/100.0, float64(t.RequiredMinor)/100.0, t.Currency,
+				))
+			}
+		} else {
+			mobileTargets.WriteString(`<div class="text-xs text-base-content/40 italic">No targets defined in this envelope.</div>`)
+		}
+
+		actionMenu := RenderPopoverActionMenu("bucket_mob", b.ID, []TableActionItem{
+			{
+				Label:   "✏️ Edit Bucket",
+				OnClick: fmt.Sprintf("openEditBucketModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), strings.ReplaceAll(b.GroupName, "'", "\\'")),
+			},
+			{
+				Label:   "💵 Assign Funds",
+				OnClick: fmt.Sprintf("openAssignModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
+			},
+			{
+				Label:   "↔️ Move Money",
+				OnClick: fmt.Sprintf("openMoveModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
+			},
+			{
+				Label:      "📁 Archive Bucket",
+				FormAction: fmt.Sprintf("/budgets/%s/buckets/%s/archive", budgetID, b.ID),
+				CSRFToken:  csrfToken,
+				IsDanger:   true,
+				ConfirmMsg: "Archive this bucket? It must have zero balance and zero targets.",
+			},
+		})
+
+		sb.WriteString(fmt.Sprintf(`
+			<div id="mobile-bucket-%s" class="card card-border bg-base-100 border-base-300 shadow-xs mobile-bucket-card" data-bucket-id="%s" data-search="%s">
+				<div class="card-body p-3.5 gap-2">
+					<div class="flex items-start justify-between gap-2">
+						<div class="flex items-center gap-2 min-w-0">
+							<span class="w-2.5 h-2.5 rounded-full shrink-0 %s"></span>
+							<div>
+								<div class="font-bold text-sm truncate">%s</div>
+								<div class="text-[11px] text-base-content/50">%s</div>
+							</div>
+						</div>
+						<div class="flex items-center gap-1 shrink-0">
+							<span class="badge %s badge-xs font-semibold">%s</span>
+							%s
+						</div>
+					</div>
+
+					<div class="flex justify-between items-baseline pt-1">
+						<div>
+							<span class="text-[10px] uppercase font-bold text-base-content/50">Available</span>
+							<div class="font-mono font-bold text-sm %s">%.2f %s</div>
+						</div>
+						<div class="text-right">
+							<span class="text-[10px] uppercase font-bold text-base-content/50">Needed</span>
+							<div class="font-mono text-xs font-semibold %s">%.2f %s</div>
+						</div>
+					</div>
+
+					<div class="w-full">
+						<progress class="progress %s h-1.5 w-full" value="%d" max="100"></progress>
+						<div class="flex justify-between text-[10px] font-mono text-base-content/60 mt-0.5">
+							<span>%d%%%%</span>
+							<span>%s</span>
+						</div>
+					</div>
+
+					<div class="pt-2 border-t border-base-200 flex justify-between items-center text-xs">
+						<button type="button" class="btn btn-ghost btn-xs gap-1 font-semibold" onclick="toggleMobileTargets('%s')">
+							<span id="mobile-toggle-icon-%s">%s</span>
+							<span>%d targets</span>
+						</button>
+						<div class="flex items-center gap-1">
+							<button type="button" class="btn btn-ghost btn-xs text-primary font-semibold" onclick="openBucketDrawer('%s', '%s', '%s', '%.2f', '%s')">Inspect</button>
+							%s
+						</div>
+					</div>
+
+					<div id="mobile-targets-%s" class="mobile-target-sublist %s pt-2 space-y-1.5 border-t border-base-200" data-bucket-id="%s">
+						%s
+					</div>
+				</div>
+			</div>
+		`,
+			b.ID, b.ID, searchAttr,
+			statusDot, html.EscapeString(b.Name), html.EscapeString(b.GroupName),
+			b.HealthBadgeClass, b.HealthBadge, p3RiskBadge,
+			availColor, float64(b.BalanceMinor)/100.0, b.Currency,
+			neededColor, float64(b.TotalNeededMinor)/100.0, b.Currency,
+			bProgClass, b.ProgressPercent,
+			b.ProgressPercent, bufferStr,
+			b.ID, b.ID, toggleIcon, len(b.Targets),
+			b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), strings.ReplaceAll(b.GroupName, "'", "\\'"), float64(b.BalanceMinor)/100.0, b.Currency,
+			actionMenu,
+			b.ID, sublistHidden, b.ID,
+			mobileTargets.String(),
+		))
+	}
+
+	return sb.String()
 }
 
 // BudgetView renders the YNAB-style Budget/Envelopes view with DaisyUI 5 stats, tables, and badges.
@@ -963,7 +1738,6 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	h.mainDB.QueryRowContext(c.Request().Context(), `SELECT name, default_currency, timezone FROM budgets WHERE id = ?`, budgetID).
 		Scan(&budgetName, &defaultCurr, &tz)
 
-	// Horizon parameter (e.g. 30, 90, or 30 for monthly)
 	horizonParam := c.QueryParam("horizon")
 	if horizonParam == "" {
 		horizonParam = "monthly"
@@ -974,6 +1748,14 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	} else if horizonParam == "30d" {
 		windowDays = 30
 	}
+
+	filterParam := c.QueryParam("filter")
+	if filterParam == "" {
+		filterParam = "all"
+	}
+
+	flashCode := c.QueryParam("flash")
+	flashMsg := getFlashMessage(flashCode)
 
 	// 1. Calculate Age of Money dynamically
 	aomHeadline := 0
@@ -1075,8 +1857,25 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 				CurrentFundedMinor:  t.CurrentFundedMinor,
 			}
 			t.RequiredMinor = budget.ComputeTargetRequirement(tDef, windowDays, nowUTC)
+			if t.RequiredMinor > 0 {
+				needed := t.RequiredMinor - t.CurrentFundedMinor
+				if needed < 0 {
+					needed = 0
+				}
+				t.NeededMinor = needed
+				pct := int((t.CurrentFundedMinor * 100) / t.RequiredMinor)
+				if pct < 0 {
+					pct = 0
+				} else if pct > 100 {
+					pct = 100
+				}
+				t.ProgressPercent = pct
+			} else {
+				t.NeededMinor = 0
+				t.ProgressPercent = 100
+			}
 
-			// Health evaluation
+			// Target health evaluation
 			if t.CurrentFundedMinor < 0 {
 				t.HealthBadge = "Overspent"
 				t.HealthBadgeClass = "badge-error text-error-content"
@@ -1107,163 +1906,188 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	}
 	defer rows.Close()
 
-	var buckets []bucketViewData
+	var allBuckets []bucketViewData
 	for rows.Next() {
 		var b bucketViewData
 		rows.Scan(&b.ID, &b.GroupName, &b.Name, &b.BalanceMinor)
 		b.Currency = defaultCurr
 		b.Targets = targetsByBucket[b.ID]
-		buckets = append(buckets, b)
+
+		var totalReq, totalFunded, totalNeeded int64
+		hasUnderfundedP3 := false
+		hasUnderfundedP2 := false
+		hasUnderfundedP1 := false
+		hasP3Targets := false
+
+		for _, t := range b.Targets {
+			if t.Currency == defaultCurr {
+				totalReq += t.RequiredMinor
+				totalFunded += t.CurrentFundedMinor
+				totalNeeded += t.NeededMinor
+				if t.Priority == 3 {
+					hasP3Targets = true
+					if t.NeededMinor > 0 {
+						hasUnderfundedP3 = true
+					}
+				} else if t.Priority == 2 {
+					if t.NeededMinor > 0 {
+						hasUnderfundedP2 = true
+					}
+				} else if t.Priority == 1 {
+					if t.NeededMinor > 0 {
+						hasUnderfundedP1 = true
+					}
+				}
+			}
+		}
+
+		b.TotalRequiredMinor = totalReq
+		b.TotalFundedMinor = totalFunded
+		b.TotalNeededMinor = totalNeeded
+		b.UnassignedBufferMinor = b.BalanceMinor - totalFunded
+
+		if totalReq > 0 {
+			pct := int((totalFunded * 100) / totalReq)
+			if pct < 0 {
+				pct = 0
+			} else if pct > 100 {
+				pct = 100
+			}
+			b.ProgressPercent = pct
+		} else {
+			b.ProgressPercent = 100
+		}
+
+		// Health status evaluation strictly in order:
+		// 1. BalanceMinor < 0 -> Overspent
+		// 2. UnassignedBufferMinor < 0 -> Over-allocated
+		// 3. hasUnderfundedP3 || hasUnderfundedP2 -> Underfunded
+		// 4. hasUnderfundedP1 -> Optional remaining
+		// 5. Else -> Funded / On Track
+		if b.BalanceMinor < 0 {
+			b.HealthStatus = "Overspent"
+			b.HealthBadge = "Overspent"
+			b.HealthBadgeClass = "badge-error text-error-content"
+		} else if b.UnassignedBufferMinor < 0 {
+			b.HealthStatus = "Over-allocated"
+			b.HealthBadge = "Over-allocated"
+			b.HealthBadgeClass = "badge-warning text-warning-content"
+		} else if hasUnderfundedP3 || hasUnderfundedP2 {
+			b.HealthStatus = "Underfunded"
+			b.HealthBadge = "Underfunded"
+			b.HealthBadgeClass = "badge-warning text-warning-content"
+		} else if hasUnderfundedP1 {
+			b.HealthStatus = "Optional remaining"
+			b.HealthBadge = "Optional remaining"
+			b.HealthBadgeClass = "badge-ghost text-base-content/60"
+		} else {
+			b.HealthStatus = "Funded / On Track"
+			b.HealthBadge = "Funded / On Track"
+			b.HealthBadgeClass = "badge-success text-success-content"
+		}
+
+		b.HasP3AtRisk = (hasP3Targets && b.UnassignedBufferMinor < 0) || hasUnderfundedP3
+		b.DefaultExpanded = (b.HealthStatus == "Overspent" || b.HealthStatus == "Over-allocated" || b.HealthStatus == "Underfunded")
+
+		allBuckets = append(allBuckets, b)
+	}
+
+	// Filter counts & stats
+	var countAll, countAttention, countOverspent, countBuffer int
+	var totalNeededAcrossAllMinor int64
+	var totalMandatoryP3NeededAcrossAllMinor int64
+
+	for _, b := range allBuckets {
+		countAll++
+		if b.HealthStatus == "Overspent" || b.HealthStatus == "Over-allocated" || b.HealthStatus == "Underfunded" {
+			countAttention++
+		}
+		if b.HealthStatus == "Overspent" {
+			countOverspent++
+		}
+		if b.UnassignedBufferMinor > 0 {
+			countBuffer++
+		}
+
+		totalNeededAcrossAllMinor += b.TotalNeededMinor
+		for _, t := range b.Targets {
+			if t.Currency == defaultCurr && t.Priority == 3 {
+				totalMandatoryP3NeededAcrossAllMinor += t.NeededMinor
+			}
+		}
+	}
+
+	// Filter display buckets
+	var displayBuckets []bucketViewData
+	for _, b := range allBuckets {
+		match := true
+		switch filterParam {
+		case "attention":
+			match = (b.HealthStatus == "Overspent" || b.HealthStatus == "Over-allocated" || b.HealthStatus == "Underfunded")
+		case "overspent":
+			match = (b.HealthStatus == "Overspent")
+		case "buffer":
+			match = (b.UnassignedBufferMinor > 0)
+		default:
+			match = true
+		}
+		if match {
+			displayBuckets = append(displayBuckets, b)
+		}
+	}
+
+	// Group display buckets by GroupName
+	type groupEntry struct {
+		GroupName string
+		Buckets   []bucketViewData
+	}
+	var groupEntries []groupEntry
+	groupIndex := make(map[string]int)
+
+	for _, b := range displayBuckets {
+		gName := b.GroupName
+		if gName == "" {
+			gName = "Needs"
+		}
+		idx, exists := groupIndex[gName]
+		if !exists {
+			idx = len(groupEntries)
+			groupIndex[gName] = idx
+			groupEntries = append(groupEntries, groupEntry{
+				GroupName: gName,
+			})
+		}
+		groupEntries[idx].Buckets = append(groupEntries[idx].Buckets, b)
+	}
+
+	var bucketGroups []bucketGroupViewData
+	for _, ge := range groupEntries {
+		bg := bucketGroupViewData{
+			GroupName: ge.GroupName,
+			GroupID:   safeDOMID(ge.GroupName),
+			Buckets:   ge.Buckets,
+		}
+		for _, b := range ge.Buckets {
+			bg.TotalAvailableMinor += b.BalanceMinor
+			bg.TotalRequiredMinor += b.TotalRequiredMinor
+			bg.TotalFundedMinor += b.TotalFundedMinor
+			bg.TotalNeededMinor += b.TotalNeededMinor
+		}
+		if bg.TotalRequiredMinor > 0 {
+			pct := int((bg.TotalFundedMinor * 100) / bg.TotalRequiredMinor)
+			if pct < 0 {
+				pct = 0
+			} else if pct > 100 {
+				pct = 100
+			}
+			bg.ProgressPercent = pct
+		} else {
+			bg.ProgressPercent = 100
+		}
+		bucketGroups = append(bucketGroups, bg)
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
-
-	var bucketRows strings.Builder
-	for _, b := range buckets {
-		// Calculate bucket overall health
-		var totalRequired int64
-		for _, t := range b.Targets {
-			if t.Currency == defaultCurr {
-				totalRequired += t.RequiredMinor
-			}
-		}
-
-		badgeClass := "badge-success text-success-content"
-		statusText := "Funded / On Track"
-		statusDot := "bg-success"
-		if b.BalanceMinor < 0 {
-			badgeClass = "badge-error text-error-content"
-			statusText = "Overspent"
-			statusDot = "bg-error"
-		} else if totalRequired > 0 && b.BalanceMinor < totalRequired {
-			badgeClass = "badge-warning text-warning-content"
-			statusText = "Underfunded"
-			statusDot = "bg-warning"
-		} else if totalRequired == 0 && b.BalanceMinor == 0 {
-			badgeClass = "badge-ghost text-base-content/60"
-			statusText = "Zero Balance"
-			statusDot = "bg-base-300"
-		}
-
-		var targetsSublist strings.Builder
-		if len(b.Targets) > 0 {
-			targetsSublist.WriteString(`<div class="mt-2 space-y-1 pl-4 border-l-2 border-base-300 text-xs">`)
-			for _, t := range b.Targets {
-				priorityLabel := "Optional"
-				if t.Priority == 3 {
-					priorityLabel = "Mandatory"
-				} else if t.Priority == 2 {
-					priorityLabel = "Recommended"
-				}
-				goalText := ""
-				if t.CeilingAmountMinor != nil {
-					goalText = fmt.Sprintf(` <span class="text-primary font-semibold">(Goal: %.2f %s)</span>`, float64(*t.CeilingAmountMinor)/100.0, t.Currency)
-				}
-				dueText := ""
-				if t.DueDate > 0 {
-					dTime := time.UnixMicro(t.DueDate).UTC()
-					dueText = fmt.Sprintf(` • Due: %s`, dTime.Format("2006-01-02"))
-				}
-				targetsSublist.WriteString(fmt.Sprintf(`
-					<div class="flex items-center justify-between text-base-content/70 py-0.5">
-						<span class="font-medium">• %s <span class="opacity-50 text-[10px]">(%s, %s%s)%s</span></span>
-						<div class="flex items-center gap-2">
-							<span class="badge %s badge-xs">%s</span>
-							<span class="font-mono">%.2f / %.2f %s</span>
-						</div>
-					</div>`,
-					html.EscapeString(t.Name), priorityLabel, t.RecurrenceCadence, dueText, goalText,
-					t.HealthBadgeClass, t.HealthBadge,
-					float64(t.CurrentFundedMinor)/100.0, float64(t.RequiredMinor)/100.0, t.Currency))
-			}
-			targetsSublist.WriteString(`</div>`)
-		}
-
-		bucketRows.WriteString(fmt.Sprintf(`
-			<tr class="hover">
-				<td>
-					<div class="flex flex-col">
-						<div class="flex items-center gap-3">
-							<span class="w-2.5 h-2.5 rounded-full %s"></span>
-							<div>
-								<div class="font-bold text-sm">%s</div>
-								<div class="text-xs text-base-content/50">%s (%d targets)</div>
-							</div>
-						</div>
-						%s
-					</div>
-				</td>
-				<td>
-					<span class="badge %s badge-sm font-semibold">%s</span>
-				</td>
-				<td class="font-mono text-right font-bold text-sm">
-					%.2f <span class="text-xs font-normal text-base-content/60">%s</span>
-				</td>
-				<td class="text-right">
-					<div class="flex items-center justify-end gap-1.5">
-						<button class="btn btn-ghost btn-xs text-primary font-semibold" onclick="openBucketDrawer('%s', '%s', '%s', '%.2f', '%s')">Inspect</button>
-						%s
-					</div>
-				</td>
-			</tr>`,
-			statusDot, html.EscapeString(b.Name), html.EscapeString(b.GroupName), len(b.Targets),
-			targetsSublist.String(),
-			badgeClass, statusText,
-			float64(b.BalanceMinor)/100.0, b.Currency,
-			b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), strings.ReplaceAll(b.GroupName, "'", "\\'"), float64(b.BalanceMinor)/100.0, b.Currency,
-			RenderPopoverActionMenu("bucket", b.ID, []TableActionItem{
-				{
-					Label:   "✏️ Edit Bucket",
-					OnClick: fmt.Sprintf("openEditBucketModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), strings.ReplaceAll(b.GroupName, "'", "\\'")),
-				},
-				{
-					Label:      "💵 Assign Funds",
-					OnClick:    fmt.Sprintf("openAssignModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
-				},
-				{
-					Label:      "↔️ Move Money",
-					OnClick:    fmt.Sprintf("openMoveModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
-				},
-				{
-					Label:      "📁 Archive Bucket",
-					FormAction: fmt.Sprintf("/budgets/%s/buckets/%s/archive", budgetID, b.ID),
-					CSRFToken:  csrfToken,
-					IsDanger:   true,
-					ConfirmMsg: "Archive this bucket? It must have zero balance and zero targets.",
-				},
-			}),
-		))
-	}
-
-	if len(buckets) == 0 {
-		bucketRows.WriteString(`
-			<tr>
-				<td colspan="4" class="p-8">
-					<div class="card card-border bg-base-100 border-dashed border-base-300 p-8 text-center flex flex-col items-center justify-center gap-4">
-						<div class="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-3xl font-bold">✨</div>
-						<div>
-							<h3 class="font-extrabold text-lg tracking-tight">No Envelopes Created Yet</h3>
-							<p class="text-xs text-base-content/60 max-w-md mx-auto mt-1">Get started quickly by generating a complete envelope structure with AI, importing from another budget, or adding envelopes manually.</p>
-						</div>
-						<div class="flex flex-wrap items-center justify-center gap-2 mt-2">
-							<button type="button" class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('ai')">
-								<span>✨</span>
-								<span>Create from Description (AI)</span>
-							</button>
-							<button type="button" class="btn btn-outline btn-secondary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('import')">
-								<span>📥</span>
-								<span>Import from Another Budget</span>
-							</button>
-							<button type="button" class="btn btn-ghost btn-sm" onclick="new_bucket_modal.showModal()">
-								<span>+</span>
-								<span>New Bucket Manually</span>
-							</button>
-						</div>
-					</div>
-				</td>
-			</tr>
-		`)
-	}
 
 	// Fetch user-owned accounts and balances for sidebar summary
 	accRows, err := tenantDB.QueryContext(c.Request().Context(), `
@@ -1318,22 +2142,9 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		`, budgetID))
 	}
 
-	// Active Horizon Join button classes
-	monthlyActive := "btn-ghost"
-	d30Active := "btn-ghost"
-	d90Active := "btn-ghost"
-	switch horizonParam {
-	case "30d":
-		d30Active = "btn-primary"
-	case "90d":
-		d90Active = "btn-primary"
-	default:
-		monthlyActive = "btn-primary"
-	}
-
 	// Other bucket options for Move Money modal
 	var bucketSelectOptions strings.Builder
-	for _, b := range buckets {
+	for _, b := range allBuckets {
 		bucketSelectOptions.WriteString(fmt.Sprintf(`<option value="%s">%s (%s)</option>`, b.ID, html.EscapeString(b.Name), html.EscapeString(b.GroupName)))
 	}
 
@@ -1449,6 +2260,102 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
     </dialog>
 `, otherBudgetSelectDisabled, otherBudgetOptions.String(), otherBudgetSelectDisabled)
 
+	// Toast notification
+	toastClass := "hidden"
+	if flashMsg != "" {
+		toastClass = ""
+	}
+	toastHTML := fmt.Sprintf(`
+		<div id="budget-toast" class="toast toast-top toast-end z-50 transition-opacity duration-300 %s">
+			<div class="alert alert-success text-xs shadow-lg flex items-center gap-2">
+				<span>✓</span>
+				<span id="budget-toast-msg">%s</span>
+			</div>
+		</div>
+	`, toastClass, html.EscapeString(flashMsg))
+
+	statsBannerHTML := renderBudgetStatsBanner(
+		budgetID, defaultRTA, defaultCurr, rtaOtherBadges.String(),
+		horizonParam, windowDays, totalNeededAcrossAllMinor, totalMandatoryP3NeededAcrossAllMinor,
+		filterParam, csrfToken,
+	)
+
+	filterToolbarHTML := renderBudgetFilterToolbar(
+		budgetID, horizonParam, filterParam,
+		countAll, countAttention, countOverspent, countBuffer,
+	)
+
+	desktopRowsHTML := renderBucketRowsDesktop(
+		len(allBuckets), bucketGroups, defaultCurr, horizonParam, filterParam, csrfToken, budgetID,
+	)
+
+	mobileCardsHTML := renderBucketCardsMobile(
+		len(allBuckets), displayBuckets, defaultCurr, horizonParam, filterParam, csrfToken, budgetID,
+	)
+
+	horizonDisplay := "Monthly"
+	if horizonParam == "30d" {
+		horizonDisplay = "30d"
+	} else if horizonParam == "90d" {
+		horizonDisplay = "90d"
+	}
+
+	var mainEnvelopesContent string
+	if len(allBuckets) == 0 {
+		mainEnvelopesContent = `
+			<div class="card card-border bg-base-100 border-dashed border-base-300 p-8 text-center flex flex-col items-center justify-center gap-4">
+				<div class="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-3xl font-bold">✨</div>
+				<div>
+					<h3 class="font-extrabold text-lg tracking-tight">No Envelopes Created Yet</h3>
+					<p class="text-xs text-base-content/60 max-w-md mx-auto mt-1">Get started quickly by generating a complete envelope structure with AI, importing from another budget, or adding envelopes manually.</p>
+				</div>
+				<div class="flex flex-wrap items-center justify-center gap-2 mt-2">
+					<button type="button" class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('ai')">
+						<span>✨</span>
+						<span>Create from Description (AI)</span>
+					</button>
+					<button type="button" class="btn btn-outline btn-secondary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('import')">
+						<span>📥</span>
+						<span>Import from Another Budget</span>
+					</button>
+					<button type="button" class="btn btn-ghost btn-sm" onclick="new_bucket_modal.showModal()">
+						<span>+</span>
+						<span>New Bucket Manually</span>
+					</button>
+				</div>
+			</div>
+		`
+	} else {
+		mainEnvelopesContent = fmt.Sprintf(`
+			<!-- Desktop Buckets Table Card -->
+			<div class="card card-border bg-base-100 border-base-300 shadow-md hidden md:block">
+				<div class="card-body p-0">
+					<div class="overflow-x-auto">
+						<table class="table table-zebra w-full">
+							<thead>
+								<tr class="bg-base-200/50">
+									<th class="font-bold">Bucket / Category &amp; Targets</th>
+									<th class="font-bold">Progress</th>
+									<th class="font-bold text-right">Needed (%s)</th>
+									<th class="font-bold text-right">Available Balance</th>
+									<th class="font-bold text-right">Actions</th>
+								</tr>
+							</thead>
+							<tbody>
+								%s
+							</tbody>
+						</table>
+					</div>
+				</div>
+			</div>
+
+			<!-- Mobile Buckets Cards List -->
+			<div class="md:hidden space-y-3">
+				%s
+			</div>
+		`, horizonDisplay, desktopRowsHTML, mobileCardsHTML)
+	}
+
 	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
@@ -1505,77 +2412,13 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
         <!-- Center Workspace -->
         <main class="flex-1 p-6 md:p-8 overflow-y-auto">
-            <!-- Top Stats & Ready to Assign Banner -->
-            <div class="stats stats-horizontal shadow-md w-full bg-base-100 border border-base-300 mb-6">
-                <div class="stat">
-                    <div class="stat-figure text-success text-3xl">💵</div>
-                    <div class="stat-title text-xs font-bold uppercase tracking-wider">Ready to Assign</div>
-                    <div class="stat-value text-success text-2xl font-black">
-                        %.2f %s
-                        %s
-                    </div>
-                    <div class="stat-desc text-xs">Unallocated liquid funds across budget accounts</div>
-                </div>
+            %s
 
-                <div class="stat">
-                    <div class="stat-title text-xs font-bold uppercase tracking-wider">Active Horizon</div>
-                    <div class="stat-actions mt-2">
-                        <div class="join">
-                            <a href="/budgets/%s/budget?horizon=monthly" class="btn btn-xs join-item %s">Monthly</a>
-                            <a href="/budgets/%s/budget?horizon=30d" class="btn btn-xs join-item %s">30d</a>
-                            <a href="/budgets/%s/budget?horizon=90d" class="btn btn-xs join-item %s">90d</a>
-                        </div>
-                    </div>
-                </div>
+            %s
 
-                <div class="stat">
-                    <div class="stat-title text-xs font-bold uppercase tracking-wider">Quick Actions</div>
-                    <div class="stat-actions mt-2">
-                        <form method="POST" action="/budgets/%s/budget/auto-assign" class="inline">
-                            <input type="hidden" name="csrf_token" value="%s" />
-                            <input type="hidden" name="currency" value="%s" />
-                            <input type="hidden" name="horizon" value="%s" />
-                            <button type="submit" class="btn btn-xs btn-outline btn-primary font-semibold shadow-xs">Auto-Assign by Priority</button>
-                        </form>
-                    </div>
-                </div>
-            </div>
+            %s
 
-            <!-- Buckets Table Header Toolbar -->
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-xl font-bold tracking-tight">Envelopes & Categories</h2>
-                <div class="flex items-center gap-2">
-                    <button type="button" class="btn btn-outline btn-primary btn-sm gap-1.5 shadow-xs font-semibold" onclick="openStructureModal('ai')">
-                        <span>✨</span>
-                        <span>AI / Import Structure</span>
-                    </button>
-                    <button class="btn btn-primary btn-sm gap-1.5 shadow font-semibold" onclick="new_bucket_modal.showModal()">
-                        <span>+</span>
-                        <span>New Bucket</span>
-                    </button>
-                </div>
-            </div>
-
-            <!-- Buckets Table Card -->
-            <div class="card card-border bg-base-100 border-base-300 shadow-md">
-                <div class="card-body p-0">
-                    <div class="overflow-x-auto">
-                        <table class="table table-zebra w-full">
-                            <thead>
-                                <tr class="bg-base-200/50">
-                                    <th class="font-bold">Bucket / Category & Targets</th>
-                                    <th class="font-bold">Health Status</th>
-                                    <th class="font-bold text-right">Available Balance</th>
-                                    <th class="font-bold text-right">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                %s
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
+            %s
         </main>
     </div>
 
@@ -1592,6 +2435,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             </div>
             <form method="POST" action="/budgets/%s/buckets" class="flex flex-col gap-4">
                 <input type="hidden" name="csrf_token" value="%s" />
+                <input type="hidden" name="horizon" value="%s" />
+                <input type="hidden" name="filter" value="%s" />
                 <div class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Bucket Name</span></label>
                     <input type="text" name="name" required placeholder="e.g. Groceries, Living Expenses" class="input input-bordered w-full input-md focus:input-primary" />
@@ -1618,6 +2463,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             </div>
             <form id="edit_bucket_form" method="POST" action="" class="flex flex-col gap-4">
                 <input type="hidden" name="csrf_token" value="%s" />
+                <input type="hidden" name="horizon" value="%s" />
+                <input type="hidden" name="filter" value="%s" />
                 <div class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Bucket Name</span></label>
                     <input type="text" id="edit_bucket_name" name="name" required class="input input-bordered w-full input-md focus:input-primary" />
@@ -1644,6 +2491,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             </div>
             <form id="assign_funds_form" method="POST" action="" class="flex flex-col gap-4">
                 <input type="hidden" name="csrf_token" value="%s" />
+                <input type="hidden" name="horizon" value="%s" />
+                <input type="hidden" name="filter" value="%s" />
                 <input type="hidden" id="assign_currency" name="currency" value="%s" />
                 <div class="text-xs text-base-content/70">
                     Assign funds directly from Ready to Assign into <span id="assign_bucket_name" class="font-bold text-primary"></span>.
@@ -1674,6 +2523,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             </div>
             <form method="POST" action="/budgets/%s/buckets/move" class="flex flex-col gap-4">
                 <input type="hidden" name="csrf_token" value="%s" />
+                <input type="hidden" name="horizon" value="%s" />
+                <input type="hidden" name="filter" value="%s" />
                 <input type="hidden" id="move_source_id" name="source_bucket_id" value="" />
                 <input type="hidden" id="move_currency" name="currency" value="%s" />
                 <div class="text-xs text-base-content/70">
@@ -1717,12 +2568,20 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                     <div class="stat-title text-[10px] font-bold uppercase tracking-wider">Available Envelope Balance</div>
                     <div id="drawer_bucket_balance" class="stat-value text-xl font-mono font-black text-primary"></div>
                 </div>
+                <div class="stat p-4">
+                    <div class="stat-title text-[10px] font-bold uppercase tracking-wider">Funded / Required</div>
+                    <div id="drawer_bucket_funded_req" class="stat-value text-base font-mono font-bold text-base-content/80"></div>
+                </div>
+                <div class="stat p-4">
+                    <div class="stat-title text-[10px] font-bold uppercase tracking-wider">Unassigned Buffer</div>
+                    <div id="drawer_bucket_buffer" class="stat-value text-base font-mono font-bold"></div>
+                </div>
             </div>
 
             <!-- Target Management Section -->
             <div class="flex justify-between items-center mb-3">
                 <h4 class="font-bold text-sm uppercase tracking-wider text-base-content/70">Targets in this Bucket</h4>
-                <button class="btn btn-xs btn-primary gap-1 font-semibold" onclick="openNewTargetModal()">+ Add Target</button>
+                <button type="button" class="btn btn-xs btn-primary gap-1 font-semibold" onclick="openNewTargetModal()">+ Add Target</button>
             </div>
 
             <div id="drawer_targets_container" class="space-y-3 mb-6">
@@ -1745,6 +2604,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             </div>
             <form id="target_form" method="POST" action="/budgets/%s/targets" class="flex flex-col gap-4" onsubmit="prepareTargetSubmit()">
                 <input type="hidden" name="csrf_token" value="%s" />
+                <input type="hidden" name="horizon" value="%s" />
+                <input type="hidden" name="filter" value="%s" />
                 <input type="hidden" id="target_bucket_id" name="bucket_id" value="" />
                 <input type="hidden" id="target_currency" name="currency" value="%s" />
 
@@ -1880,7 +2741,129 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
         const currentBudgetID = '%s';
         const csrfTokenVal = '%s';
         const currentCurrency = '%s';
+        const currentHorizon = '%s';
+        const currentFilter = '%s';
         const bucketsData = %s;
+
+        window.addEventListener('DOMContentLoaded', () => {
+            const toast = document.getElementById('budget-toast');
+            if (toast && !toast.classList.contains('hidden')) {
+                setTimeout(() => {
+                    toast.style.opacity = '0';
+                    setTimeout(() => toast.classList.add('hidden'), 300);
+                }, 4000);
+            }
+
+            if (window.location.hash) {
+                const el = document.querySelector(window.location.hash);
+                if (el) {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    el.classList.add('bg-primary/10');
+                    setTimeout(() => el.classList.remove('bg-primary/10'), 2500);
+                }
+            }
+
+            document.querySelectorAll('.target-subrows').forEach(row => {
+                const bID = row.getAttribute('data-bucket-id');
+                const stored = localStorage.getItem('balance_bucket_expanded_' + currentBudgetID + '_' + bID);
+                if (stored !== null) {
+                    const isExp = stored === 'true';
+                    row.classList.toggle('hidden', !isExp);
+                    const icon = document.getElementById('bucket-toggle-icon-' + bID);
+                    if (icon) icon.innerText = isExp ? '▼' : '▶';
+                    const btn = document.querySelector('.target-toggle-btn[aria-controls="targets-' + bID + '"]');
+                    if (btn) btn.setAttribute('aria-expanded', isExp ? 'true' : 'false');
+                }
+            });
+        });
+
+        function toggleBucketTargets(bID) {
+            const row = document.getElementById('targets-' + bID);
+            if (!row) return;
+            const isNowHidden = !row.classList.contains('hidden');
+            row.classList.toggle('hidden', isNowHidden);
+            const icon = document.getElementById('bucket-toggle-icon-' + bID);
+            if (icon) icon.innerText = isNowHidden ? '▶' : '▼';
+            const btn = document.querySelector('.target-toggle-btn[aria-controls="targets-' + bID + '"]');
+            if (btn) btn.setAttribute('aria-expanded', isNowHidden ? 'false' : 'true');
+            localStorage.setItem('balance_bucket_expanded_' + currentBudgetID + '_' + bID, isNowHidden ? 'false' : 'true');
+        }
+
+        function toggleMobileTargets(bID) {
+            const el = document.getElementById('mobile-targets-' + bID);
+            if (!el) return;
+            const isNowHidden = !el.classList.contains('hidden');
+            el.classList.toggle('hidden', isNowHidden);
+            const icon = document.getElementById('mobile-toggle-icon-' + bID);
+            if (icon) icon.innerText = isNowHidden ? '▶' : '▼';
+        }
+
+        function toggleGroup(groupID) {
+            const items = document.querySelectorAll('.group-item-' + groupID);
+            let anyHidden = false;
+            items.forEach(el => {
+                if (el.classList.contains('hidden')) anyHidden = true;
+            });
+            const shouldHide = !anyHidden;
+            items.forEach(el => el.classList.toggle('hidden', shouldHide));
+            const icon = document.getElementById('group-icon-' + groupID);
+            if (icon) icon.innerText = shouldHide ? '▶' : '▼';
+        }
+
+        function expandAllEnvelopes() {
+            document.querySelectorAll('.target-subrows').forEach(row => {
+                row.classList.remove('hidden');
+                const bID = row.getAttribute('data-bucket-id');
+                const icon = document.getElementById('bucket-toggle-icon-' + bID);
+                if (icon) icon.innerText = '▼';
+                const btn = document.querySelector('.target-toggle-btn[aria-controls="targets-' + bID + '"]');
+                if (btn) btn.setAttribute('aria-expanded', 'true');
+                localStorage.setItem('balance_bucket_expanded_' + currentBudgetID + '_' + bID, 'true');
+            });
+            document.querySelectorAll('.mobile-target-sublist').forEach(el => {
+                el.classList.remove('hidden');
+                const bID = el.getAttribute('data-bucket-id');
+                const icon = document.getElementById('mobile-toggle-icon-' + bID);
+                if (icon) icon.innerText = '▼';
+            });
+        }
+
+        function collapseAllEnvelopes() {
+            document.querySelectorAll('.target-subrows').forEach(row => {
+                row.classList.add('hidden');
+                const bID = row.getAttribute('data-bucket-id');
+                const icon = document.getElementById('bucket-toggle-icon-' + bID);
+                if (icon) icon.innerText = '▶';
+                const btn = document.querySelector('.target-toggle-btn[aria-controls="targets-' + bID + '"]');
+                if (btn) btn.setAttribute('aria-expanded', 'false');
+                localStorage.setItem('balance_bucket_expanded_' + currentBudgetID + '_' + bID, 'false');
+            });
+            document.querySelectorAll('.mobile-target-sublist').forEach(el => {
+                el.classList.add('hidden');
+                const bID = el.getAttribute('data-bucket-id');
+                const icon = document.getElementById('mobile-toggle-icon-' + bID);
+                if (icon) icon.innerText = '▶';
+            });
+        }
+
+        function filterEnvelopeSearch(query) {
+            const q = (query || '').toLowerCase().trim();
+            document.querySelectorAll('.bucket-row').forEach(row => {
+                const text = (row.getAttribute('data-search') || '').toLowerCase();
+                const matches = !q || text.includes(q);
+                row.classList.toggle('hidden', !matches);
+                const bID = row.getAttribute('data-bucket-id');
+                const targetRow = document.getElementById('targets-' + bID);
+                if (targetRow && !matches) {
+                    targetRow.classList.add('hidden');
+                }
+            });
+            document.querySelectorAll('.mobile-bucket-card').forEach(card => {
+                const text = (card.getAttribute('data-search') || '').toLowerCase();
+                const matches = !q || text.includes(q);
+                card.classList.toggle('hidden', !matches);
+            });
+        }
 
         function openEditBucketModal(id, name, group) {
             document.getElementById('edit_bucket_form').action = '/budgets/' + currentBudgetID + '/buckets/' + id + '/update';
@@ -1914,6 +2897,20 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             document.getElementById('drawer_bucket_balance').innerText = bal + ' ' + curr;
 
             const b = bucketsData.find(x => x.ID === id);
+            if (b) {
+                const reqStr = (b.TotalRequiredMinor / 100).toFixed(2);
+                const fundStr = (b.TotalFundedMinor / 100).toFixed(2);
+                const bufStr = (b.UnassignedBufferMinor / 100).toFixed(2);
+                const reqEl = document.getElementById('drawer_bucket_funded_req');
+                if (reqEl) reqEl.innerText = fundStr + ' / ' + reqStr + ' ' + curr;
+                const bufEl = document.getElementById('drawer_bucket_buffer');
+                if (bufEl) {
+                    bufEl.innerText = (b.UnassignedBufferMinor > 0 ? '+' : '') + bufStr + ' ' + curr;
+                    bufEl.className = 'stat-value text-base font-mono font-bold ' + 
+                        (b.UnassignedBufferMinor < 0 ? 'text-error' : (b.UnassignedBufferMinor > 0 ? 'text-success' : 'text-base-content/60'));
+                }
+            }
+
             const container = document.getElementById('drawer_targets_container');
             container.innerHTML = '';
 
@@ -1953,6 +2950,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                                 '<button type="button" class="btn btn-ghost btn-xs text-primary font-semibold target-edit-btn" onclick="openEditTargetModal(\'' + t.ID + '\')">Edit</button>' +
                                 '<form method="POST" action="/budgets/' + currentBudgetID + '/targets/' + t.ID + '/delete" onsubmit="return confirm(\'Delete this target?\')">' +
                                     '<input type="hidden" name="csrf_token" value="' + csrfTokenVal + '" />' +
+                                    '<input type="hidden" name="horizon" value="' + currentHorizon + '" />' +
+                                    '<input type="hidden" name="filter" value="' + currentFilter + '" />' +
                                     '<button type="submit" class="btn btn-ghost btn-xs text-error font-semibold">Delete</button>' +
                                 '</form>' +
                             '</div>' +
@@ -2400,7 +3399,6 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                                     '<input type="checkbox" class="checkbox checkbox-primary checkbox-xs bucket-chk" checked data-group="' + gIdx + '" data-bucket="' + bIdx + '" onchange="onBucketCheckboxToggle(' + gIdx + ', ' + bIdx + ', this.checked)">' +
                                     '<span class="text-xs font-bold text-primary">📁</span>' +
                                     '<input type="text" class="input input-bordered input-xs font-bold flex-1 bucket-name-input" value="' + escapeHtml(b.name) + '" data-group="' + gIdx + '" data-bucket="' + bIdx + '">' +
-                                '</div>' +
                                 (targetsHtml ? '<div class="flex flex-col">' + targetsHtml + '</div>' : '') +
                             '</div>';
                     });
@@ -2537,18 +3535,18 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		budgetName, budgetName, role, aomHeadline, csrfToken,
 		RenderSidebarNavigation(budgetID, "budget"),
 		accountSummaryRows.String(),
-		float64(defaultRTA)/100.0, defaultCurr, rtaOtherBadges.String(),
-		budgetID, monthlyActive, budgetID, d30Active, budgetID, d90Active,
-		budgetID, csrfToken, defaultCurr, horizonParam,
-		bucketRows.String(),
+		toastHTML,
+		statsBannerHTML,
+		filterToolbarHTML,
+		mainEnvelopesContent,
 		RenderBottomDock(budgetID, "budget"),
 		structureModalHTML,
-		budgetID, csrfToken,
-		csrfToken,
-		csrfToken, defaultCurr, defaultCurr,
-		budgetID, csrfToken, defaultCurr, bucketSelectOptions.String(), defaultCurr,
-		budgetID, csrfToken, defaultCurr,
-		budgetID, csrfToken, defaultCurr, toJSONString(buckets))
+		budgetID, csrfToken, horizonParam, filterParam,
+		csrfToken, horizonParam, filterParam,
+		csrfToken, horizonParam, filterParam, defaultCurr, defaultCurr,
+		budgetID, csrfToken, horizonParam, filterParam, defaultCurr, bucketSelectOptions.String(), defaultCurr,
+		budgetID, csrfToken, horizonParam, filterParam, defaultCurr,
+		budgetID, csrfToken, defaultCurr, horizonParam, filterParam, toJSONString(allBuckets))
 
 	return c.HTML(http.StatusOK, htmlContent)
 }
@@ -2571,7 +3569,7 @@ func (h *WorkspaceHandler) CreateBucket(c echo.Context) error {
 		groupName = "Needs"
 	}
 
-	_, err := budget.CreateBucket(c.Request().Context(), tenantDB, budget.CreateBucketInput{
+	bID, err := budget.CreateBucket(c.Request().Context(), tenantDB, budget.CreateBucketInput{
 		GroupName:     groupName,
 		Name:          name,
 		AgentID:       userID,
@@ -2581,7 +3579,7 @@ func (h *WorkspaceHandler) CreateBucket(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "created", bID))
 }
 
 // UpdateBucket handles updating bucket name or group.
@@ -2606,7 +3604,7 @@ func (h *WorkspaceHandler) UpdateBucket(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "updated", bucketID))
 }
 
 // ArchiveBucket archives a bucket if it has zero balance and zero targets.
@@ -2622,7 +3620,7 @@ func (h *WorkspaceHandler) ArchiveBucket(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "archived", ""))
 }
 
 // AssignFunds assigns funds from ready to assign to bucket.
@@ -2660,7 +3658,7 @@ func (h *WorkspaceHandler) AssignFunds(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "assigned", bucketID))
 }
 
 // MoveFunds moves funds between buckets.
@@ -2693,7 +3691,7 @@ func (h *WorkspaceHandler) MoveFunds(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "moved", dstID))
 }
 
 // AutoAssign triggers priority waterfall auto-assign from available pool.
@@ -2721,7 +3719,7 @@ func (h *WorkspaceHandler) AutoAssign(c echo.Context) error {
 	}
 	pool := rtaMap[currency]
 	if pool <= 0 {
-		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget?horizon=%s", budgetID, horizon))
+		return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "", ""))
 	}
 
 	nowUTC := time.Now().UTC()
@@ -2783,7 +3781,7 @@ func (h *WorkspaceHandler) AutoAssign(c echo.Context) error {
 		}
 	}
 
-	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget?horizon=%s", budgetID, horizon))
+	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "auto_assigned", ""))
 }
 
 // CreateTarget creates a new target in a bucket.
@@ -2887,7 +3885,7 @@ func (h *WorkspaceHandler) CreateTarget(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "target_created", bucketID))
 }
 
 // UpdateTarget updates an existing target.
@@ -2897,6 +3895,9 @@ func (h *WorkspaceHandler) UpdateTarget(c echo.Context) error {
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	userID := c.Get(ContextUserIDKey).(string)
 	corrID := c.Get("correlationID").(string)
+
+	var bucketID string
+	_ = tenantDB.QueryRowContext(c.Request().Context(), "SELECT bucket_id FROM targets_projection WHERE id = ?", targetID).Scan(&bucketID)
 
 	name := strings.TrimSpace(c.FormValue("name"))
 	tType := c.FormValue("target_type")
@@ -2986,7 +3987,7 @@ func (h *WorkspaceHandler) UpdateTarget(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "target_updated", bucketID))
 }
 
 // DeleteTarget deletes (archives) a target.
@@ -2997,12 +3998,15 @@ func (h *WorkspaceHandler) DeleteTarget(c echo.Context) error {
 	userID := c.Get(ContextUserIDKey).(string)
 	corrID := c.Get("correlationID").(string)
 
+	var bucketID string
+	_ = tenantDB.QueryRowContext(c.Request().Context(), "SELECT bucket_id FROM targets_projection WHERE id = ?", targetID).Scan(&bucketID)
+
 	err := budget.DeleteTarget(c.Request().Context(), tenantDB, targetID, userID, corrID)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
+	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "target_deleted", bucketID))
 }
 
 // GenerateStructurePreview produces a proposed budget structure from an AI prompt.
