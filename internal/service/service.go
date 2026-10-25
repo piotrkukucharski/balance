@@ -23,6 +23,7 @@ var (
 	ErrUserNotFound      = errors.New("user not found")
 	ErrBudgetNotFound    = errors.New("budget not found")
 	ErrInvalidInput      = errors.New("invalid input")
+	ErrUnauthorized      = errors.New("unauthorized")
 )
 
 // AppService coordinates domain actions for both HTTP handlers and CLI operations.
@@ -648,6 +649,227 @@ func (s *AppService) ApplyBudgetStructure(ctx context.Context, budgetID string, 
 		return 0, 0, err
 	}
 	return budget.ApplyBudgetStructure(ctx, tenantDB, structure, agentID, correlationID)
+}
+
+// CloneBudgetInput holds parameters for cloning an existing budget.
+type CloneBudgetInput struct {
+	SourceBudgetID      string
+	NewName             string
+	RequestingUserID    string
+	IncludeMembers      bool
+	IncludeAccounts     bool
+	IncludeBuckets      bool
+	IncludeTargets      bool
+	IncludeTransactions bool
+	CorrelationID       string
+}
+
+// ValidateCloneBudgetInput verifies input arguments and enforces dependency rules.
+func ValidateCloneBudgetInput(input CloneBudgetInput) error {
+	if strings.TrimSpace(input.SourceBudgetID) == "" || !domain.IsValidUUIDv7(input.SourceBudgetID) {
+		return fmt.Errorf("%w: invalid source budget ID", ErrInvalidInput)
+	}
+	if strings.TrimSpace(input.NewName) == "" {
+		return fmt.Errorf("%w: new budget name is required", ErrInvalidInput)
+	}
+	if strings.TrimSpace(input.RequestingUserID) == "" || !domain.IsValidUUIDv7(input.RequestingUserID) {
+		return fmt.Errorf("%w: invalid requesting user ID", ErrInvalidInput)
+	}
+	// Dependency rules:
+	// 1. Transactions require accounts and buckets
+	if input.IncludeTransactions && (!input.IncludeAccounts || !input.IncludeBuckets) {
+		return fmt.Errorf("%w: transactions require both accounts and buckets to be included", ErrInvalidInput)
+	}
+	// 2. Targets require buckets
+	if input.IncludeTargets && !input.IncludeBuckets {
+		return fmt.Errorf("%w: targets require buckets to be included", ErrInvalidInput)
+	}
+	return nil
+}
+
+// CloneBudget creates a clone of the source budget tenant and prunes unselected resources.
+func (s *AppService) CloneBudget(ctx context.Context, input CloneBudgetInput) (string, error) {
+	if err := ValidateCloneBudgetInput(input); err != nil {
+		return "", err
+	}
+
+	// Verify owner membership on source budget
+	isOwner, err := s.CheckOwnerMembership(ctx, input.SourceBudgetID, input.RequestingUserID)
+	if err != nil {
+		return "", fmt.Errorf("check ownership: %w", err)
+	}
+	if !isOwner {
+		return "", fmt.Errorf("%w: only budget owner can clone the budget", ErrUnauthorized)
+	}
+
+	// Retrieve source budget metadata
+	var srcCurrency, srcTimezone string
+	err = s.mainDB.QueryRowContext(ctx, `SELECT default_currency, timezone FROM budgets WHERE id = ?`, input.SourceBudgetID).Scan(&srcCurrency, &srcTimezone)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("%w: source budget not found", ErrBudgetNotFound)
+		}
+		return "", fmt.Errorf("query source budget: %w", err)
+	}
+
+	newBudgetID := domain.NewUUIDv7()
+	nowMicros := s.clock.Now().UTC().UnixMicro()
+
+	// Clone tenant database physically first
+	clonedDB, err := s.tenantMgr.CloneTenantDB(input.SourceBudgetID, newBudgetID)
+	if err != nil {
+		return "", fmt.Errorf("clone tenant db: %w", err)
+	}
+
+	// Prune unselected resources from cloned tenant database inside a transaction
+	pruneTx, err := clonedDB.BeginTx(ctx, nil)
+	if err != nil {
+		_ = s.tenantMgr.DeleteTenantDB(newBudgetID)
+		return "", fmt.Errorf("begin prune tx: %w", err)
+	}
+	defer pruneTx.Rollback()
+
+	if !input.IncludeTransactions {
+		// Remove all transactions and ledger links
+		tablesToClear := []string{
+			"transaction_links",
+			"budget_transactions",
+			"budget_transactions_current",
+			"raw_transactions",
+			"raw_transactions_current",
+		}
+		for _, tbl := range tablesToClear {
+			if _, err := pruneTx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s", tbl)); err != nil {
+				_ = s.tenantMgr.DeleteTenantDB(newBudgetID)
+				return "", fmt.Errorf("prune table %s: %w", tbl, err)
+			}
+		}
+		// Reset account and bucket balances to 0
+		if _, err := pruneTx.ExecContext(ctx, "UPDATE account_currency_balances SET balance_minor = 0, updated_at = ?", nowMicros); err != nil {
+			_ = s.tenantMgr.DeleteTenantDB(newBudgetID)
+			return "", fmt.Errorf("reset account balances: %w", err)
+		}
+		if _, err := pruneTx.ExecContext(ctx, "UPDATE bucket_currency_balances SET balance_minor = 0"); err != nil {
+			_ = s.tenantMgr.DeleteTenantDB(newBudgetID)
+			return "", fmt.Errorf("reset bucket balances: %w", err)
+		}
+	}
+
+	if !input.IncludeTargets {
+		tablesToClear := []string{
+			"target_events",
+			"targets_projection",
+		}
+		for _, tbl := range tablesToClear {
+			if _, err := pruneTx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s", tbl)); err != nil {
+				_ = s.tenantMgr.DeleteTenantDB(newBudgetID)
+				return "", fmt.Errorf("prune table %s: %w", tbl, err)
+			}
+		}
+	}
+
+	if !input.IncludeBuckets {
+		tablesToClear := []string{
+			"bucket_events",
+			"buckets_projection",
+			"bucket_currency_balances",
+			"matching_rules",
+			"matching_rules_current",
+		}
+		for _, tbl := range tablesToClear {
+			if _, err := pruneTx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s", tbl)); err != nil {
+				_ = s.tenantMgr.DeleteTenantDB(newBudgetID)
+				return "", fmt.Errorf("prune table %s: %w", tbl, err)
+			}
+		}
+	}
+
+	if !input.IncludeAccounts {
+		tablesToClear := []string{
+			"account_integration_links",
+			"account_currency_balances",
+			"accounts",
+			"accounts_current",
+			"parties",
+			"parties_current",
+			"matching_rules",
+			"matching_rules_current",
+		}
+		for _, tbl := range tablesToClear {
+			if _, err := pruneTx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s", tbl)); err != nil {
+				_ = s.tenantMgr.DeleteTenantDB(newBudgetID)
+				return "", fmt.Errorf("prune table %s: %w", tbl, err)
+			}
+		}
+	}
+
+	if err := pruneTx.Commit(); err != nil {
+		_ = s.tenantMgr.DeleteTenantDB(newBudgetID)
+		return "", fmt.Errorf("commit prune tx: %w", err)
+	}
+
+	// Register budget and members in main.db
+	mainTx, err := s.mainDB.BeginTx(ctx, nil)
+	if err != nil {
+		_ = s.tenantMgr.DeleteTenantDB(newBudgetID)
+		return "", fmt.Errorf("begin main tx: %w", err)
+	}
+	defer mainTx.Rollback()
+
+	_, err = mainTx.ExecContext(ctx, `
+		INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		newBudgetID, strings.TrimSpace(input.NewName), srcCurrency, srcTimezone, input.RequestingUserID, nowMicros, nowMicros,
+	)
+	if err != nil {
+		_ = s.tenantMgr.DeleteTenantDB(newBudgetID)
+		return "", fmt.Errorf("insert budget into main.db: %w", err)
+	}
+
+	// Bind requesting user as OWNER
+	_, err = mainTx.ExecContext(ctx, `
+		INSERT INTO budget_members (budget_id, user_id, role, joined_at)
+		VALUES (?, ?, 'OWNER', ?)`,
+		newBudgetID, input.RequestingUserID, nowMicros,
+	)
+	if err != nil {
+		_ = s.tenantMgr.DeleteTenantDB(newBudgetID)
+		return "", fmt.Errorf("insert owner member: %w", err)
+	}
+
+	// If IncludeMembers is selected, copy remaining members from source budget (excluding owner, who is already added)
+	if input.IncludeMembers {
+		rows, err := s.mainDB.QueryContext(ctx, `SELECT user_id, role FROM budget_members WHERE budget_id = ? AND user_id != ?`, input.SourceBudgetID, input.RequestingUserID)
+		if err != nil {
+			_ = s.tenantMgr.DeleteTenantDB(newBudgetID)
+			return "", fmt.Errorf("query source members: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var mUserID, mRole string
+			if err := rows.Scan(&mUserID, &mRole); err != nil {
+				_ = s.tenantMgr.DeleteTenantDB(newBudgetID)
+				return "", fmt.Errorf("scan source member: %w", err)
+			}
+			_, err = mainTx.ExecContext(ctx, `
+				INSERT INTO budget_members (budget_id, user_id, role, joined_at)
+				VALUES (?, ?, ?, ?)`,
+				newBudgetID, mUserID, mRole, nowMicros,
+			)
+			if err != nil {
+				_ = s.tenantMgr.DeleteTenantDB(newBudgetID)
+				return "", fmt.Errorf("insert copied member: %w", err)
+			}
+		}
+	}
+
+	if err := mainTx.Commit(); err != nil {
+		_ = s.tenantMgr.DeleteTenantDB(newBudgetID)
+		return "", fmt.Errorf("commit main tx: %w", err)
+	}
+
+	return newBudgetID, nil
 }
 
 // ExportBudgetStructure exports an existing budget structure from the tenant database.

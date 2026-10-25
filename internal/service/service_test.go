@@ -145,6 +145,73 @@ func TestAppService_UserAndBudgetLifecyle(t *testing.T) {
 		t.Fatalf("expected rich transactions, got %d (err: %v)", txCount, err)
 	}
 
+	// 5b. Test CloneBudget
+	// Test validation: Transactions without accounts/buckets must fail
+	err = ValidateCloneBudgetInput(CloneBudgetInput{
+		SourceBudgetID:      budgetID,
+		NewName:             "Invalid Clone",
+		RequestingUserID:    userID,
+		IncludeTransactions: true,
+		IncludeAccounts:     false,
+		IncludeBuckets:      true,
+	})
+	if err == nil {
+		t.Fatalf("expected error when transactions included without accounts, got nil")
+	}
+
+	// Successful full clone
+	clonedBudgetID, err := svc.CloneBudget(ctx, CloneBudgetInput{
+		SourceBudgetID:      budgetID,
+		NewName:             "Full Clone Budget",
+		RequestingUserID:    userID,
+		IncludeMembers:      true,
+		IncludeAccounts:     true,
+		IncludeBuckets:      true,
+		IncludeTargets:      true,
+		IncludeTransactions: true,
+	})
+	if err != nil {
+		t.Fatalf("CloneBudget full failed: %v", err)
+	}
+
+	clonedTenantDB, err := svc.tenantMgr.GetTenantDB(clonedBudgetID, false)
+	if err != nil {
+		t.Fatalf("get cloned tenant db: %v", err)
+	}
+	var clonedTxCount int
+	err = clonedTenantDB.QueryRow("SELECT count(*) FROM budget_transactions_current").Scan(&clonedTxCount)
+	if err != nil || clonedTxCount != txCount {
+		t.Fatalf("expected %d transactions in full clone, got %d (err: %v)", txCount, clonedTxCount, err)
+	}
+
+	// Partial clone: Without transactions
+	noTxCloneID, err := svc.CloneBudget(ctx, CloneBudgetInput{
+		SourceBudgetID:      budgetID,
+		NewName:             "Structure Only Clone",
+		RequestingUserID:    userID,
+		IncludeMembers:      true,
+		IncludeAccounts:     true,
+		IncludeBuckets:      true,
+		IncludeTargets:      true,
+		IncludeTransactions: false,
+	})
+	if err != nil {
+		t.Fatalf("CloneBudget structure-only failed: %v", err)
+	}
+	noTxTenantDB, err := svc.tenantMgr.GetTenantDB(noTxCloneID, false)
+	if err != nil {
+		t.Fatalf("get noTx tenant db: %v", err)
+	}
+	var zeroTxCount int
+	err = noTxTenantDB.QueryRow("SELECT count(*) FROM budget_transactions_current").Scan(&zeroTxCount)
+	if err != nil || zeroTxCount != 0 {
+		t.Fatalf("expected 0 transactions in structure-only clone, got %d", zeroTxCount)
+	}
+
+	// Clean up clones
+	_ = svc.RemoveBudget(ctx, clonedBudgetID)
+	_ = svc.RemoveBudget(ctx, noTxCloneID)
+
 	// 6. Remove Budget
 	if err := svc.RemoveBudget(ctx, budgetID); err != nil {
 		t.Fatalf("remove budget failed: %v", err)

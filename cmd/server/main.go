@@ -198,6 +198,7 @@ func main() {
 	tenantOwner := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "OWNER"))
 	tenantOwner.POST("/settings", workspaceHandler.UpdateBudget)
 	tenantOwner.POST("/update", workspaceHandler.UpdateBudget)
+	tenantOwner.POST("/clone", workspaceHandler.CloneBudget)
 	tenantOwner.POST("/delete", workspaceHandler.DeleteBudget)
 
 	// REST API v1 (OpenAPI 3.1)

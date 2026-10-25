@@ -75,3 +75,12 @@ Feature: Multi-Tenant Budget Provisioning and Workspace Navigation
     When user "adam@example.com" requests the budgets list view "/budgets"
     Then the response should not contain budget edit and delete controls
 
+  Scenario: Cloning a budget with selective resources as OWNER
+    Given an authenticated user "jan@example.com" who owns the budget "Family Home"
+    When I submit a request to clone the budget "Family Home" to "Family Home (Copy)" with accounts, buckets, and targets but without transactions
+    Then a new budget record named "Family Home (Copy)" should be registered in "main.db"
+    And the user "jan@example.com" should be assigned the "OWNER" role in "budget_members" for the cloned budget
+    And the cloned budget should have zero transactions
+    And the response should redirect to the budget view "/budgets/:budgetId/budget"
+
+

@@ -531,6 +531,85 @@ func (s *Server) UpdateBudget(ctx echo.Context, budgetId BudgetIdPathParam) erro
 	})
 }
 
+// CloneBudget (POST /budgets/{budgetId}/clone)
+func (s *Server) CloneBudget(ctx echo.Context, budgetId BudgetIdPathParam) error {
+	budgetID := budgetId.String()
+	_, userID, err := s.verifyBudgetAccess(ctx, budgetID, "OWNER")
+	if err != nil {
+		return err
+	}
+
+	var req CloneBudgetRequest
+	if err := ctx.Bind(&req); err != nil {
+		return sendError(ctx, http.StatusBadRequest, "Invalid request payload", "INVALID_INPUT", nil)
+	}
+	if strings.TrimSpace(req.NewName) == "" {
+		return sendError(ctx, http.StatusBadRequest, "New budget name is required", "INVALID_INPUT", nil)
+	}
+
+	// Default true for boolean flags if nil
+	includeMembers := true
+	if req.IncludeMembers != nil {
+		includeMembers = *req.IncludeMembers
+	}
+	includeAccounts := true
+	if req.IncludeAccounts != nil {
+		includeAccounts = *req.IncludeAccounts
+	}
+	includeBuckets := true
+	if req.IncludeBuckets != nil {
+		includeBuckets = *req.IncludeBuckets
+	}
+	includeTargets := true
+	if req.IncludeTargets != nil {
+		includeTargets = *req.IncludeTargets
+	}
+	includeTransactions := true
+	if req.IncludeTransactions != nil {
+		includeTransactions = *req.IncludeTransactions
+	}
+
+	correlationID := ctx.Response().Header().Get("X-Correlation-ID")
+
+	clonedBudgetID, err := s.appService.CloneBudget(ctx.Request().Context(), service.CloneBudgetInput{
+		SourceBudgetID:      budgetID,
+		NewName:             req.NewName,
+		RequestingUserID:    userID,
+		IncludeMembers:      includeMembers,
+		IncludeAccounts:     includeAccounts,
+		IncludeBuckets:      includeBuckets,
+		IncludeTargets:      includeTargets,
+		IncludeTransactions: includeTransactions,
+		CorrelationID:       correlationID,
+	})
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidInput) {
+			return sendError(ctx, http.StatusBadRequest, err.Error(), "INVALID_INPUT", nil)
+		}
+		if errors.Is(err, service.ErrUnauthorized) {
+			return sendError(ctx, http.StatusForbidden, err.Error(), "FORBIDDEN", nil)
+		}
+		if errors.Is(err, service.ErrBudgetNotFound) {
+			return sendError(ctx, http.StatusNotFound, err.Error(), "NOT_FOUND", nil)
+		}
+		return sendError(ctx, http.StatusInternalServerError, err.Error(), "CLONE_BUDGET_FAILED", nil)
+	}
+
+	var name, curr, tz string
+	var createdAt int64
+	s.mainDB.QueryRowContext(ctx.Request().Context(), `SELECT name, default_currency, timezone, created_at FROM budgets WHERE id = ?`, clonedBudgetID).Scan(&name, &curr, &tz, &createdAt)
+
+	clonedUUID, _ := uuid.Parse(clonedBudgetID)
+	return ctx.JSON(http.StatusCreated, BudgetSummary{
+		Id:              clonedUUID,
+		Name:            name,
+		DefaultCurrency: curr,
+		Timezone:        tz,
+		Role:            BudgetSummaryRoleOWNER,
+		CreatedAt:       createdAt,
+	})
+}
+
 // InviteBudgetMember (POST /budgets/{budgetId}/invitations)
 func (s *Server) InviteBudgetMember(ctx echo.Context, budgetId BudgetIdPathParam) error {
 	budgetID := budgetId.String()

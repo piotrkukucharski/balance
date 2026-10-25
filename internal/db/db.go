@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/balance/balance/internal/domain"
@@ -290,6 +291,52 @@ func (m *TenantDBManager) DeleteTenantDB(budgetID string) error {
 	ctx := logger.WithComponent(context.Background(), "infra:tenant_manager")
 	logger.Info(ctx, "Tenant database files deleted from disk", "budget_id", budgetID)
 	return nil
+}
+
+// CloneTenantDB creates a physical snapshot of the source tenant database under targetBudgetID.
+// It ensures any pending WAL changes in source are checkpointed, uses SQLite VACUUM INTO,
+// and ensures target schema migrations are applied.
+func (m *TenantDBManager) CloneTenantDB(sourceBudgetID, targetBudgetID string) (*sql.DB, error) {
+	ctx := logger.WithComponent(context.Background(), "infra:tenant_manager")
+
+	if !domain.IsValidUUIDv7(sourceBudgetID) || !domain.IsValidUUIDv7(targetBudgetID) {
+		return nil, errors.New("invalid budget ID format")
+	}
+
+	sourceDB, err := m.GetTenantDB(sourceBudgetID, false)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get source tenant database: %w", err)
+	}
+
+	targetPath := filepath.Join(m.budgetsDir, targetBudgetID+".db")
+	if filepath.Dir(targetPath) != m.budgetsDir {
+		return nil, errors.New("path traversal detected")
+	}
+
+	// Remove target db file if exists
+	_ = os.Remove(targetPath + "-wal")
+	_ = os.Remove(targetPath + "-shm")
+	_ = os.Remove(targetPath)
+
+	// Checkpoint WAL of source to ensure consistent state
+	_, _ = sourceDB.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
+
+	// Use VACUUM INTO to create a safe, isolated copy of source SQLite database
+	escapedPath := strings.ReplaceAll(targetPath, "'", "''")
+	_, err = sourceDB.ExecContext(ctx, fmt.Sprintf("VACUUM INTO '%s'", escapedPath))
+	if err != nil {
+		logger.Error(ctx, "VACUUM INTO failed during tenant clone", "source_budget_id", sourceBudgetID, "target_budget_id", targetBudgetID, "error", err.Error())
+		return nil, fmt.Errorf("failed to clone tenant database: %w", err)
+	}
+
+	targetDB, err := m.GetTenantDB(targetBudgetID, true)
+	if err != nil {
+		logger.Error(ctx, "Failed opening cloned tenant database", "target_budget_id", targetBudgetID, "error", err.Error())
+		return nil, fmt.Errorf("failed to open cloned tenant database: %w", err)
+	}
+
+	logger.Info(ctx, "Tenant database cloned successfully", "source_budget_id", sourceBudgetID, "target_budget_id", targetBudgetID)
+	return targetDB, nil
 }
 
 func (m *TenantDBManager) CloseAll() {

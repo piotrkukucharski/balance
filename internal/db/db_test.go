@@ -169,4 +169,16 @@ func TestMainDBAndTenantDBManager(t *testing.T) {
 	if err != nil || hasBookingStatus != 1 {
 		t.Fatalf("expected booking_status column to be migrated, got count=%d, err=%v", hasBookingStatus, err)
 	}
+
+	// Test CloneTenantDB
+	cloneTargetID := "01900000-0000-7000-8000-000000000099"
+	clonedDB, err := mgr.CloneTenantDB(budgetID1, cloneTargetID)
+	if err != nil {
+		t.Fatalf("CloneTenantDB failed: %v", err)
+	}
+	var clonedTableCount int
+	err = clonedDB.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table'").Scan(&clonedTableCount)
+	if err != nil || clonedTableCount == 0 {
+		t.Fatalf("Cloned DB query failed, tableCount=%d, err=%v", clonedTableCount, err)
+	}
 }

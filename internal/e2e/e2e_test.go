@@ -255,6 +255,7 @@ func (tc *e2eScenarioContext) setup() error {
 	tenantOwner := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "OWNER"))
 	tenantOwner.POST("/settings", workspaceHandler.UpdateBudget)
 	tenantOwner.POST("/update", workspaceHandler.UpdateBudget)
+	tenantOwner.POST("/clone", workspaceHandler.CloneBudget)
 	tenantOwner.POST("/delete", workspaceHandler.DeleteBudget)
 
 	apiServer := openapi.NewServer(mainDB, tenantMgr, appService)
@@ -1033,6 +1034,49 @@ func InitializeE2EScenario(ctx *godog.ScenarioContext) {
 		}
 		wait()
 		return tc.page.WaitLoad()
+	})
+
+	ctx.Step(`^I clone the budget "([^"]*)" into "([^"]*)" via the clone modal$`, func(sourceName, cloneName string) error {
+		// Trigger openCloneBudgetModal via JavaScript
+		_, err := tc.page.Eval(`(targetName) => {
+			const cards = document.querySelectorAll('.card');
+			let foundBudgetId = null;
+			for (const card of cards) {
+				if (card.textContent.includes(targetName)) {
+					const cloneBtn = card.querySelector('button[onclick*="openCloneBudgetModal"]');
+					if (cloneBtn) {
+						cloneBtn.click();
+						return;
+					}
+				}
+			}
+			throw new Error('Clone button for budget not found');
+		}`, sourceName)
+		if err != nil {
+			return err
+		}
+
+		// Fill in new name in clone modal
+		nameInp := tc.page.MustElement(`#clone_budget_name`)
+		_ = nameInp.SelectAllText()
+		if err := nameInp.Input(cloneName); err != nil {
+			return err
+		}
+
+		wait := tc.page.WaitNavigation(proto.PageLifecycleEventNameLoad)
+		if err := tc.page.MustElement(`#clone_budget_form button[type="submit"]`).Click(proto.InputMouseButtonLeft, 1); err != nil {
+			return err
+		}
+		wait()
+		if err := tc.page.WaitLoad(); err != nil {
+			return err
+		}
+		info, _ := tc.page.Info()
+		parts := strings.Split(strings.TrimPrefix(info.URL, tc.server.URL+"/budgets/"), "/")
+		if len(parts) > 0 && parts[0] != "" {
+			tc.activeBudgetID = parts[0]
+		}
+		return nil
 	})
 
 	// =========================================================================

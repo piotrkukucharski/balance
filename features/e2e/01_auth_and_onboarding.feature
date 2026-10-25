@@ -29,3 +29,12 @@ Feature: Browser E2E Authentication, Budget Provisioning and Workspace Navigatio
     When I fill in the login form with email "jan.e2e@example.com" and password "SuperSecret123!" and click "Sign In"
     Then the browser URL should be "/budgets"
     And the budgets list should display "Family Home 2026"
+
+  Scenario: Cloning a budget from budgets list with selective resources in browser
+    Given an authenticated browser session for "jan.e2e@example.com" with password "SuperSecret123!" owning budget "Family Home 2026"
+    When I navigate to "/budgets" in the browser
+    And I clone the budget "Family Home 2026" into "Family Home Cloned" via the clone modal
+    Then the browser should navigate to the budget workspace view
+    And the page should display budget title "Family Home Cloned"
+    When I navigate to "/budgets" in the browser
+    Then the budgets list should display "Family Home Cloned"

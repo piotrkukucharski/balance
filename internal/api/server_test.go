@@ -259,7 +259,7 @@ func TestAPI_Auth_RegisterAndLoginAndTokenFlow(t *testing.T) {
 }
 
 func TestAPI_RBAC_UnauthorizedAndForbidden(t *testing.T) {
-	e, _, _, appService, _ := setupTestAPIServer(t)
+	e, mainDB, _, appService, _ := setupTestAPIServer(t)
 
 	// Create user 1 (Owner)
 	u1ID, _ := appService.CreateUser(context.Background(), service.CreateUserInput{
@@ -275,7 +275,7 @@ func TestAPI_RBAC_UnauthorizedAndForbidden(t *testing.T) {
 	})
 
 	// Create user 2 (Outsider)
-	appService.CreateUser(context.Background(), service.CreateUserInput{
+	u2ID, _ := appService.CreateUser(context.Background(), service.CreateUserInput{
 		Email:       "outsider@example.com",
 		Password:    "Password123!",
 		DisplayName: "Outsider User",
@@ -310,5 +310,55 @@ func TestAPI_RBAC_UnauthorizedAndForbidden(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 Unauthorized for unauthenticated request, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Login Owner
+	ownerLoginBody, _ := json.Marshal(map[string]interface{}{
+		"email":    "owner@example.com",
+		"password": "Password123!",
+	})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(ownerLoginBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	ownerCookie := rec.Header().Get("Set-Cookie")
+
+	var ownerCSRF string
+	mainDB.QueryRowContext(context.Background(), `SELECT csrf_token FROM sessions WHERE user_id = ?`, u1ID).Scan(&ownerCSRF)
+
+	// Test CloneBudget endpoint with OWNER session
+	cloneBody := bytes.NewReader([]byte(`{"new_name":"Cloned API Budget","include_transactions":false}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/budgets/"+bID+"/clone", cloneBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", ownerCookie)
+	req.Header.Set("X-CSRF-Token", ownerCSRF)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created for cloneBudget, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var cloneResp openapi.BudgetSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &cloneResp); err != nil {
+		t.Fatalf("failed unmarshaling clone response: %v", err)
+	}
+	if cloneResp.Name != "Cloned API Budget" {
+		t.Fatalf("expected name 'Cloned API Budget', got %s", cloneResp.Name)
+	}
+
+	// Test CloneBudget endpoint with outsider session -> 403 Forbidden
+	var outsiderCSRF string
+	mainDB.QueryRowContext(context.Background(), `SELECT csrf_token FROM sessions WHERE user_id = ?`, u2ID).Scan(&outsiderCSRF)
+
+	outsiderCloneBody := bytes.NewReader([]byte(`{"new_name":"Outsider Clone"}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/budgets/"+bID+"/clone", outsiderCloneBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set("X-CSRF-Token", outsiderCSRF)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for outsider cloning budget, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

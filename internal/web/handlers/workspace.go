@@ -87,6 +87,12 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 							</button>
 						</li>
 						<li>
+							<button type="button" class="flex items-center gap-2 py-1.5" onclick="openCloneBudgetModal('%s', '%s')">
+								<span>📋</span>
+								<span>Clone Budget</span>
+							</button>
+						</li>
+						<li>
 							<form method="POST" action="/budgets/%s/delete" onsubmit="return confirm('Are you sure you want to delete budget \'%s\'? This action is permanent and deletes all ledger data.')" class="p-0">
 								<input type="hidden" name="csrf_token" value="%s" />
 								<button type="submit" class="flex items-center gap-2 text-error py-1.5 w-full hover:bg-error/10">
@@ -97,7 +103,7 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 						</li>
 					</ul>
 				</div>
-			`, id, html.EscapeString(name), id, html.EscapeString(name), c.Get("csrfToken"))
+			`, id, html.EscapeString(name), id, html.EscapeString(name), id, html.EscapeString(name), c.Get("csrfToken"))
 		}
 
 		budgetCards.WriteString(fmt.Sprintf(`
@@ -179,6 +185,59 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
         </div>
         <form method="dialog" class="modal-backdrop"><button>close</button></form>
     </dialog>
+
+    <!-- Clone Budget Modal -->
+    <dialog id="clone_budget_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <div>
+                    <h3 class="font-extrabold text-xl tracking-tight">Clone Budget</h3>
+                    <p class="text-xs text-base-content/60 mt-0.5">Duplicate budget workspace with selective resource checklist</p>
+                </div>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form id="clone_budget_form" method="POST" action="" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="%s" />
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">New Budget Name</span></label>
+                    <input type="text" id="clone_budget_name" name="name" required placeholder="e.g. My Budget (Copy)" class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                
+                <div class="divider my-0 text-xs text-base-content/60 font-semibold uppercase tracking-wider">Resources to Include</div>
+                <div class="flex flex-col gap-2.5 bg-base-200/50 p-4 rounded-xl border border-base-300">
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" id="clone_include_members" name="include_members" value="1" checked class="checkbox checkbox-primary checkbox-sm" />
+                        <span class="text-xs font-medium">Team Members <span class="text-base-content/50 font-normal">(roles and permissions)</span></span>
+                    </label>
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" id="clone_include_accounts" name="include_accounts" value="1" checked onchange="syncCloneDependencies()" class="checkbox checkbox-primary checkbox-sm" />
+                        <span class="text-xs font-medium">Accounts <span class="text-base-content/50 font-normal">(checking, cash, savings, external parties)</span></span>
+                    </label>
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" id="clone_include_buckets" name="include_buckets" value="1" checked onchange="syncCloneDependencies()" class="checkbox checkbox-primary checkbox-sm" />
+                        <span class="text-xs font-medium">Buckets & Groups <span class="text-base-content/50 font-normal">(envelope structure and categories)</span></span>
+                    </label>
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" id="clone_include_targets" name="include_targets" value="1" checked onchange="syncCloneDependencies()" class="checkbox checkbox-primary checkbox-sm" />
+                        <span class="text-xs font-medium">Targets <span class="text-base-content/50 font-normal">(funding goals and formulas; requires Buckets)</span></span>
+                    </label>
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" id="clone_include_transactions" name="include_transactions" value="1" checked onchange="syncCloneDependencies()" class="checkbox checkbox-primary checkbox-sm" />
+                        <span class="text-xs font-medium">Transactions <span class="text-base-content/50 font-normal">(ledger history; requires Accounts & Buckets)</span></span>
+                    </label>
+                </div>
+
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="clone_budget_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md gap-1.5">
+                        <span>📋</span>
+                        <span>Clone Budget</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
     <script>
         function openEditBudgetModal(budgetId, budgetName) {
             const form = document.getElementById('edit_budget_form');
@@ -187,8 +246,48 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
             nameInput.value = budgetName;
             document.getElementById('edit_budget_modal').showModal();
         }
+
+        function openCloneBudgetModal(budgetId, budgetName) {
+            const form = document.getElementById('clone_budget_form');
+            form.action = '/budgets/' + budgetId + '/clone';
+            const nameInput = document.getElementById('clone_budget_name');
+            nameInput.value = budgetName + ' (Copy)';
+            document.getElementById('clone_include_members').checked = true;
+            document.getElementById('clone_include_accounts').checked = true;
+            document.getElementById('clone_include_buckets').checked = true;
+            document.getElementById('clone_include_targets').checked = true;
+            document.getElementById('clone_include_transactions').checked = true;
+            syncCloneDependencies();
+            document.getElementById('clone_budget_modal').showModal();
+        }
+
+        function syncCloneDependencies() {
+            const accounts = document.getElementById('clone_include_accounts');
+            const buckets = document.getElementById('clone_include_buckets');
+            const targets = document.getElementById('clone_include_targets');
+            const txs = document.getElementById('clone_include_transactions');
+
+            // If user explicitly checks transactions, accounts and buckets must be checked
+            if (txs.checked) {
+                accounts.checked = true;
+                buckets.checked = true;
+            }
+            // If user explicitly checks targets, buckets must be checked
+            if (targets.checked) {
+                buckets.checked = true;
+            }
+            // If buckets is unchecked, uncheck targets and transactions
+            if (!buckets.checked) {
+                targets.checked = false;
+                txs.checked = false;
+            }
+            // If accounts is unchecked, uncheck transactions
+            if (!accounts.checked) {
+                txs.checked = false;
+            }
+        }
     </script>
-`, csrfToken)
+`, csrfToken, csrfToken)
 	}
 
 	copyDisabledClass := ""
@@ -567,6 +666,59 @@ func (h *WorkspaceHandler) UpdateBudget(c echo.Context) error {
 		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/settings", budgetID))
 	}
 	return c.Redirect(http.StatusSeeOther, "/budgets")
+}
+
+// CloneBudget clones an existing budget tenant and its resources based on checklist (requires OWNER).
+func (h *WorkspaceHandler) CloneBudget(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:budget")
+	budgetID := c.Param("budgetId")
+	name := strings.TrimSpace(c.FormValue("name"))
+
+	if name == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "Budget name cannot be empty")
+	}
+
+	userID := c.Get(ContextUserIDKey).(string)
+
+	includeMembers := c.FormValue("include_members") == "1" || c.FormValue("include_members") == "true" || c.FormValue("include_members") == "on"
+	includeAccounts := c.FormValue("include_accounts") == "1" || c.FormValue("include_accounts") == "true" || c.FormValue("include_accounts") == "on"
+	includeBuckets := c.FormValue("include_buckets") == "1" || c.FormValue("include_buckets") == "true" || c.FormValue("include_buckets") == "on"
+	includeTargets := c.FormValue("include_targets") == "1" || c.FormValue("include_targets") == "true" || c.FormValue("include_targets") == "on"
+	includeTransactions := c.FormValue("include_transactions") == "1" || c.FormValue("include_transactions") == "true" || c.FormValue("include_transactions") == "on"
+
+	correlationID := c.Response().Header().Get("X-Correlation-ID")
+
+	if h.appService != nil {
+		newBudgetID, err := h.appService.CloneBudget(c.Request().Context(), service.CloneBudgetInput{
+			SourceBudgetID:      budgetID,
+			NewName:             name,
+			RequestingUserID:    userID,
+			IncludeMembers:      includeMembers,
+			IncludeAccounts:     includeAccounts,
+			IncludeBuckets:      includeBuckets,
+			IncludeTargets:      includeTargets,
+			IncludeTransactions: includeTransactions,
+			CorrelationID:       correlationID,
+		})
+		if err != nil {
+			if errors.Is(err, service.ErrInvalidInput) {
+				return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+			}
+			if errors.Is(err, service.ErrUnauthorized) {
+				return echo.NewHTTPError(http.StatusForbidden, err.Error())
+			}
+			if errors.Is(err, service.ErrBudgetNotFound) {
+				return echo.NewHTTPError(http.StatusNotFound, err.Error())
+			}
+			logger.Error(ctx, "Failed cloning budget via service", "source_budget_id", budgetID, "error", err.Error())
+			return echo.NewHTTPError(http.StatusInternalServerError, "Failed to clone budget")
+		}
+
+		logger.Info(ctx, "Budget cloned successfully", "source_budget_id", budgetID, "new_budget_id", newBudgetID, "name", name)
+		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", newBudgetID))
+	}
+
+	return echo.NewHTTPError(http.StatusInternalServerError, "Service unavailable")
 }
 
 // DeleteBudget deletes the budget and its memberships from main.db, and deletes its tenant sqlite database (requires OWNER).

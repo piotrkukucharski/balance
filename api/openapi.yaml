@@ -273,6 +273,34 @@ paths:
         '404':
           $ref: '#/components/responses/NotFoundError'
 
+  /budgets/{budgetId}/clone:
+    post:
+      summary: Clone budget with selective resource checklist (OWNER required)
+      operationId: cloneBudget
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloneBudgetRequest'
+      responses:
+        '201':
+          description: Budget cloned successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetSummary'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
   /budgets/{budgetId}/invitations:
     post:
       summary: Invite a user to the budget (ADMIN+ required)
@@ -1668,6 +1696,31 @@ components:
           type: string
         timezone:
           type: string
+
+    CloneBudgetRequest:
+      type: object
+      required:
+        - new_name
+      properties:
+        new_name:
+          type: string
+          minLength: 1
+          example: "My Budget (Copy)"
+        include_members:
+          type: boolean
+          default: true
+        include_accounts:
+          type: boolean
+          default: true
+        include_buckets:
+          type: boolean
+          default: true
+        include_targets:
+          type: boolean
+          default: true
+        include_transactions:
+          type: boolean
+          default: true
 
     CreateInvitationRequest:
       type: object

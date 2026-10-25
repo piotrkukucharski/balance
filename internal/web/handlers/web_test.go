@@ -15,9 +15,11 @@ import (
 
 	"github.com/balance/balance/internal/auth"
 	"github.com/balance/balance/internal/budget"
+	"github.com/balance/balance/internal/clock"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/logger"
+	"github.com/balance/balance/internal/service"
 	"github.com/labstack/echo/v4"
 )
 
@@ -632,6 +634,8 @@ func TestBudgetRenameAndDeleteFlow(t *testing.T) {
 
 	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
 	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+	appService := service.NewAppService(mainDB, tenantMgr, clock.NewSystemClock(time.UTC))
+	workspaceHandler.SetService(appService)
 	e := echo.New()
 
 	ownerID := domain.NewUUIDv7()
@@ -776,6 +780,36 @@ func TestBudgetRenameAndDeleteFlow(t *testing.T) {
 		}
 	})
 
+	// Test Clone Budget
+	t.Run("Clone budget with selective resources", func(t *testing.T) {
+		cForm := url.Values{}
+		cForm.Set("name", "Web Cloned Budget")
+		cForm.Set("include_members", "1")
+		cForm.Set("include_accounts", "1")
+		cForm.Set("include_buckets", "1")
+		cForm.Set("include_targets", "1")
+		cForm.Set("include_transactions", "0")
+		cReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/clone", strings.NewReader(cForm.Encode()))
+		cReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		cRec := httptest.NewRecorder()
+		cCtx := e.NewContext(cReq, cRec)
+		cCtx.SetParamNames("budgetId")
+		cCtx.SetParamValues(budgetID)
+		cCtx.Set(ContextUserIDKey, ownerID)
+		cCtx.Set(ContextRoleKey, "OWNER")
+
+		if err := workspaceHandler.CloneBudget(cCtx); err != nil {
+			t.Fatalf("CloneBudget failed: %v", err)
+		}
+		if cRec.Code != http.StatusSeeOther {
+			t.Fatalf("expected 303 redirect, got %d", cRec.Code)
+		}
+		loc := cRec.Header().Get("Location")
+		if !strings.HasPrefix(loc, "/budgets/") || !strings.HasSuffix(loc, "/budget") {
+			t.Fatalf("expected redirect to /budgets/:id/budget, got %s", loc)
+		}
+	})
+
 	// Test Delete Budget
 	t.Run("Delete budget removes record and files", func(t *testing.T) {
 		dReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/delete", nil)
@@ -831,6 +865,8 @@ func TestTargetModalAndLuaFormulaAssistant(t *testing.T) {
 
 	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
 	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+	appService := service.NewAppService(mainDB, tenantMgr, clock.NewSystemClock(time.UTC))
+	workspaceHandler.SetService(appService)
 	e := echo.New()
 
 	userID := domain.NewUUIDv7()
@@ -1042,6 +1078,8 @@ func TestCreateAndEditTarget_CustomDays(t *testing.T) {
 
 	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
 	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+	appService := service.NewAppService(mainDB, tenantMgr, clock.NewSystemClock(time.UTC))
+	workspaceHandler.SetService(appService)
 	e := echo.New()
 
 	userID := domain.NewUUIDv7()
