@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -79,6 +80,16 @@ func StructuredRequestLoggerMiddleware() echo.MiddlewareFunc {
 			if err != nil {
 				args = append(args, "error", err.Error())
 				logger.Error(ctx, "HTTP request failed", args...)
+			} else if status >= 500 {
+				if errVal := c.Get("error"); errVal != nil {
+					args = append(args, "error", fmt.Sprint(errVal))
+				}
+				logger.Error(ctx, "HTTP request completed with server error", args...)
+			} else if status >= 400 {
+				if errVal := c.Get("error"); errVal != nil {
+					args = append(args, "error", fmt.Sprint(errVal))
+				}
+				logger.Warn(ctx, "HTTP request completed with client error", args...)
 			} else {
 				logger.Info(ctx, "HTTP request handled", args...)
 			}

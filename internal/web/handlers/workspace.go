@@ -667,13 +667,27 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 				Prompt:          aiPrompt,
 				DefaultCurrency: curr,
 			})
-			if err == nil && structRes != nil {
-				_, _, _ = h.appService.ApplyBudgetStructure(c.Request().Context(), id, structRes, userID, correlationID)
+			if err != nil {
+				logger.Error(ctx, "Failed generating budget structure during budget creation", "budget_id", id, "error", err.Error())
+			} else if structRes != nil {
+				bCount, tCount, errApply := h.appService.ApplyBudgetStructure(c.Request().Context(), id, structRes, userID, correlationID)
+				if errApply != nil {
+					logger.Error(ctx, "Failed applying generated budget structure during budget creation", "budget_id", id, "error", errApply.Error())
+				} else {
+					logger.Info(ctx, "Applied generated budget structure to new budget", "budget_id", id, "buckets", bCount, "targets", tCount)
+				}
 			}
 		} else if creationMode == "copy" && sourceBudgetID != "" {
 			exported, err := h.appService.ExportBudgetStructure(c.Request().Context(), sourceBudgetID)
-			if err == nil && exported != nil {
-				_, _, _ = h.appService.ApplyBudgetStructure(c.Request().Context(), id, exported, userID, correlationID)
+			if err != nil {
+				logger.Error(ctx, "Failed exporting structure from source budget during budget creation", "source_budget_id", sourceBudgetID, "error", err.Error())
+			} else if exported != nil {
+				bCount, tCount, errApply := h.appService.ApplyBudgetStructure(c.Request().Context(), id, exported, userID, correlationID)
+				if errApply != nil {
+					logger.Error(ctx, "Failed applying copied budget structure during budget creation", "budget_id", id, "error", errApply.Error())
+				} else {
+					logger.Info(ctx, "Applied copied budget structure to new budget", "budget_id", id, "buckets", bCount, "targets", tCount)
+				}
 			}
 		}
 
@@ -2666,6 +2680,11 @@ func (h *WorkspaceHandler) GenerateStructurePreview(c echo.Context) error {
 		DefaultCurrency: curr,
 	})
 	if err != nil {
+		c.Set("error", err.Error())
+		logger.Error(c.Request().Context(), "Failed generating budget structure preview with AI",
+			"budget_id", budgetID,
+			"error", err.Error(),
+		)
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
@@ -2707,6 +2726,11 @@ func (h *WorkspaceHandler) ApplyStructure(c echo.Context) error {
 
 	bCount, tCount, err := h.appService.ApplyBudgetStructure(c.Request().Context(), budgetID, &structure, userID, corrID)
 	if err != nil {
+		c.Set("error", err.Error())
+		logger.Error(c.Request().Context(), "Failed applying budget structure",
+			"budget_id", budgetID,
+			"error", err.Error(),
+		)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 

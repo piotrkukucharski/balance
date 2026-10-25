@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/lua"
 )
 
@@ -137,14 +140,18 @@ type GeminiDirectHTTPProvider struct {
 	httpClient *http.Client
 }
 
-func NewGeminiDirectHTTPProvider(apiKey, model string) *GeminiDirectHTTPProvider {
+func NewGeminiDirectHTTPProvider(apiKey, model string, timeout ...time.Duration) *GeminiDirectHTTPProvider {
 	if model == "" {
 		model = "gemini-3.8-flash"
+	}
+	t := ResolveGeminiTimeout()
+	if len(timeout) > 0 && timeout[0] > 0 {
+		t = timeout[0]
 	}
 	return &GeminiDirectHTTPProvider{
 		apiKey:     apiKey,
 		model:      model,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		httpClient: &http.Client{Timeout: t},
 	}
 }
 
@@ -153,11 +160,27 @@ func (g *GeminiDirectHTTPProvider) ProviderName() string {
 }
 
 func (g *GeminiDirectHTTPProvider) GenerateLuaFormula(ctx context.Context, req FormulaGenerationRequest) (*FormulaGenerationResult, error) {
+	ctx = logger.WithComponent(ctx, "ai:formula")
 	if g.apiKey == "" {
+		logger.Error(ctx, "GEMINI_API_KEY is not configured")
 		return nil, errors.New("GEMINI_API_KEY is not configured")
 	}
-	// Real direct HTTP implementation calls Gemini REST API with Structured Outputs
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", g.model)
+
+	baseURL := os.Getenv("GEMINI_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://generativelanguage.googleapis.com"
+	}
+	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent", strings.TrimRight(baseURL, "/"), g.model)
+
+	start := time.Now()
+	timeoutSec := g.httpClient.Timeout.Seconds()
+	logger.Info(ctx, "Starting Gemini Lua formula generation",
+		"model", g.model,
+		"user_prompt", req.UserPrompt,
+		"bucket", req.CurrentBucketName,
+		"currency", req.TargetCurrency,
+		"timeout_seconds", timeoutSec,
+	)
 
 	systemInstruction := `You are a Lua 5.1 formula generator for the Balance budgeting engine. Return JSON {"lua_script": "...", "explanation": "..."}. You must end with return <int64_minor_units>. Strictly forbidden: while, repeat, for, goto, function, concatenation (..). Only allowed math: abs, ceil, floor, fmod, max, min, pow, sqrt.`
 
@@ -180,22 +203,41 @@ func (g *GeminiDirectHTTPProvider) GenerateLuaFormula(ctx context.Context, req F
 		},
 	}
 
-	rawJSON, _ := json.Marshal(bodyData)
+	rawJSON, err := json.Marshal(bodyData)
+	if err != nil {
+		logger.Error(ctx, "Failed marshaling Gemini formula request", "model", g.model, "error", err.Error())
+		return nil, fmt.Errorf("failed marshaling Gemini formula request: %w", err)
+	}
+
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(rawJSON)))
 	if err != nil {
+		logger.Error(ctx, "Failed creating Gemini formula HTTP request", "model", g.model, "error", err.Error())
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-goog-api-key", g.apiKey)
 
 	resp, err := g.httpClient.Do(httpReq)
+	durationMs := float64(time.Since(start).Microseconds()) / 1000.0
 	if err != nil {
-		return nil, err
+		logger.Error(ctx, "Gemini Lua formula HTTP request failed",
+			"model", g.model,
+			"error", err.Error(),
+			"duration_ms", durationMs,
+		)
+		return nil, fmt.Errorf("gemini API request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gemini API returned status %d", resp.StatusCode)
+		respBody, _ := io.ReadAll(resp.Body)
+		logger.Error(ctx, "Gemini Lua formula API returned error status",
+			"model", g.model,
+			"status", resp.StatusCode,
+			"body", string(respBody),
+			"duration_ms", durationMs,
+		)
+		return nil, fmt.Errorf("gemini API returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var geminiResp struct {
@@ -209,18 +251,25 @@ func (g *GeminiDirectHTTPProvider) GenerateLuaFormula(ctx context.Context, req F
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
+		logger.Error(ctx, "Failed decoding Gemini formula response", "model", g.model, "error", err.Error(), "duration_ms", durationMs)
 		return nil, err
 	}
 
 	if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
+		logger.Error(ctx, "Gemini returned empty candidates for formula", "model", g.model, "duration_ms", durationMs)
 		return nil, errors.New("empty response from Gemini")
 	}
 
 	text := geminiResp.Candidates[0].Content.Parts[0].Text
 	var out FormulaGenerationResult
 	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		logger.Error(ctx, "Failed parsing Gemini formula JSON output", "model", g.model, "error", err.Error(), "duration_ms", durationMs)
 		return nil, fmt.Errorf("failed parsing Gemini JSON output: %w", err)
 	}
 
+	logger.Info(ctx, "Gemini Lua formula generated successfully",
+		"model", g.model,
+		"duration_ms", durationMs,
+	)
 	return &out, nil
 }

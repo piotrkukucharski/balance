@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"regexp"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/balance/balance/internal/logger"
 )
 
 // ProposedTarget represents an individual target generated from AI prompt or budget export.
@@ -55,6 +58,22 @@ type BudgetStructureAIProvider interface {
 	GenerateBudgetStructure(ctx context.Context, req BudgetStructurePromptRequest) (*BudgetStructure, error)
 }
 
+// DefaultGeminiTimeout is the fallback HTTP timeout for Gemini API calls (90 seconds).
+const DefaultGeminiTimeout = 90 * time.Second
+
+// ResolveGeminiTimeout determines the HTTP client timeout from environment variables
+// (GEMINI_TIMEOUT_SECONDS, AI_TIMEOUT_SECONDS, or AI_GEMINI_TIMEOUT), defaulting to 90s.
+func ResolveGeminiTimeout() time.Duration {
+	for _, envKey := range []string{"GEMINI_TIMEOUT_SECONDS", "AI_TIMEOUT_SECONDS", "AI_GEMINI_TIMEOUT"} {
+		if val := os.Getenv(envKey); val != "" {
+			if s, err := strconv.Atoi(val); err == nil && s > 0 {
+				return time.Duration(s) * time.Second
+			}
+		}
+	}
+	return DefaultGeminiTimeout
+}
+
 // NewBudgetStructureProvider creates a concrete or mock AI provider based on environment variables.
 func NewBudgetStructureProvider() BudgetStructureAIProvider {
 	apiKey := os.Getenv("GEMINI_API_KEY")
@@ -65,7 +84,7 @@ func NewBudgetStructureProvider() BudgetStructureAIProvider {
 	if os.Getenv("AI_PROVIDER") == "mock" || apiKey == "" {
 		return NewMockBudgetStructureAIProvider()
 	}
-	return NewGeminiBudgetStructureProvider(apiKey, model)
+	return NewGeminiBudgetStructureProvider(apiKey, model, ResolveGeminiTimeout())
 }
 
 // MockBudgetStructureAIProvider provides deterministic budget structure generation for tests & offline mode.
@@ -336,14 +355,18 @@ type GeminiBudgetStructureProvider struct {
 	httpClient *http.Client
 }
 
-func NewGeminiBudgetStructureProvider(apiKey, model string) *GeminiBudgetStructureProvider {
+func NewGeminiBudgetStructureProvider(apiKey, model string, timeout ...time.Duration) *GeminiBudgetStructureProvider {
 	if model == "" {
 		model = "gemini-3.8-flash"
+	}
+	t := ResolveGeminiTimeout()
+	if len(timeout) > 0 && timeout[0] > 0 {
+		t = timeout[0]
 	}
 	return &GeminiBudgetStructureProvider{
 		apiKey:     apiKey,
 		model:      model,
-		httpClient: &http.Client{Timeout: 15 * time.Second},
+		httpClient: &http.Client{Timeout: t},
 	}
 }
 
@@ -352,7 +375,9 @@ func (g *GeminiBudgetStructureProvider) ProviderName() string {
 }
 
 func (g *GeminiBudgetStructureProvider) GenerateBudgetStructure(ctx context.Context, req BudgetStructurePromptRequest) (*BudgetStructure, error) {
+	ctx = logger.WithComponent(ctx, "ai:structure")
 	if g.apiKey == "" {
+		logger.Error(ctx, "GEMINI_API_KEY is not configured")
 		return nil, errors.New("GEMINI_API_KEY is not configured")
 	}
 
@@ -361,7 +386,20 @@ func (g *GeminiBudgetStructureProvider) GenerateBudgetStructure(ctx context.Cont
 		curr = "PLN"
 	}
 
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", g.model)
+	baseURL := os.Getenv("GEMINI_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://generativelanguage.googleapis.com"
+	}
+	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent", strings.TrimRight(baseURL, "/"), g.model)
+
+	timeoutSec := g.httpClient.Timeout.Seconds()
+	logger.Info(ctx, "Starting Gemini budget structure generation",
+		"model", g.model,
+		"prompt_len", len(req.Prompt),
+		"currency", curr,
+		"timeout_seconds", timeoutSec,
+	)
+	start := time.Now()
 
 	systemInstruction := `You are an expert personal finance and envelope budgeting assistant for the Balance app.
 Analyze the user's natural language budget description and create a realistic, well-organized budget envelope structure.
@@ -420,6 +458,19 @@ Return JSON strictly matching the BudgetStructure schema.`
 		"required": []string{"groups"},
 	}
 
+	genConfig := map[string]interface{}{
+		"responseMimeType": "application/json",
+		"responseSchema":   responseSchema,
+		"temperature":      0.2,
+	}
+	if tbStr := os.Getenv("GEMINI_THINKING_BUDGET"); tbStr != "" {
+		if tb, err := strconv.Atoi(tbStr); err == nil && tb >= 0 {
+			genConfig["thinkingConfig"] = map[string]interface{}{
+				"thinkingBudget": tb,
+			}
+		}
+	}
+
 	bodyData := map[string]interface{}{
 		"systemInstruction": map[string]interface{}{
 			"parts": []map[string]interface{}{
@@ -433,33 +484,45 @@ Return JSON strictly matching the BudgetStructure schema.`
 				},
 			},
 		},
-		"generationConfig": map[string]interface{}{
-			"responseMimeType": "application/json",
-			"responseSchema":   responseSchema,
-			"temperature":      0.2,
-		},
+		"generationConfig": genConfig,
 	}
 
 	rawJSON, err := json.Marshal(bodyData)
 	if err != nil {
+		logger.Error(ctx, "Failed marshaling Gemini budget structure request", "model", g.model, "error", err.Error())
 		return nil, fmt.Errorf("failed marshaling Gemini request: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(rawJSON)))
 	if err != nil {
+		logger.Error(ctx, "Failed creating Gemini HTTP request", "model", g.model, "error", err.Error())
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-goog-api-key", g.apiKey)
 
 	resp, err := g.httpClient.Do(httpReq)
+	durationMs := float64(time.Since(start).Microseconds()) / 1000.0
 	if err != nil {
-		return nil, err
+		logger.Error(ctx, "Gemini budget structure HTTP request failed",
+			"model", g.model,
+			"error", err.Error(),
+			"duration_ms", durationMs,
+			"prompt_len", len(req.Prompt),
+		)
+		return nil, fmt.Errorf("gemini API request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gemini API returned status %d", resp.StatusCode)
+		respBody, _ := io.ReadAll(resp.Body)
+		logger.Error(ctx, "Gemini budget structure API returned error status",
+			"model", g.model,
+			"status", resp.StatusCode,
+			"body", string(respBody),
+			"duration_ms", durationMs,
+		)
+		return nil, fmt.Errorf("gemini API returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var geminiResp struct {
@@ -473,18 +536,28 @@ Return JSON strictly matching the BudgetStructure schema.`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
-		return nil, err
+		logger.Error(ctx, "Failed decoding Gemini API JSON response", "model", g.model, "error", err.Error(), "duration_ms", durationMs)
+		return nil, fmt.Errorf("failed decoding Gemini response: %w", err)
 	}
 
 	if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
+		logger.Error(ctx, "Gemini API returned empty candidates", "model", g.model, "duration_ms", durationMs)
 		return nil, errors.New("empty response from Gemini")
 	}
 
 	text := geminiResp.Candidates[0].Content.Parts[0].Text
 	var out BudgetStructure
 	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		logger.Error(ctx, "Failed parsing Gemini JSON output into BudgetStructure", "model", g.model, "error", err.Error(), "duration_ms", durationMs)
 		return nil, fmt.Errorf("failed parsing Gemini JSON output: %w", err)
 	}
+
+	logger.Info(ctx, "Gemini budget structure generated successfully",
+		"model", g.model,
+		"groups_count", len(out.Groups),
+		"duration_ms", durationMs,
+	)
+	return &out, nil
 
 	return &out, nil
 }

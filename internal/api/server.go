@@ -15,6 +15,7 @@ import (
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/integration/csv"
+	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/lua"
 	"github.com/balance/balance/internal/report"
 	"github.com/balance/balance/internal/service"
@@ -1286,6 +1287,7 @@ func (s *Server) GenerateBudgetStructureAI(ctx echo.Context, budgetId BudgetIdPa
 		DefaultCurrency: curr,
 	})
 	if err != nil {
+		logger.Error(ctx.Request().Context(), "OpenAPI: Failed generating budget structure with AI", "budget_id", budgetID, "error", err.Error())
 		return sendError(ctx, http.StatusBadRequest, err.Error(), "STRUCTURE_GEN_FAILED", nil)
 	}
 
