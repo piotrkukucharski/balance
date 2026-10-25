@@ -1305,6 +1305,7 @@ func (s *Server) GenerateBudgetStructureAI(ctx echo.Context, budgetId BudgetIdPa
 					NonSpendingStrategy: ProposedTargetNonSpendingStrategy(t.NonSpendingStrategy),
 					Priority:            t.Priority,
 					RecurrenceCadence:   ProposedTargetRecurrenceCadence(t.RecurrenceCadence),
+					RecurrenceDays:      t.RecurrenceDays,
 					TargetType:          ProposedTargetTargetType(t.TargetType),
 				})
 			}
@@ -1354,6 +1355,7 @@ func (s *Server) ImportBudgetStructure(ctx echo.Context, budgetId BudgetIdPathPa
 						AmountMinor:         t.AmountMinor,
 						Currency:            t.Currency,
 						RecurrenceCadence:   string(t.RecurrenceCadence),
+						RecurrenceDays:      t.RecurrenceDays,
 						NonSpendingStrategy: string(t.NonSpendingStrategy),
 						DueDateDay:          t.DueDateDay,
 					})

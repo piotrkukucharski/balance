@@ -25,6 +25,7 @@ type ProposedTarget struct {
 	AmountMinor         int64  `json:"amount_minor"`         // minor units (cents/grosze)
 	Currency            string `json:"currency"`
 	RecurrenceCadence   string `json:"recurrence_cadence"`   // ONE_OFF, WEEKLY, MONTHLY, ANNUAL, CUSTOM_DAYS
+	RecurrenceDays      *int   `json:"recurrence_days,omitempty"`
 	NonSpendingStrategy string `json:"non_spending_strategy"` // ROLL_OVER, RETURN_TO_POOL, ARREARS_CUMULATIVE, CAP_AND_HOLD, PRORATE_FUTURE
 	DueDateDay          *int   `json:"due_date_day,omitempty"`
 }
@@ -410,7 +411,8 @@ For each target:
 - priority: 3 (mandatory/essential: rent, debt, utilities), 2 (recommended: groceries, transit, savings), or 1 (optional/lifestyle)
 - amount_minor: target amount in minor currency units (e.g. 2500 PLN = 250000)
 - currency: default to budget currency unless explicitly stated otherwise
-- recurrence_cadence: MONTHLY, WEEKLY, ANNUAL, or ONE_OFF (default to MONTHLY)
+- recurrence_cadence: MONTHLY, WEEKLY, ANNUAL, ONE_OFF, or CUSTOM_DAYS (default to MONTHLY)
+- recurrence_days: number of days between occurrences if recurrence_cadence is CUSTOM_DAYS (e.g. 90 for quarterly / co 3 miesiące, 180 for semi-annual / co 6 miesięcy, 14 for bi-weekly)
 - non_spending_strategy: ROLL_OVER for savings/goals, RETURN_TO_POOL for variable monthly living expenses
 
 Return JSON strictly matching the BudgetStructure schema.`
@@ -441,6 +443,7 @@ Return JSON strictly matching the BudgetStructure schema.`
 												"amount_minor":          map[string]interface{}{"type": "integer"},
 												"currency":              map[string]interface{}{"type": "string"},
 												"recurrence_cadence":    map[string]interface{}{"type": "string", "enum": []string{"ONE_OFF", "WEEKLY", "MONTHLY", "ANNUAL", "CUSTOM_DAYS"}},
+												"recurrence_days":       map[string]interface{}{"type": "integer"},
 												"non_spending_strategy": map[string]interface{}{"type": "string", "enum": []string{"ROLL_OVER", "RETURN_TO_POOL", "ARREARS_CUMULATIVE", "CAP_AND_HOLD", "PRORATE_FUTURE"}},
 											},
 											"required": []string{"name", "target_type", "priority", "amount_minor", "currency", "recurrence_cadence", "non_spending_strategy"},

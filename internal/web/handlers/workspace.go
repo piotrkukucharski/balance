@@ -2182,6 +2182,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                                         amount_minor: amtMinor,
                                         currency: t.currency || currentCurrency,
                                         recurrence_cadence: t.recurrence_cadence || 'MONTHLY',
+                                        recurrence_days: t.recurrence_days || null,
                                         non_spending_strategy: t.non_spending_strategy || 'RETURN_TO_POOL'
                                     });
                                 }

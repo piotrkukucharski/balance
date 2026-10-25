@@ -99,6 +99,27 @@ func ApplyBudgetStructure(ctx context.Context, tenantDB *sql.DB, structure *ai.B
 					currency = "PLN"
 				}
 
+				rDays := 0
+				if proposedTarget.RecurrenceDays != nil {
+					rDays = *proposedTarget.RecurrenceDays
+				}
+				if cadence == "CUSTOM_DAYS" {
+					if rDays < 1 {
+						lowerName := strings.ToLower(targetName)
+						if strings.Contains(lowerName, "kwartal") || strings.Contains(lowerName, "3 mies") || strings.Contains(lowerName, "quarter") {
+							rDays = 90
+						} else if strings.Contains(lowerName, "półrocz") || strings.Contains(lowerName, "polrocz") || strings.Contains(lowerName, "6 mies") || strings.Contains(lowerName, "half") {
+							rDays = 180
+						} else if strings.Contains(lowerName, "dwutyg") || strings.Contains(lowerName, "2 tyg") || strings.Contains(lowerName, "bi-week") {
+							rDays = 14
+						} else {
+							rDays = 90
+						}
+					}
+				} else {
+					rDays = 0
+				}
+
 				_, err = CreateTarget(ctx, tenantDB, CreateTargetInput{
 					BucketID:            bucketID,
 					Name:                targetName,
@@ -108,6 +129,7 @@ func ApplyBudgetStructure(ctx context.Context, tenantDB *sql.DB, structure *ai.B
 					AmountMinor:         proposedTarget.AmountMinor,
 					Currency:            currency,
 					RecurrenceCadence:   cadence,
+					RecurrenceDays:      rDays,
 					NonSpendingStrategy: strategy,
 					AgentID:             agentID,
 					CorrelationID:       correlationID,
@@ -151,7 +173,7 @@ func ExportBudgetStructure(ctx context.Context, tenantDB *sql.DB) (*ai.BudgetStr
 
 	// Fetch targets
 	targetRows, err := tenantDB.QueryContext(ctx, `
-		SELECT bucket_id, name, target_type, priority, amount_minor, currency, recurrence_cadence, non_spending_strategy
+		SELECT bucket_id, name, target_type, priority, amount_minor, currency, recurrence_cadence, recurrence_days, non_spending_strategy
 		FROM targets_projection
 		WHERE is_archived = 0
 		ORDER BY priority DESC, sort_order ASC, name ASC`)
@@ -164,8 +186,13 @@ func ExportBudgetStructure(ctx context.Context, tenantDB *sql.DB) (*ai.BudgetStr
 	for targetRows.Next() {
 		var bucketID string
 		var t ai.ProposedTarget
-		if err := targetRows.Scan(&bucketID, &t.Name, &t.TargetType, &t.Priority, &t.AmountMinor, &t.Currency, &t.RecurrenceCadence, &t.NonSpendingStrategy); err != nil {
+		var rDays sql.NullInt64
+		if err := targetRows.Scan(&bucketID, &t.Name, &t.TargetType, &t.Priority, &t.AmountMinor, &t.Currency, &t.RecurrenceCadence, &rDays, &t.NonSpendingStrategy); err != nil {
 			return nil, err
+		}
+		if rDays.Valid {
+			days := int(rDays.Int64)
+			t.RecurrenceDays = &days
 		}
 		targetsByBucket[bucketID] = append(targetsByBucket[bucketID], t)
 	}

@@ -2865,6 +2865,8 @@ components:
         recurrence_cadence:
           type: string
           enum: [ONE_OFF, WEEKLY, MONTHLY, ANNUAL, CUSTOM_DAYS]
+        recurrence_days:
+          type: integer
         non_spending_strategy:
           type: string
           enum: [ROLL_OVER, RETURN_TO_POOL, ARREARS_CUMULATIVE, CAP_AND_HOLD, PRORATE_FUTURE]
