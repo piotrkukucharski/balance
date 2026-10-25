@@ -1070,6 +1070,8 @@ func renderBudgetStatsBanner(budgetID string, defaultRTA int64, defaultCurr, rta
 	monthlyActive := "btn-ghost"
 	d30Active := "btn-ghost"
 	d90Active := "btn-ghost"
+	annualActive := "btn-ghost"
+	d365Active := "btn-ghost"
 	horizonTitle := "Monthly"
 	switch horizonParam {
 	case "30d":
@@ -1078,8 +1080,15 @@ func renderBudgetStatsBanner(budgetID string, defaultRTA int64, defaultCurr, rta
 	case "90d":
 		d90Active = "btn-primary"
 		horizonTitle = "90d"
+	case "annual":
+		annualActive = "btn-primary"
+		horizonTitle = "Annual"
+	case "365d":
+		d365Active = "btn-primary"
+		horizonTitle = "365d"
 	default:
 		monthlyActive = "btn-primary"
+		horizonTitle = "Monthly"
 	}
 
 	p3Desc := `<span class="text-success font-medium">✓ All mandatory targets funded</span>`
@@ -1115,6 +1124,8 @@ func renderBudgetStatsBanner(budgetID string, defaultRTA int64, defaultCurr, rta
 						<a href="/budgets/%s/budget?horizon=monthly&filter=%s" class="btn btn-xs join-item %s">Monthly</a>
 						<a href="/budgets/%s/budget?horizon=30d&filter=%s" class="btn btn-xs join-item %s">30d</a>
 						<a href="/budgets/%s/budget?horizon=90d&filter=%s" class="btn btn-xs join-item %s">90d</a>
+						<a href="/budgets/%s/budget?horizon=annual&filter=%s" class="btn btn-xs join-item %s">Annual</a>
+						<a href="/budgets/%s/budget?horizon=365d&filter=%s" class="btn btn-xs join-item %s">365d</a>
 					</div>
 				</div>
 				<div class="stat-desc text-[11px] mt-1">%d days requirement window</div>
@@ -1137,7 +1148,12 @@ func renderBudgetStatsBanner(budgetID string, defaultRTA int64, defaultCurr, rta
 	`,
 		rtaColor, float64(defaultRTA)/100.0, defaultCurr, rtaOtherBadges, rtaDescClass, rtaDesc,
 		horizonTitle, float64(totalNeededMinor)/100.0, defaultCurr, p3Desc,
-		budgetID, filterParam, monthlyActive, budgetID, filterParam, d30Active, budgetID, filterParam, d90Active, windowDays,
+		budgetID, filterParam, monthlyActive,
+		budgetID, filterParam, d30Active,
+		budgetID, filterParam, d90Active,
+		budgetID, filterParam, annualActive,
+		budgetID, filterParam, d365Active,
+		windowDays,
 		budgetID, csrfToken, defaultCurr, horizonParam, filterParam,
 	)
 }
@@ -1765,12 +1781,15 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	if horizonParam == "" {
 		horizonParam = "monthly"
 	}
-	windowDays := 30
-	if horizonParam == "90d" {
-		windowDays = 90
-	} else if horizonParam == "30d" {
-		windowDays = 30
+	loc := time.UTC
+	if tz != "" {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+		}
 	}
+	nowInTz := time.Now().In(loc)
+	var windowDays int
+	horizonParam, windowDays = budget.CalculateHorizonDays(horizonParam, nowInTz, loc)
 
 	filterParam := c.QueryParam("filter")
 	if filterParam == "" {
@@ -1808,7 +1827,6 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	}
 
 	// 3. Fetch all active targets
-	nowUTC := time.Now().UTC()
 	snap, _ := budget.BuildBudgetSnapshot(c.Request().Context(), tenantDB, defaultCurr, windowDays, tz)
 
 	targetRows, err := tenantDB.QueryContext(c.Request().Context(), `
@@ -1894,7 +1912,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 				CeilingAmountMinor:  t.CeilingAmountMinor,
 				CurrentFundedMinor:  t.CurrentFundedMinor,
 			}
-			t.RequiredMinor = budget.ComputeTargetRequirement(tDef, windowDays, nowUTC)
+			t.RequiredMinor = budget.ComputeTargetRequirementInLoc(tDef, windowDays, nowInTz, loc)
 			if t.RequiredMinor > 0 {
 				needed := t.RequiredMinor - t.CurrentFundedMinor
 				if needed < 0 {
@@ -1914,7 +1932,11 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 			}
 
 			// Target health evaluation
-			if t.CurrentFundedMinor < 0 {
+			isOverdue := t.RecurrenceCadence == budget.CadenceOneOff && t.DueDate > 0 && budget.CalendarDaysBetween(nowInTz, time.UnixMicro(t.DueDate).In(loc), loc) <= 0
+			if isOverdue && t.CurrentFundedMinor < t.RequiredMinor {
+				t.HealthBadge = "Overdue"
+				t.HealthBadgeClass = "badge-error text-error-content"
+			} else if t.CurrentFundedMinor < 0 {
 				t.HealthBadge = "Overspent"
 				t.HealthBadgeClass = "badge-error text-error-content"
 			} else if t.CurrentFundedMinor >= t.RequiredMinor && t.RequiredMinor > 0 {
@@ -2356,10 +2378,17 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	)
 
 	horizonDisplay := "Monthly"
-	if horizonParam == "30d" {
+	switch horizonParam {
+	case "30d":
 		horizonDisplay = "30d"
-	} else if horizonParam == "90d" {
+	case "90d":
 		horizonDisplay = "90d"
+	case "annual":
+		horizonDisplay = "Annual"
+	case "365d":
+		horizonDisplay = "365d"
+	default:
+		horizonDisplay = "Monthly"
 	}
 
 	var mainEnvelopesContent string
@@ -3927,16 +3956,20 @@ func (h *WorkspaceHandler) AutoAssign(c echo.Context) error {
 	corrID := c.Get("correlationID").(string)
 
 	currency := c.FormValue("currency")
+	var defaultCurr, tz string
+	h.mainDB.QueryRowContext(c.Request().Context(), `SELECT default_currency, timezone FROM budgets WHERE id = ?`, budgetID).Scan(&defaultCurr, &tz)
 	if currency == "" {
-		var defaultCurr string
-		h.mainDB.QueryRowContext(c.Request().Context(), `SELECT default_currency FROM budgets WHERE id = ?`, budgetID).Scan(&defaultCurr)
 		currency = defaultCurr
 	}
-	horizon := c.FormValue("horizon")
-	windowDays := 30
-	if horizon == "90d" {
-		windowDays = 90
+	loc := time.UTC
+	if tz != "" {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+		}
 	}
+	nowInTz := time.Now().In(loc)
+	horizon := c.FormValue("horizon")
+	_, windowDays := budget.CalculateHorizonDays(horizon, nowInTz, loc)
 
 	rtaMap, err := budget.CalculateReadyToAssign(c.Request().Context(), tenantDB)
 	if err != nil {
@@ -3947,7 +3980,6 @@ func (h *WorkspaceHandler) AutoAssign(c echo.Context) error {
 		return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "", ""))
 	}
 
-	nowUTC := time.Now().UTC()
 	rows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT t.id, t.bucket_id, t.name, t.priority, t.sort_order, t.amount_minor, t.currency,
 		       t.recurrence_cadence, t.recurrence_interval, t.due_date, t.non_spending_strategy,
@@ -3983,7 +4015,7 @@ func (h *WorkspaceHandler) AutoAssign(c echo.Context) error {
 		targets = append(targets, &t)
 	}
 
-	allocs, _ := budget.PriorityAutoAssign(targets, windowDays, nowUTC, pool)
+	allocs, _ := budget.PriorityAutoAssign(targets, windowDays, nowInTz, pool)
 	for _, alloc := range allocs {
 		if alloc.Assigned > 0 {
 			// Find bucket for this target

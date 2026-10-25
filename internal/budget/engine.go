@@ -3,6 +3,7 @@ package budget
 import (
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -45,48 +46,127 @@ type TargetDefinition struct {
 	ArrearsMinor        int64 // Cumulative unpaid debt from previous periods for ARREARS_CUMULATIVE
 }
 
-// TargetRequirement computes the exact funding requirement in minor units for windowDays.
-// Given horizon H days starting at Tstart:
-// 1. One-off target:
-//   - If Tdue <= Tstart + H: full remaining amount U (AmountMinor - CurrentFundedMinor)
-//   - If Tdue > Tstart + H: Prorated: U * (H / (Tdue - Tstart))
-//
-// 2. Recurring target:
-//   - Number of cycles in window H: floor(H / N) (with N >= 1)
+// CalendarDaysBetween returns the number of calendar days from t1 to t2 in the given location.
+// Times are converted to the location and truncated to midnight.
+func CalendarDaysBetween(t1, t2 time.Time, loc *time.Location) int {
+	if loc == nil {
+		loc = time.UTC
+	}
+	t1Loc := t1.In(loc)
+	t2Loc := t2.In(loc)
+	d1 := time.Date(t1Loc.Year(), t1Loc.Month(), t1Loc.Day(), 0, 0, 0, 0, loc)
+	d2 := time.Date(t2Loc.Year(), t2Loc.Month(), t2Loc.Day(), 0, 0, 0, 0, loc)
+	return int(math.Round(d2.Sub(d1).Hours() / 24))
+}
+
+// DaysRemainingInCurrentMonth returns the number of days remaining until the end of the current month
+// in the given timezone (from today's calendar date to the last calendar day of the month).
+// Minimum return value is 1 day (on the last day of the month).
+func DaysRemainingInCurrentMonth(now time.Time, loc *time.Location) int {
+	if loc == nil {
+		loc = time.UTC
+	}
+	nowLoc := now.In(loc)
+	d1 := time.Date(nowLoc.Year(), nowLoc.Month(), nowLoc.Day(), 0, 0, 0, 0, loc)
+	firstOfNext := time.Date(nowLoc.Year(), nowLoc.Month()+1, 1, 0, 0, 0, 0, loc)
+	lastDay := firstOfNext.AddDate(0, 0, -1)
+	days := int(math.Round(lastDay.Sub(d1).Hours() / 24))
+	if days < 1 {
+		return 1
+	}
+	return days
+}
+
+// DaysRemainingInCurrentYear returns the number of days remaining until the end of the current year
+// in the given timezone (from today's calendar date to Dec 31).
+// Minimum return value is 1 day (on the last day of the year).
+func DaysRemainingInCurrentYear(now time.Time, loc *time.Location) int {
+	if loc == nil {
+		loc = time.UTC
+	}
+	nowLoc := now.In(loc)
+	d1 := time.Date(nowLoc.Year(), nowLoc.Month(), nowLoc.Day(), 0, 0, 0, 0, loc)
+	lastDay := time.Date(nowLoc.Year(), 12, 31, 0, 0, 0, 0, loc)
+	days := int(math.Round(lastDay.Sub(d1).Hours() / 24))
+	if days < 1 {
+		return 1
+	}
+	return days
+}
+
+// CalculateHorizonDays parses a horizon identifier and calculates the effective requirement window in days.
+// Supported horizons: "monthly", "30d", "90d", "annual", "365d". Default is "monthly".
+func CalculateHorizonDays(horizon string, now time.Time, loc *time.Location) (cleanHorizon string, windowDays int) {
+	if loc == nil {
+		loc = time.UTC
+	}
+	switch strings.ToLower(strings.TrimSpace(horizon)) {
+	case "90d":
+		return "90d", 90
+	case "30d":
+		return "30d", 30
+	case "365d":
+		return "365d", 365
+	case "annual":
+		return "annual", DaysRemainingInCurrentYear(now, loc)
+	case "monthly":
+		return "monthly", DaysRemainingInCurrentMonth(now, loc)
+	default:
+		return "monthly", DaysRemainingInCurrentMonth(now, loc)
+	}
+}
+
+// ComputeTargetRequirement computes the target requirement in minor units for windowDays assuming UTC.
 func ComputeTargetRequirement(t *TargetDefinition, windowDays int, nowUTC time.Time) int64 {
+	return ComputeTargetRequirementInLoc(t, windowDays, nowUTC, time.UTC)
+}
+
+// ComputeTargetRequirementInLoc computes the exact funding requirement in minor units for windowDays in the given timezone.
+// For targets with a due date:
+//   - If due date is in the past: 100% required immediately.
+//   - If due date <= windowDays: 100% required in this window.
+//   - If due date > windowDays: prorated by ceil(AmountMinor * (windowDays / daysUntilDue)).
+// For recurring targets: evaluated based on occurrences in the window.
+// For undated one-off targets: 0 required (open-ended piggybank/buffer).
+func ComputeTargetRequirementInLoc(t *TargetDefinition, windowDays int, now time.Time, loc *time.Location) int64 {
 	if windowDays < 1 {
 		windowDays = 1
 	}
-
-	remainingGoal := t.AmountMinor - t.CurrentFundedMinor
-	if remainingGoal < 0 {
-		remainingGoal = 0
+	if loc == nil {
+		loc = time.UTC
 	}
 
 	switch t.RecurrenceCadence {
 	case CadenceOneOff:
 		if t.DueDate == 0 {
-			return remainingGoal
+			// Undated one-off targets have 0 requirement (open-ended piggybank/buffer)
+			return 0
 		}
-		dueTime := time.UnixMicro(t.DueDate)
-		windowEnd := nowUTC.AddDate(0, 0, windowDays)
-		if !dueTime.After(windowEnd) {
-			// Due within this window
-			return remainingGoal
+		dueTime := time.UnixMicro(t.DueDate).In(loc)
+		daysUntilDue := CalendarDaysBetween(now, dueTime, loc)
+		if daysUntilDue <= 0 {
+			// Overdue: 100% required immediately
+			return t.AmountMinor
 		}
-		// Due beyond window: prorate
-		totalDaysUntilDue := int(math.Ceil(dueTime.Sub(nowUTC).Hours() / 24))
-		if totalDaysUntilDue <= windowDays || totalDaysUntilDue <= 0 {
-			return remainingGoal
+		if daysUntilDue <= windowDays {
+			// Due within this window: 100% required
+			return t.AmountMinor
 		}
-		prorated := float64(remainingGoal) * (float64(windowDays) / float64(totalDaysUntilDue))
-		return int64(math.Round(prorated))
+		// Due beyond window: proportional
+		prorated := float64(t.AmountMinor) * (float64(windowDays) / float64(daysUntilDue))
+		return int64(math.Ceil(prorated))
 
 	case CadenceWeekly:
 		return computeRecurring(t, windowDays, 7)
 	case CadenceMonthly:
+		if t.DueDate > 0 {
+			return computeCalendarRecurring(t, windowDays, now, loc, 1, 0)
+		}
 		return computeRecurring(t, windowDays, 30)
 	case CadenceAnnual:
+		if t.DueDate > 0 {
+			return computeCalendarRecurring(t, windowDays, now, loc, 0, 1)
+		}
 		return computeRecurring(t, windowDays, 365)
 	case CadenceCustomDays:
 		n := t.RecurrenceInterval
@@ -99,19 +179,19 @@ func ComputeTargetRequirement(t *TargetDefinition, windowDays int, nowUTC time.T
 		if interval < 1 {
 			interval = 1
 		}
-		return computeCalendarRecurring(t, windowDays, nowUTC, interval, 0)
+		return computeCalendarRecurring(t, windowDays, now, loc, interval, 0)
 	case CadenceCustomYears:
 		interval := t.RecurrenceInterval
 		if interval < 1 {
 			interval = 1
 		}
-		return computeCalendarRecurring(t, windowDays, nowUTC, 0, interval)
+		return computeCalendarRecurring(t, windowDays, now, loc, 0, interval)
 	default:
-		return remainingGoal
+		return t.AmountMinor
 	}
 }
 
-func computeCalendarRecurring(t *TargetDefinition, windowDays int, nowUTC time.Time, monthsStep, yearsStep int) int64 {
+func computeCalendarRecurring(t *TargetDefinition, windowDays int, now time.Time, loc *time.Location, monthsStep, yearsStep int) int64 {
 	if monthsStep < 0 {
 		monthsStep = 0
 	}
@@ -120,6 +200,9 @@ func computeCalendarRecurring(t *TargetDefinition, windowDays int, nowUTC time.T
 	}
 	if monthsStep == 0 && yearsStep == 0 {
 		monthsStep = 1
+	}
+	if loc == nil {
+		loc = time.UTC
 	}
 
 	if t.DueDate == 0 {
@@ -130,26 +213,27 @@ func computeCalendarRecurring(t *TargetDefinition, windowDays int, nowUTC time.T
 		return computeRecurring(t, windowDays, cycleDays)
 	}
 
-	anchor := time.UnixMicro(t.DueDate).UTC()
-	windowEnd := nowUTC.AddDate(0, 0, windowDays)
+	anchor := time.UnixMicro(t.DueDate).In(loc)
+	nowInLoc := now.In(loc)
+	windowEnd := nowInLoc.AddDate(0, 0, windowDays)
 
-	// Step forward or backward to align with nowUTC
+	// Step forward or backward to align with now
 	curr := anchor
-	if curr.Before(nowUTC) {
-		for curr.Before(nowUTC) {
+	if curr.Before(nowInLoc) {
+		for curr.Before(nowInLoc) {
 			curr = curr.AddDate(yearsStep, monthsStep, 0)
 		}
 	} else {
 		for {
 			prev := curr.AddDate(-yearsStep, -monthsStep, 0)
-			if prev.Before(nowUTC) {
+			if prev.Before(nowInLoc) {
 				break
 			}
 			curr = prev
 		}
 	}
 
-	// Count occurrences within [nowUTC, windowEnd]
+	// Count occurrences within [nowInLoc, windowEnd]
 	occurrences := 0
 	iter := curr
 	for !iter.After(windowEnd) {
@@ -162,12 +246,12 @@ func computeCalendarRecurring(t *TargetDefinition, windowDays int, nowUTC time.T
 		baseRequired = int64(occurrences) * t.AmountMinor
 	} else {
 		// Target due date is beyond windowEnd: prorate proportional to windowDays / daysUntilNext
-		daysUntilNext := int(math.Ceil(curr.Sub(nowUTC).Hours() / 24))
+		daysUntilNext := CalendarDaysBetween(nowInLoc, curr, loc)
 		if daysUntilNext <= windowDays || daysUntilNext <= 0 {
 			baseRequired = t.AmountMinor
 		} else {
 			prorated := float64(t.AmountMinor) * (float64(windowDays) / float64(daysUntilNext))
-			baseRequired = int64(math.Round(prorated))
+			baseRequired = int64(math.Ceil(prorated))
 		}
 	}
 
@@ -195,11 +279,10 @@ func computeCalendarRecurring(t *TargetDefinition, windowDays int, nowUTC time.T
 		baseRequired += t.ArrearsMinor
 	}
 
-	unfunded := baseRequired - t.CurrentFundedMinor
-	if unfunded < 0 {
+	if baseRequired < 0 {
 		return 0
 	}
-	return unfunded
+	return baseRequired
 }
 
 func computeRecurring(t *TargetDefinition, windowDays, cycleDays int) int64 {
@@ -233,11 +316,10 @@ func computeRecurring(t *TargetDefinition, windowDays, cycleDays int) int64 {
 		baseRequired += t.ArrearsMinor
 	}
 
-	unfunded := baseRequired - t.CurrentFundedMinor
-	if unfunded < 0 {
+	if baseRequired < 0 {
 		return 0
 	}
-	return unfunded
+	return baseRequired
 }
 
 // WaterfallSort sorts targets by: priority DESC, due_date ASC (nulls last), sort_order ASC.
@@ -279,7 +361,8 @@ func PriorityAutoAssign(targets []*TargetDefinition, windowDays int, nowUTC time
 		if remainingPool <= 0 {
 			break
 		}
-		needed := ComputeTargetRequirement(t, windowDays, nowUTC)
+		required := ComputeTargetRequirement(t, windowDays, nowUTC)
+		needed := required - t.CurrentFundedMinor
 		if needed <= 0 {
 			continue
 		}
@@ -293,6 +376,7 @@ func PriorityAutoAssign(targets []*TargetDefinition, windowDays int, nowUTC time
 			TargetID: t.ID,
 			Assigned: assign,
 		})
+		t.CurrentFundedMinor += assign
 		remainingPool -= assign
 	}
 

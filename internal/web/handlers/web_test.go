@@ -2030,6 +2030,134 @@ func TestBucketStructureAssistantFlow(t *testing.T) {
 	}
 }
 
+func TestWorkspaceTimeHorizonsAndDynamicCalculation(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.db")
+	mainDB, err := db.OpenDB(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tempDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+
+	appService := service.NewAppService(mainDB, tenantMgr, clock.NewSystemClock(time.UTC))
+	workspaceHandler.SetService(appService)
+
+	e := echo.New()
+	userID := domain.NewUUIDv7()
+	_, err = mainDB.Exec(`INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, ?, 'hash', 'Test User', ?, ?)`,
+		userID, "user@example.com", time.Now().Unix(), time.Now().Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create budget
+	form := url.Values{}
+	form.Set("name", "Horizon Test Budget")
+	form.Set("default_currency", "PLN")
+	form.Set("timezone", "UTC")
+
+	bReq := httptest.NewRequest(http.MethodPost, "/budgets", strings.NewReader(form.Encode()))
+	bReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	bRec := httptest.NewRecorder()
+	bCtx := e.NewContext(bReq, bRec)
+	bCtx.Set(ContextUserIDKey, userID)
+	bCtx.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.CreateBudget(bCtx); err != nil {
+		t.Fatalf("CreateBudget failed: %v", err)
+	}
+
+	// Get budget ID from redirect
+	var budgetID string
+	loc := bRec.Header().Get("Location")
+	parts := strings.Split(loc, "/")
+	if len(parts) >= 3 {
+		budgetID = parts[2]
+	}
+
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create bucket
+	bucketID := domain.NewUUIDv7()
+	nowEpoch := time.Now().Unix()
+	_, err = tenantDB.Exec(`INSERT INTO buckets_projection (id, group_name, name, version, updated_at) VALUES (?, 'Goals', 'Vacation', 1, ?)`, bucketID, nowEpoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create one-off target due in 360 days: amount 120 zł (12000 minor)
+	targetID := domain.NewUUIDv7()
+	now := time.Now().UTC()
+	dueDate := now.AddDate(0, 0, 360)
+	dueDateMicro := dueDate.UnixMicro()
+
+	_, err = tenantDB.Exec(`INSERT INTO targets_projection (
+		id, bucket_id, name, target_type, priority, sort_order, amount_minor, currency,
+		recurrence_cadence, due_date, non_spending_strategy, current_funded_minor, version, updated_at
+	) VALUES (?, ?, 'Holiday Trip', 'SAVINGS', 2, 0, 12000, 'PLN', 'ONE_OFF', ?, 'ROLL_OVER', 0, 1, ?)`,
+		targetID, bucketID, dueDateMicro, nowEpoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testHorizons := []struct {
+		horizonParam   string
+		expectedTitle  string
+		expectedActive string
+	}{
+		{"monthly", "Monthly", "horizon=monthly&filter=all\" class=\"btn btn-xs join-item btn-primary\""},
+		{"30d", "30d", "horizon=30d&filter=all\" class=\"btn btn-xs join-item btn-primary\""},
+		{"90d", "90d", "horizon=90d&filter=all\" class=\"btn btn-xs join-item btn-primary\""},
+		{"annual", "Annual", "horizon=annual&filter=all\" class=\"btn btn-xs join-item btn-primary\""},
+		{"365d", "365d", "horizon=365d&filter=all\" class=\"btn btn-xs join-item btn-primary\""},
+	}
+
+	for _, th := range testHorizons {
+		t.Run("Horizon_"+th.horizonParam, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/budget?horizon="+th.horizonParam, nil)
+			rec := httptest.NewRecorder()
+			c := e.NewContext(req, rec)
+			c.SetParamNames("budgetId")
+			c.SetParamValues(budgetID)
+			c.Set(ContextBudgetDBKey, tenantDB)
+			c.Set(ContextUserIDKey, userID)
+			c.Set(ContextRoleKey, "OWNER")
+			c.Set("csrfToken", "test-token")
+
+			if err := workspaceHandler.BudgetView(c); err != nil {
+				t.Fatalf("BudgetView failed for %s: %v", th.horizonParam, err)
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200 OK for %s, got %d", th.horizonParam, rec.Code)
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, "Needed ("+th.expectedTitle+")") {
+				t.Errorf("expected Needed (%s) in stats banner, but body did not contain it", th.expectedTitle)
+			}
+			if !strings.Contains(body, th.expectedActive) {
+				t.Errorf("expected active button for %s, but pattern %q not found in body", th.horizonParam, th.expectedActive)
+			}
+		})
+	}
+}
+
 
 
 
