@@ -762,6 +762,7 @@ type targetViewData struct {
 	LastFormulaError    *string `json:"LastFormulaError"`
 	Currency            string  `json:"Currency"`
 	RecurrenceCadence   string  `json:"RecurrenceCadence"`
+	RecurrenceInterval  int     `json:"RecurrenceInterval"`
 	RecurrenceDays      int     `json:"RecurrenceDays"`
 	DueDate             int64   `json:"DueDate"`
 	NonSpendingStrategy string  `json:"NonSpendingStrategy"`
@@ -828,7 +829,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
 	targetRows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT id, bucket_id, name, target_type, priority, sort_order, amount_minor, currency,
-		       recurrence_cadence, recurrence_days, due_date, non_spending_strategy,
+		       recurrence_cadence, recurrence_interval, due_date, non_spending_strategy,
 		       ceiling_amount_minor, current_funded_minor, amount_mode, lua_script, last_formula_error
 		FROM targets_projection
 		WHERE is_archived = 0
@@ -839,13 +840,18 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		for targetRows.Next() {
 			var t targetViewData
 			var dueDate sql.NullInt64
+			var rInterval sql.NullInt64
 			var ceiling sql.NullInt64
 			var luaScriptNull sql.NullString
 			var lastErrNull sql.NullString
 			targetRows.Scan(&t.ID, &t.BucketID, &t.Name, &t.TargetType, &t.Priority, &t.SortOrder,
-				&t.AmountMinor, &t.Currency, &t.RecurrenceCadence, &t.RecurrenceDays,
+				&t.AmountMinor, &t.Currency, &t.RecurrenceCadence, &rInterval,
 				&dueDate, &t.NonSpendingStrategy, &ceiling, &t.CurrentFundedMinor,
 				&t.AmountMode, &luaScriptNull, &lastErrNull)
+			if rInterval.Valid {
+				t.RecurrenceInterval = int(rInterval.Int64)
+				t.RecurrenceDays = t.RecurrenceInterval
+			}
 			if dueDate.Valid {
 				t.DueDate = dueDate.Int64
 			}
@@ -883,7 +889,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 				AmountMinor:         t.AmountMinor,
 				Currency:            t.Currency,
 				RecurrenceCadence:   t.RecurrenceCadence,
-				RecurrenceDays:      t.RecurrenceDays,
+				RecurrenceInterval:  t.RecurrenceInterval,
 				DueDate:             t.DueDate,
 				NonSpendingStrategy: t.NonSpendingStrategy,
 				CeilingAmountMinor:  t.CeilingAmountMinor,
@@ -1591,6 +1597,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                             <option value="ANNUAL">Annual</option>
                             <option value="ONE_OFF">One-Off</option>
                             <option value="CUSTOM_DAYS">Custom Days</option>
+                            <option value="CUSTOM_MONTHS">Custom Months</option>
+                            <option value="CUSTOM_YEARS">Custom Years</option>
                         </select>
                     </div>
                     <div class="form-control">
@@ -1605,10 +1613,17 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                     </div>
                 </div>
 
-                <!-- Custom Days Interval Input -->
+                <!-- Custom Interval Input -->
                 <div id="custom_days_container" class="hidden form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs font-semibold">Recurrence Interval (Days)</span></label>
-                    <input type="number" id="target_recurrence_days" name="recurrence_days" min="1" max="36500" placeholder="e.g. 90 for quarterly, 180 for semi-annual" class="input input-bordered w-full input-md focus:input-primary font-mono" />
+                    <label class="label pb-1"><span id="target_recurrence_interval_label" class="label-text font-medium text-xs font-semibold">Recurrence Interval (Days)</span></label>
+                    <input type="number" id="target_recurrence_days" name="recurrence_interval" min="1" max="36500" placeholder="e.g. 90 for quarterly, 180 for semi-annual" class="input input-bordered w-full input-md focus:input-primary font-mono" />
+                </div>
+
+                <!-- Due Date / Anchor Date Input -->
+                <div id="target_due_date_container" class="hidden form-control">
+                    <label class="label pb-1"><span id="target_due_date_label" class="label-text font-medium text-xs font-semibold">Anchor Due Date</span></label>
+                    <input type="date" id="target_due_date" name="due_date" class="input input-bordered w-full input-md focus:input-primary font-mono" />
+                    <span id="target_due_date_hint" class="text-[10px] text-base-content/50 mt-1">Calendar anchor date used for calculating recurring cycles</span>
                 </div>
 
                 <!-- Calculation Mode Selector -->
@@ -1726,7 +1741,10 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                     const ceilingHtml = t.CeilingAmountMinor ? ' • <span class="font-semibold text-primary">Goal: ' + (t.CeilingAmountMinor/100).toFixed(2) + ' ' + t.Currency + '</span>' : '';
                     const luaBadge = t.AmountMode === 'LUA_FORMULA' ? ' <span class="badge badge-outline badge-xs font-mono text-secondary border-secondary">LUA</span>' : '';
                     const formulaErrHtml = (t.LastFormulaError && t.LastFormulaError.length > 0) ? '<div class="text-[11px] text-error font-mono mt-1">⚠️ ' + escapeHtml(t.LastFormulaError) + '</div>' : '';
-                    const cadenceDisplay = t.RecurrenceCadence === 'CUSTOM_DAYS' ? ((t.RecurrenceDays || 90) + 'd') : t.RecurrenceCadence;
+                    const rInt = t.RecurrenceInterval || t.RecurrenceDays;
+                    const cadenceDisplay = t.RecurrenceCadence === 'CUSTOM_DAYS' ? ((rInt || 90) + 'd') :
+                        (t.RecurrenceCadence === 'CUSTOM_MONTHS' ? ((rInt || 3) + 'm') :
+                        (t.RecurrenceCadence === 'CUSTOM_YEARS' ? ((rInt || 1) + 'y') : t.RecurrenceCadence));
 
                     card.innerHTML = 
                         '<div class="flex justify-between items-start">' +
@@ -1771,7 +1789,18 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             document.getElementById('target_type').value = t.TargetType;
             document.getElementById('target_priority').value = t.Priority;
             document.getElementById('target_cadence').value = t.RecurrenceCadence;
-            document.getElementById('target_recurrence_days').value = t.RecurrenceDays || 90;
+            const rIntVal = t.RecurrenceInterval || t.RecurrenceDays || 90;
+            if (document.getElementById('target_recurrence_days')) {
+                document.getElementById('target_recurrence_days').value = rIntVal;
+            }
+            if (document.getElementById('target_due_date')) {
+                if (t.DueDate && t.DueDate > 0) {
+                    const d = new Date(t.DueDate / 1000);
+                    document.getElementById('target_due_date').value = d.toISOString().split('T')[0];
+                } else {
+                    document.getElementById('target_due_date').value = '';
+                }
+            }
             document.getElementById('target_strategy').value = t.NonSpendingStrategy;
             document.getElementById('target_amount').value = (t.AmountMinor / 100).toFixed(2);
             document.getElementById('target_ceiling').value = t.CeilingAmountMinor ? (t.CeilingAmountMinor / 100).toFixed(2) : '';
@@ -1796,7 +1825,12 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             document.getElementById('target_type').value = 'EXPENSE';
             document.getElementById('target_priority').value = '2';
             document.getElementById('target_cadence').value = 'MONTHLY';
-            document.getElementById('target_recurrence_days').value = '90';
+            if (document.getElementById('target_recurrence_days')) {
+                document.getElementById('target_recurrence_days').value = '90';
+            }
+            if (document.getElementById('target_due_date')) {
+                document.getElementById('target_due_date').value = '';
+            }
             document.getElementById('target_strategy').value = 'ROLL_OVER';
             document.getElementById('target_amount').value = '';
             document.getElementById('target_ceiling').value = '';
@@ -1813,17 +1847,54 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
         function toggleCustomDays() {
             const cadenceSelect = document.getElementById('target_cadence');
-            const customDaysContainer = document.getElementById('custom_days_container');
-            const rDaysInput = document.getElementById('target_recurrence_days');
-            if (!cadenceSelect || !customDaysContainer) return;
-            const isCustom = cadenceSelect.value === 'CUSTOM_DAYS';
+            const customContainer = document.getElementById('custom_days_container');
+            const rInput = document.getElementById('target_recurrence_days');
+            const rLabel = document.getElementById('target_recurrence_interval_label');
+            const dueDateContainer = document.getElementById('target_due_date_container');
+            const dueDateInput = document.getElementById('target_due_date');
+            const dueDateLabel = document.getElementById('target_due_date_label');
+            if (!cadenceSelect || !customContainer) return;
+
+            const val = cadenceSelect.value;
+            const isCustomDays = val === 'CUSTOM_DAYS';
+            const isCustomMonths = val === 'CUSTOM_MONTHS';
+            const isCustomYears = val === 'CUSTOM_YEARS';
+            const isCustom = isCustomDays || isCustomMonths || isCustomYears;
+            const isOneOff = val === 'ONE_OFF';
+
             if (isCustom) {
-                customDaysContainer.classList.remove('hidden');
-                if (rDaysInput && (!rDaysInput.value || parseInt(rDaysInput.value) < 1)) {
-                    rDaysInput.value = '90';
+                customContainer.classList.remove('hidden');
+                if (isCustomDays) {
+                    if (rLabel) rLabel.innerText = 'Recurrence Interval (Days)';
+                    if (rInput && (!rInput.value || parseInt(rInput.value) < 1)) rInput.value = '90';
+                } else if (isCustomMonths) {
+                    if (rLabel) rLabel.innerText = 'Recurrence Interval (Months)';
+                    if (rInput && (!rInput.value || parseInt(rInput.value) < 1)) rInput.value = '3';
+                } else if (isCustomYears) {
+                    if (rLabel) rLabel.innerText = 'Recurrence Interval (Years)';
+                    if (rInput && (!rInput.value || parseInt(rInput.value) < 1)) rInput.value = '1';
                 }
             } else {
-                customDaysContainer.classList.add('hidden');
+                customContainer.classList.add('hidden');
+            }
+
+            if (dueDateContainer && dueDateInput) {
+                if (isCustomMonths || isCustomYears) {
+                    dueDateContainer.classList.remove('hidden');
+                    dueDateInput.required = true;
+                    if (dueDateLabel) dueDateLabel.innerHTML = 'Anchor Due Date <span class="text-error">*</span>';
+                    if (!dueDateInput.value) {
+                        const d = new Date();
+                        dueDateInput.value = d.toISOString().split('T')[0];
+                    }
+                } else if (isOneOff) {
+                    dueDateContainer.classList.remove('hidden');
+                    dueDateInput.required = false;
+                    if (dueDateLabel) dueDateLabel.innerText = 'Target Due Date (Optional)';
+                } else {
+                    dueDateContainer.classList.add('hidden');
+                    dueDateInput.required = false;
+                }
             }
         }
 
@@ -2460,7 +2531,7 @@ func (h *WorkspaceHandler) AutoAssign(c echo.Context) error {
 	nowUTC := time.Now().UTC()
 	rows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT t.id, t.bucket_id, t.name, t.priority, t.sort_order, t.amount_minor, t.currency,
-		       t.recurrence_cadence, t.recurrence_days, t.due_date, t.non_spending_strategy,
+		       t.recurrence_cadence, t.recurrence_interval, t.due_date, t.non_spending_strategy,
 		       t.ceiling_amount_minor, t.current_funded_minor
 		FROM targets_projection t
 		JOIN buckets_projection b ON t.bucket_id = b.id
@@ -2476,9 +2547,13 @@ func (h *WorkspaceHandler) AutoAssign(c echo.Context) error {
 		var t budget.TargetDefinition
 		var dueDate sql.NullInt64
 		var ceiling sql.NullInt64
+		var rInterval sql.NullInt64
 		rows.Scan(&t.ID, &t.BucketID, &t.Name, &t.Priority, &t.SortOrder, &t.AmountMinor,
-			&t.Currency, &t.RecurrenceCadence, &t.RecurrenceDays, &dueDate,
+			&t.Currency, &t.RecurrenceCadence, &rInterval, &dueDate,
 			&t.NonSpendingStrategy, &ceiling, &t.CurrentFundedMinor)
+		if rInterval.Valid {
+			t.RecurrenceInterval = int(rInterval.Int64)
+		}
 		if dueDate.Valid {
 			t.DueDate = dueDate.Int64
 		}
@@ -2540,11 +2615,30 @@ func (h *WorkspaceHandler) CreateTarget(c echo.Context) error {
 	if cadence == "" {
 		cadence = budget.CadenceMonthly
 	}
-	rDays, _ := strconv.Atoi(c.FormValue("recurrence_days"))
-	if cadence == budget.CadenceCustomDays && rDays < 1 {
-		rDays = 90
-	} else if cadence != budget.CadenceCustomDays {
-		rDays = 0
+	rInterval, _ := strconv.Atoi(c.FormValue("recurrence_interval"))
+	if rInterval < 1 {
+		rInterval, _ = strconv.Atoi(c.FormValue("recurrence_days"))
+	}
+	isCustom := cadence == budget.CadenceCustomDays || cadence == budget.CadenceCustomMonths || cadence == budget.CadenceCustomYears
+	if isCustom && rInterval < 1 {
+		switch cadence {
+		case budget.CadenceCustomMonths:
+			rInterval = 3
+		case budget.CadenceCustomYears:
+			rInterval = 1
+		default:
+			rInterval = 90
+		}
+	} else if !isCustom {
+		rInterval = 0
+	}
+
+	var dueDate *int64
+	if dueStr := strings.TrimSpace(c.FormValue("due_date")); dueStr != "" {
+		if t, err := time.Parse("2006-01-02", dueStr); err == nil {
+			u := t.UTC().UnixMicro()
+			dueDate = &u
+		}
 	}
 	strategy := c.FormValue("non_spending_strategy")
 	if strategy == "" {
@@ -2586,7 +2680,8 @@ func (h *WorkspaceHandler) CreateTarget(c echo.Context) error {
 		LuaScript:           luaScript,
 		Currency:            currency,
 		RecurrenceCadence:   cadence,
-		RecurrenceDays:      rDays,
+		RecurrenceInterval:  rInterval,
+		DueDate:             dueDate,
 		NonSpendingStrategy: strategy,
 		CeilingAmountMinor:  ceilingMinor,
 		AgentID:             userID,
@@ -2620,11 +2715,30 @@ func (h *WorkspaceHandler) UpdateTarget(c echo.Context) error {
 	if cadence == "" {
 		cadence = budget.CadenceMonthly
 	}
-	rDays, _ := strconv.Atoi(c.FormValue("recurrence_days"))
-	if cadence == budget.CadenceCustomDays && rDays < 1 {
-		rDays = 90
-	} else if cadence != budget.CadenceCustomDays {
-		rDays = 0
+	rInterval, _ := strconv.Atoi(c.FormValue("recurrence_interval"))
+	if rInterval < 1 {
+		rInterval, _ = strconv.Atoi(c.FormValue("recurrence_days"))
+	}
+	isCustom := cadence == budget.CadenceCustomDays || cadence == budget.CadenceCustomMonths || cadence == budget.CadenceCustomYears
+	if isCustom && rInterval < 1 {
+		switch cadence {
+		case budget.CadenceCustomMonths:
+			rInterval = 3
+		case budget.CadenceCustomYears:
+			rInterval = 1
+		default:
+			rInterval = 90
+		}
+	} else if !isCustom {
+		rInterval = 0
+	}
+
+	var dueDate *int64
+	if dueStr := strings.TrimSpace(c.FormValue("due_date")); dueStr != "" {
+		if t, err := time.Parse("2006-01-02", dueStr); err == nil {
+			u := t.UTC().UnixMicro()
+			dueDate = &u
+		}
 	}
 	strategy := c.FormValue("non_spending_strategy")
 	if strategy == "" {
@@ -2665,7 +2779,8 @@ func (h *WorkspaceHandler) UpdateTarget(c echo.Context) error {
 		AmountMinor:         amtMinor,
 		LuaScript:           luaScript,
 		RecurrenceCadence:   cadence,
-		RecurrenceDays:      rDays,
+		RecurrenceInterval:  rInterval,
+		DueDate:             dueDate,
 		NonSpendingStrategy: strategy,
 		CeilingAmountMinor:  ceilingMinor,
 		AgentID:             userID,

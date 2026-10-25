@@ -17,11 +17,13 @@ const (
 
 // Recurrence cadences
 const (
-	CadenceOneOff     = "ONE_OFF"
-	CadenceWeekly     = "WEEKLY"
-	CadenceMonthly    = "MONTHLY"
-	CadenceAnnual     = "ANNUAL"
-	CadenceCustomDays = "CUSTOM_DAYS"
+	CadenceOneOff       = "ONE_OFF"
+	CadenceWeekly       = "WEEKLY"
+	CadenceMonthly      = "MONTHLY"
+	CadenceAnnual       = "ANNUAL"
+	CadenceCustomDays   = "CUSTOM_DAYS"
+	CadenceCustomMonths = "CUSTOM_MONTHS"
+	CadenceCustomYears  = "CUSTOM_YEARS"
 )
 
 // TargetDefinition represents a target evaluated within a rolling window.
@@ -34,7 +36,7 @@ type TargetDefinition struct {
 	AmountMinor         int64 // Evaluated or static required cycle/target amount
 	Currency            string
 	RecurrenceCadence   string
-	RecurrenceDays      int   // >= 1 for CUSTOM_DAYS
+	RecurrenceInterval  int   // >= 1 for CUSTOM_DAYS, CUSTOM_MONTHS, CUSTOM_YEARS
 	DueDate             int64 // UTC microsecond timestamp
 	NonSpendingStrategy string
 	CeilingAmountMinor  *int64
@@ -87,14 +89,117 @@ func ComputeTargetRequirement(t *TargetDefinition, windowDays int, nowUTC time.T
 	case CadenceAnnual:
 		return computeRecurring(t, windowDays, 365)
 	case CadenceCustomDays:
-		n := t.RecurrenceDays
+		n := t.RecurrenceInterval
 		if n < 1 {
 			n = 1
 		}
 		return computeRecurring(t, windowDays, n)
+	case CadenceCustomMonths:
+		interval := t.RecurrenceInterval
+		if interval < 1 {
+			interval = 1
+		}
+		return computeCalendarRecurring(t, windowDays, nowUTC, interval, 0)
+	case CadenceCustomYears:
+		interval := t.RecurrenceInterval
+		if interval < 1 {
+			interval = 1
+		}
+		return computeCalendarRecurring(t, windowDays, nowUTC, 0, interval)
 	default:
 		return remainingGoal
 	}
+}
+
+func computeCalendarRecurring(t *TargetDefinition, windowDays int, nowUTC time.Time, monthsStep, yearsStep int) int64 {
+	if monthsStep < 0 {
+		monthsStep = 0
+	}
+	if yearsStep < 0 {
+		yearsStep = 0
+	}
+	if monthsStep == 0 && yearsStep == 0 {
+		monthsStep = 1
+	}
+
+	if t.DueDate == 0 {
+		cycleDays := monthsStep*30 + yearsStep*365
+		if cycleDays < 1 {
+			cycleDays = 30
+		}
+		return computeRecurring(t, windowDays, cycleDays)
+	}
+
+	anchor := time.UnixMicro(t.DueDate).UTC()
+	windowEnd := nowUTC.AddDate(0, 0, windowDays)
+
+	// Step forward or backward to align with nowUTC
+	curr := anchor
+	if curr.Before(nowUTC) {
+		for curr.Before(nowUTC) {
+			curr = curr.AddDate(yearsStep, monthsStep, 0)
+		}
+	} else {
+		for {
+			prev := curr.AddDate(-yearsStep, -monthsStep, 0)
+			if prev.Before(nowUTC) {
+				break
+			}
+			curr = prev
+		}
+	}
+
+	// Count occurrences within [nowUTC, windowEnd]
+	occurrences := 0
+	iter := curr
+	for !iter.After(windowEnd) {
+		occurrences++
+		iter = iter.AddDate(yearsStep, monthsStep, 0)
+	}
+
+	var baseRequired int64
+	if occurrences > 0 {
+		baseRequired = int64(occurrences) * t.AmountMinor
+	} else {
+		// Target due date is beyond windowEnd: prorate proportional to windowDays / daysUntilNext
+		daysUntilNext := int(math.Ceil(curr.Sub(nowUTC).Hours() / 24))
+		if daysUntilNext <= windowDays || daysUntilNext <= 0 {
+			baseRequired = t.AmountMinor
+		} else {
+			prorated := float64(t.AmountMinor) * (float64(windowDays) / float64(daysUntilNext))
+			baseRequired = int64(math.Round(prorated))
+		}
+	}
+
+	// Strategy specific adjustments
+	switch t.NonSpendingStrategy {
+	case StrategyCapAndHold:
+		if t.CeilingAmountMinor != nil {
+			ceiling := *t.CeilingAmountMinor
+			if t.CurrentBalanceMinor >= ceiling {
+				return 0
+			}
+			needed := ceiling - t.CurrentBalanceMinor
+			if baseRequired > needed {
+				return needed
+			}
+		}
+	case StrategyRollOver:
+		if t.CurrentBalanceMinor > 0 {
+			baseRequired -= t.CurrentBalanceMinor
+			if baseRequired < 0 {
+				baseRequired = 0
+			}
+		}
+	case StrategyArrearsCumulative:
+		baseRequired += t.ArrearsMinor
+	}
+
+	unfunded := baseRequired - t.CurrentFundedMinor
+	if unfunded < 0 {
+		return 0
+	}
+	return unfunded
 }
 
 func computeRecurring(t *TargetDefinition, windowDays, cycleDays int) int64 {

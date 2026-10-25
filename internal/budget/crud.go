@@ -53,8 +53,8 @@ type CreateTargetInput struct {
 	AmountMinor         int64
 	LuaScript           *string
 	Currency            string
-	RecurrenceCadence   string // 'ONE_OFF', 'WEEKLY', 'MONTHLY', 'ANNUAL', 'CUSTOM_DAYS'
-	RecurrenceDays      int
+	RecurrenceCadence   string // 'ONE_OFF', 'WEEKLY', 'MONTHLY', 'ANNUAL', 'CUSTOM_DAYS', 'CUSTOM_MONTHS', 'CUSTOM_YEARS'
+	RecurrenceInterval  int
 	DueDate             *int64
 	NonSpendingStrategy string // 'ROLL_OVER', 'RETURN_TO_POOL', 'ARREARS_CUMULATIVE', 'CAP_AND_HOLD', 'PRORATE_FUTURE'
 	CeilingAmountMinor  *int64
@@ -73,7 +73,7 @@ type UpdateTargetInput struct {
 	AmountMinor         int64
 	LuaScript           *string
 	RecurrenceCadence   string
-	RecurrenceDays      int
+	RecurrenceInterval  int
 	DueDate             *int64
 	NonSpendingStrategy string
 	CeilingAmountMinor  *int64
@@ -340,10 +340,30 @@ func CreateTargetTx(ctx context.Context, tx *sql.Tx, input CreateTargetInput) (s
 	if input.RecurrenceCadence == "" {
 		input.RecurrenceCadence = CadenceMonthly
 	}
-	if input.RecurrenceCadence == CadenceCustomDays && input.RecurrenceDays < 1 {
-		input.RecurrenceDays = 90
-	} else if input.RecurrenceCadence != CadenceCustomDays {
-		input.RecurrenceDays = 0
+	isCustom := input.RecurrenceCadence == CadenceCustomDays ||
+		input.RecurrenceCadence == CadenceCustomMonths ||
+		input.RecurrenceCadence == CadenceCustomYears
+
+	if isCustom && input.RecurrenceInterval < 1 {
+		switch input.RecurrenceCadence {
+		case CadenceCustomMonths:
+			input.RecurrenceInterval = 3
+		case CadenceCustomYears:
+			input.RecurrenceInterval = 1
+		default:
+			input.RecurrenceInterval = 90
+		}
+	} else if !isCustom {
+		input.RecurrenceInterval = 0
+	}
+
+	if (input.RecurrenceCadence == CadenceCustomMonths || input.RecurrenceCadence == CadenceCustomYears) && (input.DueDate == nil || *input.DueDate == 0) {
+		return "", errors.New("due date is required for custom months and custom years cadence")
+	}
+
+	var rInterval *int
+	if isCustom {
+		rInterval = &input.RecurrenceInterval
 	}
 	if input.NonSpendingStrategy == "" {
 		input.NonSpendingStrategy = StrategyRollOver
@@ -379,7 +399,7 @@ func CreateTargetTx(ctx context.Context, tx *sql.Tx, input CreateTargetInput) (s
 		"lua_script":            input.LuaScript,
 		"currency":              input.Currency,
 		"recurrence_cadence":    input.RecurrenceCadence,
-		"recurrence_days":       input.RecurrenceDays,
+		"recurrence_interval":   rInterval,
 		"due_date":              input.DueDate,
 		"non_spending_strategy": input.NonSpendingStrategy,
 		"ceiling_amount_minor":  input.CeilingAmountMinor,
@@ -400,12 +420,12 @@ func CreateTargetTx(ctx context.Context, tx *sql.Tx, input CreateTargetInput) (s
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO targets_projection (
 			id, bucket_id, name, target_type, priority, sort_order, amount_mode, amount_minor,
-			lua_script, currency, recurrence_cadence, recurrence_days, due_date, non_spending_strategy,
+			lua_script, currency, recurrence_cadence, recurrence_interval, due_date, non_spending_strategy,
 			ceiling_amount_minor, current_funded_minor, is_archived, version, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?)`,
 		targetID, input.BucketID, input.Name, input.TargetType, input.Priority, input.SortOrder,
 		input.AmountMode, input.AmountMinor, input.LuaScript, input.Currency, input.RecurrenceCadence,
-		input.RecurrenceDays, input.DueDate, input.NonSpendingStrategy, input.CeilingAmountMinor, now,
+		rInterval, input.DueDate, input.NonSpendingStrategy, input.CeilingAmountMinor, now,
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed inserting targets_projection: %w", err)
@@ -445,10 +465,30 @@ func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput
 		return fmt.Errorf("invalid target amount: %w", err)
 	}
 
-	if input.RecurrenceCadence == CadenceCustomDays && input.RecurrenceDays < 1 {
-		input.RecurrenceDays = 90
-	} else if input.RecurrenceCadence != "" && input.RecurrenceCadence != CadenceCustomDays {
-		input.RecurrenceDays = 0
+	isCustom := input.RecurrenceCadence == CadenceCustomDays ||
+		input.RecurrenceCadence == CadenceCustomMonths ||
+		input.RecurrenceCadence == CadenceCustomYears
+
+	if isCustom && input.RecurrenceInterval < 1 {
+		switch input.RecurrenceCadence {
+		case CadenceCustomMonths:
+			input.RecurrenceInterval = 3
+		case CadenceCustomYears:
+			input.RecurrenceInterval = 1
+		default:
+			input.RecurrenceInterval = 90
+		}
+	} else if input.RecurrenceCadence != "" && !isCustom {
+		input.RecurrenceInterval = 0
+	}
+
+	if (input.RecurrenceCadence == CadenceCustomMonths || input.RecurrenceCadence == CadenceCustomYears) && (input.DueDate == nil || *input.DueDate == 0) {
+		return errors.New("due date is required for custom months and custom years cadence")
+	}
+
+	var rInterval *int
+	if isCustom {
+		rInterval = &input.RecurrenceInterval
 	}
 
 	tx, err := tenantDB.BeginTx(ctx, nil)
@@ -481,7 +521,7 @@ func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput
 		"amount_minor":          input.AmountMinor,
 		"lua_script":            input.LuaScript,
 		"recurrence_cadence":    input.RecurrenceCadence,
-		"recurrence_days":       input.RecurrenceDays,
+		"recurrence_interval":   rInterval,
 		"due_date":              input.DueDate,
 		"non_spending_strategy": input.NonSpendingStrategy,
 		"ceiling_amount_minor":  input.CeilingAmountMinor,
@@ -502,11 +542,11 @@ func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput
 	_, err = tx.ExecContext(ctx, `
 		UPDATE targets_projection
 		SET name = ?, target_type = ?, priority = ?, sort_order = ?, amount_mode = ?, amount_minor = ?,
-		    lua_script = ?, recurrence_cadence = ?, recurrence_days = ?, due_date = ?, non_spending_strategy = ?,
+		    lua_script = ?, recurrence_cadence = ?, recurrence_interval = ?, due_date = ?, non_spending_strategy = ?,
 		    ceiling_amount_minor = ?, version = ?, updated_at = ?
 		WHERE id = ?`,
 		input.Name, input.TargetType, input.Priority, input.SortOrder, input.AmountMode, input.AmountMinor,
-		input.LuaScript, input.RecurrenceCadence, input.RecurrenceDays, input.DueDate, input.NonSpendingStrategy,
+		input.LuaScript, input.RecurrenceCadence, rInterval, input.DueDate, input.NonSpendingStrategy,
 		input.CeilingAmountMinor, newVersion, now, input.ID,
 	)
 	if err != nil {
@@ -610,7 +650,7 @@ func AssignFunds(ctx context.Context, tenantDB *sql.DB, input AssignFundsInput) 
 	} else if input.AmountMinor > 0 {
 		// Waterfall funding over active targets of this bucket in matching currency
 		rows, err := tx.QueryContext(ctx, `
-			SELECT id, priority, sort_order, amount_minor, recurrence_cadence, recurrence_days,
+			SELECT id, priority, sort_order, amount_minor, recurrence_cadence, recurrence_interval,
 			       due_date, non_spending_strategy, current_funded_minor
 			FROM targets_projection
 			WHERE bucket_id = ? AND currency = ? AND is_archived = 0
@@ -620,8 +660,12 @@ func AssignFunds(ctx context.Context, tenantDB *sql.DB, input AssignFundsInput) 
 			for rows.Next() {
 				var t TargetDefinition
 				var dueDate sql.NullInt64
+				var rInterval sql.NullInt64
 				rows.Scan(&t.ID, &t.Priority, &t.SortOrder, &t.AmountMinor, &t.RecurrenceCadence,
-					&t.RecurrenceDays, &dueDate, &t.NonSpendingStrategy, &t.CurrentFundedMinor)
+					&rInterval, &dueDate, &t.NonSpendingStrategy, &t.CurrentFundedMinor)
+				if rInterval.Valid {
+					t.RecurrenceInterval = int(rInterval.Int64)
+				}
 				if dueDate.Valid {
 					t.DueDate = dueDate.Int64
 				}

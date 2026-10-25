@@ -681,9 +681,9 @@ func InitializeE2EScenario(ctx *godog.ScenarioContext) {
 			_, err := tenantDB.Exec(`
 				INSERT INTO targets_projection (
 					id, version, bucket_id, name, target_type, priority, sort_order,
-					amount_minor, currency, recurrence_cadence, recurrence_days,
+					amount_minor, currency, recurrence_cadence, recurrence_interval,
 					non_spending_strategy, current_funded_minor, is_archived, updated_at
-				) VALUES (?, 1, ?, ?, 'EXPENSE', ?, ?, ?, 'PLN', 'MONTHLY', 0, 'ROLL_OVER', 0, 0, ?)`,
+				) VALUES (?, 1, ?, ?, 'EXPENSE', ?, ?, ?, 'PLN', 'MONTHLY', NULL, 'ROLL_OVER', 0, 0, ?)`,
 				tID, bID, t.name, t.priority, i+1, t.minor, now,
 			)
 			if err != nil {
@@ -2021,9 +2021,9 @@ func InitializeE2EScenario(ctx *godog.ScenarioContext) {
 		_, err = tenantDB.Exec(`
 			INSERT INTO targets_projection (
 				id, version, bucket_id, name, target_type, priority, sort_order,
-				amount_minor, currency, recurrence_cadence, recurrence_days,
+				amount_minor, currency, recurrence_cadence, recurrence_interval,
 				non_spending_strategy, current_funded_minor, is_archived, updated_at
-			) VALUES (?, 1, ?, ?, 'EXPENSE', 2, 1, ?, 'PLN', 'MONTHLY', 0, 'RETURN_TO_POOL', 0, 0, ?)`,
+			) VALUES (?, 1, ?, ?, 'EXPENSE', 2, 1, ?, 'PLN', 'MONTHLY', NULL, 'RETURN_TO_POOL', 0, 0, ?)`,
 			tID, bID, targetName, minor, now,
 		)
 		return err

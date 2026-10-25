@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/balance/balance/internal/ai"
 )
@@ -106,25 +107,48 @@ func ApplyBudgetStructure(ctx context.Context, tenantDB *sql.DB, structure *ai.B
 					currency = "PLN"
 				}
 
-				rDays := 0
-				if proposedTarget.RecurrenceDays != nil {
-					rDays = *proposedTarget.RecurrenceDays
+				rInterval := 0
+				if proposedTarget.RecurrenceInterval != nil {
+					rInterval = *proposedTarget.RecurrenceInterval
+				} else if proposedTarget.RecurrenceDays != nil {
+					rInterval = *proposedTarget.RecurrenceDays
 				}
-				if cadence == "CUSTOM_DAYS" {
-					if rDays < 1 {
+				isCustom := cadence == "CUSTOM_DAYS" || cadence == "CUSTOM_MONTHS" || cadence == "CUSTOM_YEARS"
+				if isCustom && rInterval < 1 {
+					switch cadence {
+					case "CUSTOM_MONTHS":
+						rInterval = 3
+					case "CUSTOM_YEARS":
+						rInterval = 1
+					default:
 						lowerName := strings.ToLower(targetName)
 						if strings.Contains(lowerName, "kwartal") || strings.Contains(lowerName, "3 mies") || strings.Contains(lowerName, "quarter") {
-							rDays = 90
+							rInterval = 90
 						} else if strings.Contains(lowerName, "półrocz") || strings.Contains(lowerName, "polrocz") || strings.Contains(lowerName, "6 mies") || strings.Contains(lowerName, "half") {
-							rDays = 180
+							rInterval = 180
 						} else if strings.Contains(lowerName, "dwutyg") || strings.Contains(lowerName, "2 tyg") || strings.Contains(lowerName, "bi-week") {
-							rDays = 14
+							rInterval = 14
 						} else {
-							rDays = 90
+							rInterval = 90
 						}
 					}
-				} else {
-					rDays = 0
+				} else if !isCustom {
+					rInterval = 0
+				}
+
+				var dueDate *int64
+				if cadence == "CUSTOM_MONTHS" || cadence == "CUSTOM_YEARS" {
+					nowT := time.Now().UTC()
+					day := 1
+					if proposedTarget.DueDateDay != nil && *proposedTarget.DueDateDay >= 1 && *proposedTarget.DueDateDay <= 31 {
+						day = *proposedTarget.DueDateDay
+					}
+					anchor := time.Date(nowT.Year(), nowT.Month(), day, 0, 0, 0, 0, time.UTC)
+					if anchor.Before(nowT) {
+						anchor = anchor.AddDate(0, 1, 0)
+					}
+					u := anchor.UnixMicro()
+					dueDate = &u
 				}
 
 				_, err = CreateTargetTx(ctx, tx, CreateTargetInput{
@@ -136,7 +160,8 @@ func ApplyBudgetStructure(ctx context.Context, tenantDB *sql.DB, structure *ai.B
 					AmountMinor:         proposedTarget.AmountMinor,
 					Currency:            currency,
 					RecurrenceCadence:   cadence,
-					RecurrenceDays:      rDays,
+					RecurrenceInterval:  rInterval,
+					DueDate:             dueDate,
 					NonSpendingStrategy: strategy,
 					AgentID:             agentID,
 					CorrelationID:       correlationID,
@@ -184,7 +209,7 @@ func ExportBudgetStructure(ctx context.Context, tenantDB *sql.DB) (*ai.BudgetStr
 
 	// Fetch targets
 	targetRows, err := tenantDB.QueryContext(ctx, `
-		SELECT bucket_id, name, target_type, priority, amount_minor, currency, recurrence_cadence, recurrence_days, non_spending_strategy
+		SELECT bucket_id, name, target_type, priority, amount_minor, currency, recurrence_cadence, recurrence_interval, non_spending_strategy
 		FROM targets_projection
 		WHERE is_archived = 0
 		ORDER BY priority DESC, sort_order ASC, name ASC`)
@@ -197,13 +222,14 @@ func ExportBudgetStructure(ctx context.Context, tenantDB *sql.DB) (*ai.BudgetStr
 	for targetRows.Next() {
 		var bucketID string
 		var t ai.ProposedTarget
-		var rDays sql.NullInt64
-		if err := targetRows.Scan(&bucketID, &t.Name, &t.TargetType, &t.Priority, &t.AmountMinor, &t.Currency, &t.RecurrenceCadence, &rDays, &t.NonSpendingStrategy); err != nil {
+		var rInterval sql.NullInt64
+		if err := targetRows.Scan(&bucketID, &t.Name, &t.TargetType, &t.Priority, &t.AmountMinor, &t.Currency, &t.RecurrenceCadence, &rInterval, &t.NonSpendingStrategy); err != nil {
 			return nil, err
 		}
-		if rDays.Valid {
-			days := int(rDays.Int64)
-			t.RecurrenceDays = &days
+		if rInterval.Valid {
+			interval := int(rInterval.Int64)
+			t.RecurrenceInterval = &interval
+			t.RecurrenceDays = &interval
 		}
 		targetsByBucket[bucketID] = append(targetsByBucket[bucketID], t)
 	}

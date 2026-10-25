@@ -2414,16 +2414,42 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 			return err
 		}
 		tID, err := budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
-			BucketID:          activeBucketID,
-			Name:              name,
-			TargetType:        "EXPENSE",
-			Priority:          prio,
-			AmountMinor:       parseAmountStr(amt),
-			Currency:          "PLN",
-			RecurrenceCadence: cadence,
-			RecurrenceDays:    rDays,
-			AgentID:           tc.activeUserID,
-			CorrelationID:     domain.NewUUIDv7(),
+			BucketID:           activeBucketID,
+			Name:               name,
+			TargetType:         "EXPENSE",
+			Priority:           prio,
+			AmountMinor:        parseAmountStr(amt),
+			Currency:           "PLN",
+			RecurrenceCadence:  cadence,
+			RecurrenceInterval: rDays,
+			AgentID:            tc.activeUserID,
+			CorrelationID:      domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		activeTargetID = tID
+		return nil
+	})
+
+	ctx.Step(`^I add a target "([^"]*)" with priority (\d+), cadence "([^"]*)", recurrence interval (\d+), due in (\d+) days, amount "([^"]*)"$`, func(name string, prio int, cadence string, rInterval int, dueDays int, amt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		dueMicro := time.Now().UTC().AddDate(0, 0, dueDays).UnixMicro()
+		tID, err := budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:           activeBucketID,
+			Name:               name,
+			TargetType:         "EXPENSE",
+			Priority:           prio,
+			AmountMinor:        parseAmountStr(amt),
+			Currency:           "PLN",
+			RecurrenceCadence:  cadence,
+			RecurrenceInterval: rInterval,
+			DueDate:            &dueMicro,
+			AgentID:            tc.activeUserID,
+			CorrelationID:      domain.NewUUIDv7(),
 		})
 		if err != nil {
 			return err
@@ -2438,12 +2464,29 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 			return err
 		}
 		var days int
-		err = bDB.QueryRow(`SELECT recurrence_days FROM targets_projection WHERE name = ? AND is_archived = 0`, name).Scan(&days)
+		err = bDB.QueryRow(`SELECT recurrence_interval FROM targets_projection WHERE name = ? AND is_archived = 0`, name).Scan(&days)
 		if err != nil {
 			return fmt.Errorf("target %s not found: %w", name, err)
 		}
 		if days != expectedDays {
-			return fmt.Errorf("expected recurrence days %d, got %d", expectedDays, days)
+			return fmt.Errorf("expected recurrence interval %d, got %d", expectedDays, days)
+		}
+		return nil
+	})
+
+	ctx.Step(`^target "([^"]*)" in projections should have cadence "([^"]*)" and recurrence interval (\d+)$`, func(name string, expectedCadence string, expectedInterval int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var cadence string
+		var interval int
+		err = bDB.QueryRow(`SELECT recurrence_cadence, recurrence_interval FROM targets_projection WHERE name = ? AND is_archived = 0`, name).Scan(&cadence, &interval)
+		if err != nil {
+			return fmt.Errorf("target %s not found: %w", name, err)
+		}
+		if cadence != expectedCadence || interval != expectedInterval {
+			return fmt.Errorf("expected cadence %s with interval %d, got cadence=%s, interval=%d", expectedCadence, expectedInterval, cadence, interval)
 		}
 		return nil
 	})

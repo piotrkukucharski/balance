@@ -70,9 +70,9 @@ func seedTestData(t *testing.T, tenantDB *sql.DB) {
 		('b-groceries', 'Food', 'Groceries', 0, 1, 1),
 		('b-fun', 'Discretionary', 'Fun & Hobbies', 0, 1, 1);
 
-		INSERT INTO targets_projection (id, bucket_id, name, target_type, priority, sort_order, amount_minor, currency, recurrence_cadence, recurrence_days, non_spending_strategy, is_archived, version, updated_at) VALUES
-		('tg-1', 'b-groceries', 'Weekly Groceries', 'EXPENSE', 3, 0, 20000, 'PLN', 'WEEKLY', 0, 'ROLL_OVER', 0, 1, 1),
-		('tg-2', 'b-fun', 'Monthly Fun', 'EXPENSE', 2, 0, 50000, 'PLN', 'MONTHLY', 0, 'RETURN_TO_POOL', 0, 1, 1);
+		INSERT INTO targets_projection (id, bucket_id, name, target_type, priority, sort_order, amount_minor, currency, recurrence_cadence, recurrence_interval, non_spending_strategy, is_archived, version, updated_at) VALUES
+		('tg-1', 'b-groceries', 'Weekly Groceries', 'EXPENSE', 3, 0, 20000, 'PLN', 'WEEKLY', NULL, 'ROLL_OVER', 0, 1, 1),
+		('tg-2', 'b-fun', 'Monthly Fun', 'EXPENSE', 2, 0, 50000, 'PLN', 'MONTHLY', NULL, 'RETURN_TO_POOL', 0, 1, 1);
 	`)
 	if err != nil {
 		t.Fatalf("failed seeding base metadata: %v", err)

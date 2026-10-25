@@ -222,9 +222,9 @@ CREATE TABLE IF NOT EXISTS targets_projection (
     lua_script TEXT CHECK(lua_script IS NULL OR length(lua_script) <= 2048), -- Sandboxed Lua script when amount_mode = 'LUA_FORMULA'
     last_formula_error TEXT, -- Populated on runtime formula error (Graceful Degradation)
     currency TEXT NOT NULL,
-    recurrence_cadence TEXT NOT NULL CHECK(recurrence_cadence IN ('ONE_OFF', 'WEEKLY', 'MONTHLY', 'ANNUAL', 'CUSTOM_DAYS')),
-    recurrence_days INTEGER CHECK(recurrence_cadence != 'CUSTOM_DAYS' OR (recurrence_days IS NOT NULL AND recurrence_days >= 1 AND recurrence_days <= 36500)),
-    due_date INTEGER,
+    recurrence_cadence TEXT NOT NULL CHECK(recurrence_cadence IN ('ONE_OFF', 'WEEKLY', 'MONTHLY', 'ANNUAL', 'CUSTOM_DAYS', 'CUSTOM_MONTHS', 'CUSTOM_YEARS')),
+    recurrence_interval INTEGER CHECK(recurrence_cadence NOT IN ('CUSTOM_DAYS', 'CUSTOM_MONTHS', 'CUSTOM_YEARS') OR (recurrence_interval IS NOT NULL AND recurrence_interval >= 1 AND recurrence_interval <= 36500)),
+    due_date INTEGER CHECK(recurrence_cadence NOT IN ('CUSTOM_MONTHS', 'CUSTOM_YEARS') OR due_date IS NOT NULL),
     non_spending_strategy TEXT NOT NULL CHECK(non_spending_strategy IN (
         'ROLL_OVER', 
         'RETURN_TO_POOL', 

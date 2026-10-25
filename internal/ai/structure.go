@@ -24,7 +24,8 @@ type ProposedTarget struct {
 	Priority            int    `json:"priority"`             // 1=Optional, 2=Recommended, 3=Mandatory
 	AmountMinor         int64  `json:"amount_minor"`         // minor units (cents/grosze)
 	Currency            string `json:"currency"`
-	RecurrenceCadence   string `json:"recurrence_cadence"`   // ONE_OFF, WEEKLY, MONTHLY, ANNUAL, CUSTOM_DAYS
+	RecurrenceCadence   string `json:"recurrence_cadence"`   // ONE_OFF, WEEKLY, MONTHLY, ANNUAL, CUSTOM_DAYS, CUSTOM_MONTHS, CUSTOM_YEARS
+	RecurrenceInterval  *int   `json:"recurrence_interval,omitempty"`
 	RecurrenceDays      *int   `json:"recurrence_days,omitempty"`
 	NonSpendingStrategy string `json:"non_spending_strategy"` // ROLL_OVER, RETURN_TO_POOL, ARREARS_CUMULATIVE, CAP_AND_HOLD, PRORATE_FUTURE
 	DueDateDay          *int   `json:"due_date_day,omitempty"`

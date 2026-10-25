@@ -2334,8 +2334,8 @@ components:
           type: string
         recurrence_cadence:
           type: string
-          enum: [ONE_OFF, WEEKLY, MONTHLY, ANNUAL, CUSTOM_DAYS]
-        recurrence_days:
+          enum: [ONE_OFF, WEEKLY, MONTHLY, ANNUAL, CUSTOM_DAYS, CUSTOM_MONTHS, CUSTOM_YEARS]
+        recurrence_interval:
           type: integer
           nullable: true
         due_date:
@@ -2389,8 +2389,8 @@ components:
           type: string
         recurrence_cadence:
           type: string
-          enum: [ONE_OFF, WEEKLY, MONTHLY, ANNUAL, CUSTOM_DAYS]
-        recurrence_days:
+          enum: [ONE_OFF, WEEKLY, MONTHLY, ANNUAL, CUSTOM_DAYS, CUSTOM_MONTHS, CUSTOM_YEARS]
+        recurrence_interval:
           type: integer
         due_date:
           type: integer
@@ -2864,8 +2864,8 @@ components:
           type: string
         recurrence_cadence:
           type: string
-          enum: [ONE_OFF, WEEKLY, MONTHLY, ANNUAL, CUSTOM_DAYS]
-        recurrence_days:
+          enum: [ONE_OFF, WEEKLY, MONTHLY, ANNUAL, CUSTOM_DAYS, CUSTOM_MONTHS, CUSTOM_YEARS]
+        recurrence_interval:
           type: integer
         non_spending_strategy:
           type: string

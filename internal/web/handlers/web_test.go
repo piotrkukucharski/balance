@@ -1005,7 +1005,13 @@ func TestTargetModalAndLuaFormulaAssistant(t *testing.T) {
 		t.Fatalf("expected target_modal to have calculation mode radio inputs")
 	}
 	if !strings.Contains(body, "target_recurrence_days") || !strings.Contains(body, "toggleCustomDays") {
-		t.Fatalf("expected target_modal to have recurrence_days input and toggleCustomDays function")
+		t.Fatalf("expected target_modal to have recurrence interval input and toggleCustomDays function")
+	}
+	if !strings.Contains(body, "CUSTOM_DAYS") || !strings.Contains(body, "CUSTOM_MONTHS") || !strings.Contains(body, "CUSTOM_YEARS") {
+		t.Fatalf("expected target_modal to contain CUSTOM_DAYS, CUSTOM_MONTHS, and CUSTOM_YEARS cadence options")
+	}
+	if !strings.Contains(body, "target_due_date") {
+		t.Fatalf("expected target_modal to have anchor due date input")
 	}
 }
 
@@ -1076,14 +1082,14 @@ func TestCreateAndEditTarget_CustomDays(t *testing.T) {
 		t.Fatalf("failed creating bucket: %v", err)
 	}
 
-	// 1. Create target with CUSTOM_DAYS and recurrence_days = 90
+	// 1. Create target with CUSTOM_DAYS and recurrence_interval = 90
 	f1 := url.Values{}
 	f1.Set("bucket_id", bucketID)
 	f1.Set("name", "Quarterly Card")
 	f1.Set("amount", "125.00")
 	f1.Set("currency", "PLN")
 	f1.Set("recurrence_cadence", "CUSTOM_DAYS")
-	f1.Set("recurrence_days", "90")
+	f1.Set("recurrence_interval", "90")
 	f1.Set("non_spending_strategy", "ROLL_OVER")
 
 	req1 := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets", strings.NewReader(f1.Encode()))
@@ -1101,24 +1107,24 @@ func TestCreateAndEditTarget_CustomDays(t *testing.T) {
 	}
 
 	var t1ID string
-	var t1Days int
+	var t1Interval int
 	var t1Cadence string
-	err = tenantDB.QueryRow(`SELECT id, recurrence_cadence, recurrence_days FROM targets_projection WHERE name = 'Quarterly Card'`).Scan(&t1ID, &t1Cadence, &t1Days)
+	err = tenantDB.QueryRow(`SELECT id, recurrence_cadence, recurrence_interval FROM targets_projection WHERE name = 'Quarterly Card'`).Scan(&t1ID, &t1Cadence, &t1Interval)
 	if err != nil {
 		t.Fatalf("failed querying Quarterly Card target: %v", err)
 	}
-	if t1Cadence != "CUSTOM_DAYS" || t1Days != 90 {
-		t.Fatalf("expected CUSTOM_DAYS with 90 days, got cadence=%s, days=%d", t1Cadence, t1Days)
+	if t1Cadence != "CUSTOM_DAYS" || t1Interval != 90 {
+		t.Fatalf("expected CUSTOM_DAYS with 90 interval, got cadence=%s, interval=%d", t1Cadence, t1Interval)
 	}
 
-	// 2. Create target with CUSTOM_DAYS but empty recurrence_days (should gracefully default to 90 without CHECK constraint error)
+	// 2. Create target with CUSTOM_DAYS but empty recurrence_interval (should gracefully default to 90 without CHECK constraint error)
 	f2 := url.Values{}
 	f2.Set("bucket_id", bucketID)
 	f2.Set("name", "Omitted Days Target")
 	f2.Set("amount", "50.00")
 	f2.Set("currency", "PLN")
 	f2.Set("recurrence_cadence", "CUSTOM_DAYS")
-	f2.Set("recurrence_days", "")
+	f2.Set("recurrence_interval", "")
 	f2.Set("non_spending_strategy", "ROLL_OVER")
 
 	req2 := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets", strings.NewReader(f2.Encode()))
@@ -1132,24 +1138,24 @@ func TestCreateAndEditTarget_CustomDays(t *testing.T) {
 	ctx2.Set("correlationID", domain.NewUUIDv7())
 
 	if err := workspaceHandler.CreateTarget(ctx2); err != nil {
-		t.Fatalf("CreateTarget with empty recurrence_days failed: %v", err)
+		t.Fatalf("CreateTarget with empty recurrence_interval failed: %v", err)
 	}
 
-	var t2Days int
-	err = tenantDB.QueryRow(`SELECT recurrence_days FROM targets_projection WHERE name = 'Omitted Days Target'`).Scan(&t2Days)
+	var t2Interval int
+	err = tenantDB.QueryRow(`SELECT recurrence_interval FROM targets_projection WHERE name = 'Omitted Days Target'`).Scan(&t2Interval)
 	if err != nil {
 		t.Fatalf("failed querying Omitted Days Target: %v", err)
 	}
-	if t2Days != 90 {
-		t.Fatalf("expected fallback to 90 days, got %d", t2Days)
+	if t2Interval != 90 {
+		t.Fatalf("expected fallback to 90 interval, got %d", t2Interval)
 	}
 
-	// 3. Update target to 180 days
+	// 3. Update target to 180 interval
 	fUpd := url.Values{}
 	fUpd.Set("name", "Semi-Annual Card")
 	fUpd.Set("amount", "250.00")
 	fUpd.Set("recurrence_cadence", "CUSTOM_DAYS")
-	fUpd.Set("recurrence_days", "180")
+	fUpd.Set("recurrence_interval", "180")
 	fUpd.Set("non_spending_strategy", "ROLL_OVER")
 
 	reqUpd := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets/"+t1ID+"/update", strings.NewReader(fUpd.Encode()))
@@ -1163,17 +1169,112 @@ func TestCreateAndEditTarget_CustomDays(t *testing.T) {
 	ctxUpd.Set("correlationID", domain.NewUUIDv7())
 
 	if err := workspaceHandler.UpdateTarget(ctxUpd); err != nil {
-		t.Fatalf("UpdateTarget to 180 days failed: %v", err)
+		t.Fatalf("UpdateTarget to 180 interval failed: %v", err)
 	}
 
-	var updDays int
+	var updInterval int
 	var updName string
-	err = tenantDB.QueryRow(`SELECT name, recurrence_days FROM targets_projection WHERE id = ?`, t1ID).Scan(&updName, &updDays)
+	err = tenantDB.QueryRow(`SELECT name, recurrence_interval FROM targets_projection WHERE id = ?`, t1ID).Scan(&updName, &updInterval)
 	if err != nil {
 		t.Fatalf("failed querying updated target: %v", err)
 	}
-	if updName != "Semi-Annual Card" || updDays != 180 {
-		t.Fatalf("expected name Semi-Annual Card and 180 days, got name=%s, days=%d", updName, updDays)
+	if updName != "Semi-Annual Card" || updInterval != 180 {
+		t.Fatalf("expected name Semi-Annual Card and 180 interval, got name=%s, interval=%d", updName, updInterval)
+	}
+
+	// 4. Create target with CUSTOM_MONTHS and anchor due_date
+	f3 := url.Values{}
+	f3.Set("bucket_id", bucketID)
+	f3.Set("name", "Quarterly Tuition")
+	f3.Set("amount", "600.00")
+	f3.Set("currency", "PLN")
+	f3.Set("recurrence_cadence", "CUSTOM_MONTHS")
+	f3.Set("recurrence_interval", "3")
+	f3.Set("due_date", "2026-06-15")
+	f3.Set("non_spending_strategy", "ROLL_OVER")
+
+	req3 := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets", strings.NewReader(f3.Encode()))
+	req3.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	rec3 := httptest.NewRecorder()
+	ctx3 := e.NewContext(req3, rec3)
+	ctx3.SetParamNames("budgetId")
+	ctx3.SetParamValues(budgetID)
+	ctx3.Set(ContextBudgetDBKey, tenantDB)
+	ctx3.Set(ContextUserIDKey, userID)
+	ctx3.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.CreateTarget(ctx3); err != nil {
+		t.Fatalf("CreateTarget (CUSTOM_MONTHS) failed: %v", err)
+	}
+
+	var t3Cadence string
+	var t3Interval int
+	var t3DueDate int64
+	err = tenantDB.QueryRow(`SELECT recurrence_cadence, recurrence_interval, due_date FROM targets_projection WHERE name = 'Quarterly Tuition'`).Scan(&t3Cadence, &t3Interval, &t3DueDate)
+	if err != nil {
+		t.Fatalf("failed querying Quarterly Tuition: %v", err)
+	}
+	if t3Cadence != "CUSTOM_MONTHS" || t3Interval != 3 || t3DueDate == 0 {
+		t.Fatalf("expected CUSTOM_MONTHS, interval 3, non-zero dueDate, got %s, %d, %d", t3Cadence, t3Interval, t3DueDate)
+	}
+
+	// 5. Create target with CUSTOM_YEARS and anchor due_date
+	f4 := url.Values{}
+	f4.Set("bucket_id", bucketID)
+	f4.Set("name", "Biennial License")
+	f4.Set("amount", "1000.00")
+	f4.Set("currency", "PLN")
+	f4.Set("recurrence_cadence", "CUSTOM_YEARS")
+	f4.Set("recurrence_interval", "2")
+	f4.Set("due_date", "2028-01-01")
+	f4.Set("non_spending_strategy", "CAP_AND_HOLD")
+
+	req4 := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets", strings.NewReader(f4.Encode()))
+	req4.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	rec4 := httptest.NewRecorder()
+	ctx4 := e.NewContext(req4, rec4)
+	ctx4.SetParamNames("budgetId")
+	ctx4.SetParamValues(budgetID)
+	ctx4.Set(ContextBudgetDBKey, tenantDB)
+	ctx4.Set(ContextUserIDKey, userID)
+	ctx4.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.CreateTarget(ctx4); err != nil {
+		t.Fatalf("CreateTarget (CUSTOM_YEARS) failed: %v", err)
+	}
+
+	var t4Cadence string
+	var t4Interval int
+	err = tenantDB.QueryRow(`SELECT recurrence_cadence, recurrence_interval FROM targets_projection WHERE name = 'Biennial License'`).Scan(&t4Cadence, &t4Interval)
+	if err != nil {
+		t.Fatalf("failed querying Biennial License: %v", err)
+	}
+	if t4Cadence != "CUSTOM_YEARS" || t4Interval != 2 {
+		t.Fatalf("expected CUSTOM_YEARS with interval 2, got %s / %d", t4Cadence, t4Interval)
+	}
+
+	// 6. CUSTOM_MONTHS without due date should fail validation
+	f5 := url.Values{}
+	f5.Set("bucket_id", bucketID)
+	f5.Set("name", "Invalid Months Target")
+	f5.Set("amount", "100.00")
+	f5.Set("currency", "PLN")
+	f5.Set("recurrence_cadence", "CUSTOM_MONTHS")
+	f5.Set("recurrence_interval", "3")
+	f5.Set("due_date", "")
+
+	req5 := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets", strings.NewReader(f5.Encode()))
+	req5.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	rec5 := httptest.NewRecorder()
+	ctx5 := e.NewContext(req5, rec5)
+	ctx5.SetParamNames("budgetId")
+	ctx5.SetParamValues(budgetID)
+	ctx5.Set(ContextBudgetDBKey, tenantDB)
+	ctx5.Set(ContextUserIDKey, userID)
+	ctx5.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.CreateTarget(ctx5); err == nil {
+		t.Fatalf("expected error creating CUSTOM_MONTHS target without due date, but got nil")
 	}
 }
 

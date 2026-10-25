@@ -41,12 +41,44 @@ func TestRollingWindowTargetRequirement(t *testing.T) {
 		ID:                  "t3",
 		AmountMinor:         10000, // 100 PLN
 		RecurrenceCadence:   CadenceCustomDays,
-		RecurrenceDays:      10,
+		RecurrenceInterval:  10,
 		NonSpendingStrategy: StrategyRollOver,
 	}
 	req3 := ComputeTargetRequirement(target3, 90, now)
 	if req3 != 90000 {
 		t.Fatalf("expected 90000, got %d", req3)
+	}
+
+	// 4. Custom Months target: Quarterly insurance 300 PLN every 3 months, anchor due in 90 days, 30-day window
+	// Prorated: 30000 * 30 / 90 = 10000 (100 PLN)
+	due90Months := now.AddDate(0, 3, 0).UnixMicro()
+	targetMonths := &TargetDefinition{
+		ID:                  "t4",
+		AmountMinor:         30000,
+		RecurrenceCadence:   CadenceCustomMonths,
+		RecurrenceInterval:  3,
+		DueDate:             due90Months,
+		NonSpendingStrategy: StrategyRollOver,
+	}
+	reqMonths := ComputeTargetRequirement(targetMonths, 30, now)
+	if reqMonths <= 0 || reqMonths > 30000 {
+		t.Fatalf("expected reasonable prorated requirement for custom months, got %d", reqMonths)
+	}
+
+	// 5. Custom Years target: Car insurance 1200 PLN every 1 year, anchor due in 60 days, evaluated in 90-day window
+	// Since anchor is within 90-day window, full 1 occurrence (1200 PLN) is required.
+	due60Days := now.AddDate(0, 0, 60).UnixMicro()
+	targetYears := &TargetDefinition{
+		ID:                  "t5",
+		AmountMinor:         120000,
+		RecurrenceCadence:   CadenceCustomYears,
+		RecurrenceInterval:  1,
+		DueDate:             due60Days,
+		NonSpendingStrategy: StrategyRollOver,
+	}
+	reqYears := ComputeTargetRequirement(targetYears, 90, now)
+	if reqYears != 120000 {
+		t.Fatalf("expected 120000 for annual target due in window, got %d", reqYears)
 	}
 }
 

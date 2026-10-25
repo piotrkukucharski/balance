@@ -906,7 +906,7 @@ func (s *Server) ListBuckets(ctx echo.Context, budgetId BudgetIdPathParam) error
 		// Targets
 		tRows, err := tenantDB.QueryContext(ctx.Request().Context(), `
 			SELECT id, bucket_id, name, target_type, priority, sort_order, amount_mode, amount_minor,
-			       lua_script, last_formula_error, currency, recurrence_cadence, recurrence_days,
+			       lua_script, last_formula_error, currency, recurrence_cadence, recurrence_interval,
 			       due_date, non_spending_strategy, ceiling_amount_minor, current_funded_minor, is_archived
 			FROM targets_projection
 			WHERE bucket_id = ? AND is_archived = 0
@@ -916,9 +916,9 @@ func (s *Server) ListBuckets(ctx echo.Context, budgetId BudgetIdPathParam) error
 			for tRows.Next() {
 				var tid, tbid, tname, ttype, amode, curr, rcad, strat string
 				var prio, sortOrd, curFunded, tarch int
-				var amtMinor, ceilMinor, dDate, recDays sql.NullInt64
+				var amtMinor, ceilMinor, dDate, recInterval sql.NullInt64
 				var luaSc, lastErr sql.NullString
-				if err := tRows.Scan(&tid, &tbid, &tname, &ttype, &prio, &sortOrd, &amode, &amtMinor, &luaSc, &lastErr, &curr, &rcad, &recDays, &dDate, &strat, &ceilMinor, &curFunded, &tarch); err != nil {
+				if err := tRows.Scan(&tid, &tbid, &tname, &ttype, &prio, &sortOrd, &amode, &amtMinor, &luaSc, &lastErr, &curr, &rcad, &recInterval, &dDate, &strat, &ceilMinor, &curFunded, &tarch); err != nil {
 					continue
 				}
 				targetUUID, _ := uuid.Parse(tid)
@@ -941,10 +941,10 @@ func (s *Server) ListBuckets(ctx echo.Context, budgetId BudgetIdPathParam) error
 				if lastErr.Valid {
 					errPtr = &lastErr.String
 				}
-				var rDaysPtr *int
-				if recDays.Valid {
-					rd := int(recDays.Int64)
-					rDaysPtr = &rd
+				var rIntervalPtr *int
+				if recInterval.Valid {
+					ri := int(recInterval.Int64)
+					rIntervalPtr = &ri
 				}
 
 				targets = append(targets, Target{
@@ -964,7 +964,7 @@ func (s *Server) ListBuckets(ctx echo.Context, budgetId BudgetIdPathParam) error
 					LuaScript:           luaPtr,
 					Currency:            curr,
 					RecurrenceCadence:   TargetRecurrenceCadence(rcad),
-					RecurrenceDays:      rDaysPtr,
+					RecurrenceInterval:  rIntervalPtr,
 					NonSpendingStrategy: TargetNonSpendingStrategy(strat),
 				})
 			}
@@ -1119,6 +1119,31 @@ func (s *Server) CreateTarget(ctx echo.Context, budgetId BudgetIdPathParam, id I
 		return sendError(ctx, http.StatusInternalServerError, "Failed to insert target event", "INTERNAL_ERROR", nil)
 	}
 
+	cadenceStr := string(req.RecurrenceCadence)
+	isCustom := cadenceStr == budget.CadenceCustomDays || cadenceStr == budget.CadenceCustomMonths || cadenceStr == budget.CadenceCustomYears
+	if (cadenceStr == budget.CadenceCustomMonths || cadenceStr == budget.CadenceCustomYears) && (req.DueDate == nil || *req.DueDate == 0) {
+		return sendError(ctx, http.StatusBadRequest, "due date is required for custom months and custom years cadence", "INVALID_INPUT", nil)
+	}
+
+	var rInterval *int
+	if isCustom {
+		intVal := 0
+		if req.RecurrenceInterval != nil {
+			intVal = *req.RecurrenceInterval
+		}
+		if intVal < 1 {
+			switch cadenceStr {
+			case budget.CadenceCustomMonths:
+				intVal = 3
+			case budget.CadenceCustomYears:
+				intVal = 1
+			default:
+				intVal = 90
+			}
+		}
+		rInterval = &intVal
+	}
+
 	var amtMinor int64 = 0
 	if req.AmountMinor != nil {
 		amtMinor = *req.AmountMinor
@@ -1127,11 +1152,11 @@ func (s *Server) CreateTarget(ctx echo.Context, budgetId BudgetIdPathParam, id I
 	_, err = tx.ExecContext(ctx.Request().Context(), `
 		INSERT INTO targets_projection (
 			id, bucket_id, name, target_type, priority, sort_order, amount_mode, amount_minor,
-			lua_script, currency, recurrence_cadence, recurrence_days, due_date, non_spending_strategy,
+			lua_script, currency, recurrence_cadence, recurrence_interval, due_date, non_spending_strategy,
 			ceiling_amount_minor, current_funded_minor, is_archived, version, updated_at
 		) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?)`,
 		targetID, bucketID, req.Name, string(req.TargetType), prio, amode, amtMinor,
-		req.LuaScript, req.Currency, string(req.RecurrenceCadence), req.RecurrenceDays, req.DueDate,
+		req.LuaScript, req.Currency, string(req.RecurrenceCadence), rInterval, req.DueDate,
 		strat, req.CeilingAmountMinor, now,
 	)
 	if err != nil {
@@ -1161,7 +1186,7 @@ func (s *Server) CreateTarget(ctx echo.Context, budgetId BudgetIdPathParam, id I
 		LuaScript:           req.LuaScript,
 		Currency:            req.Currency,
 		RecurrenceCadence:   TargetRecurrenceCadence(req.RecurrenceCadence),
-		RecurrenceDays:      req.RecurrenceDays,
+		RecurrenceInterval:  rInterval,
 		NonSpendingStrategy: TargetNonSpendingStrategy(strat),
 	})
 }
@@ -1352,7 +1377,7 @@ func (s *Server) GenerateBudgetStructureAI(ctx echo.Context, budgetId BudgetIdPa
 					NonSpendingStrategy: ProposedTargetNonSpendingStrategy(t.NonSpendingStrategy),
 					Priority:            t.Priority,
 					RecurrenceCadence:   ProposedTargetRecurrenceCadence(t.RecurrenceCadence),
-					RecurrenceDays:      t.RecurrenceDays,
+					RecurrenceInterval:  t.RecurrenceInterval,
 					TargetType:          ProposedTargetTargetType(t.TargetType),
 				})
 			}
@@ -1402,7 +1427,8 @@ func (s *Server) ImportBudgetStructure(ctx echo.Context, budgetId BudgetIdPathPa
 						AmountMinor:         t.AmountMinor,
 						Currency:            t.Currency,
 						RecurrenceCadence:   string(t.RecurrenceCadence),
-						RecurrenceDays:      t.RecurrenceDays,
+						RecurrenceInterval:  t.RecurrenceInterval,
+						RecurrenceDays:      t.RecurrenceInterval,
 						NonSpendingStrategy: string(t.NonSpendingStrategy),
 						DueDateDay:          t.DueDateDay,
 					})

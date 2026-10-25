@@ -63,7 +63,7 @@ func TestApplyBudgetStructure_CustomDaysCadence(t *testing.T) {
 	// Verify the targets in database
 	var rCadence1 string
 	var rDays1 int
-	err = tenantDB.QueryRowContext(ctx, `SELECT recurrence_cadence, recurrence_days FROM targets_projection WHERE name = ?`, "Karta miejska (kwartalna)").Scan(&rCadence1, &rDays1)
+	err = tenantDB.QueryRowContext(ctx, `SELECT recurrence_cadence, recurrence_interval FROM targets_projection WHERE name = ?`, "Karta miejska (kwartalna)").Scan(&rCadence1, &rDays1)
 	if err != nil {
 		t.Fatalf("failed querying target 1: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestApplyBudgetStructure_CustomDaysCadence(t *testing.T) {
 
 	var rCadence2 string
 	var rDays2 int
-	err = tenantDB.QueryRowContext(ctx, `SELECT recurrence_cadence, recurrence_days FROM targets_projection WHERE name = ?`, "Bilety dwutygodniowe").Scan(&rCadence2, &rDays2)
+	err = tenantDB.QueryRowContext(ctx, `SELECT recurrence_cadence, recurrence_interval FROM targets_projection WHERE name = ?`, "Bilety dwutygodniowe").Scan(&rCadence2, &rDays2)
 	if err != nil {
 		t.Fatalf("failed querying target 2: %v", err)
 	}

@@ -47,7 +47,7 @@ func CalculateBalanceForecast(ctx context.Context, tenantDB *sql.DB, daysForward
 
 	// 2. Load active recurring targets from targets_projection
 	targetRows, err := tenantDB.QueryContext(ctx, `
-		SELECT name, target_type, amount_minor, recurrence_cadence, recurrence_days, COALESCE(due_date, 0)
+		SELECT name, target_type, amount_minor, recurrence_cadence, recurrence_interval, COALESCE(due_date, 0)
 		FROM targets_projection
 		WHERE is_archived = 0`)
 	if err != nil {
@@ -60,18 +60,18 @@ func CalculateBalanceForecast(ctx context.Context, tenantDB *sql.DB, daysForward
 		targetType string
 		amount     int64
 		cadence    string
-		days       int
+		interval   int
 		dueDate    int64
 	}
 	var targets []targetInfo
 	for targetRows.Next() {
 		var t targetInfo
-		var rDays sql.NullInt64
-		if err := targetRows.Scan(&t.name, &t.targetType, &t.amount, &t.cadence, &rDays, &t.dueDate); err != nil {
+		var rInterval sql.NullInt64
+		if err := targetRows.Scan(&t.name, &t.targetType, &t.amount, &t.cadence, &rInterval, &t.dueDate); err != nil {
 			return nil, err
 		}
-		if rDays.Valid {
-			t.days = int(rDays.Int64)
+		if rInterval.Valid {
+			t.interval = int(rInterval.Int64)
 		}
 		targets = append(targets, t)
 	}
@@ -110,8 +110,28 @@ func CalculateBalanceForecast(ctx context.Context, tenantDB *sql.DB, daysForward
 					triggers = true
 				}
 			case "CUSTOM_DAYS":
-				if t.days > 0 && d%t.days == 0 {
+				if t.interval > 0 && d%t.interval == 0 {
 					triggers = true
+				}
+			case "CUSTOM_MONTHS":
+				if t.dueDate > 0 && t.interval > 0 {
+					dueTime := time.UnixMicro(t.dueDate).UTC()
+					if currentDate.Day() == dueTime.Day() {
+						monthDiff := (currentDate.Year()-dueTime.Year())*12 + int(currentDate.Month()-dueTime.Month())
+						if monthDiff >= 0 && monthDiff%t.interval == 0 {
+							triggers = true
+						}
+					}
+				}
+			case "CUSTOM_YEARS":
+				if t.dueDate > 0 && t.interval > 0 {
+					dueTime := time.UnixMicro(t.dueDate).UTC()
+					if currentDate.Month() == dueTime.Month() && currentDate.Day() == dueTime.Day() {
+						yearDiff := currentDate.Year() - dueTime.Year()
+						if yearDiff >= 0 && yearDiff%t.interval == 0 {
+							triggers = true
+						}
+					}
 				}
 			case "ONE_OFF":
 				if t.dueDate > 0 {

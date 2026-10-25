@@ -16,6 +16,14 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     And I add a target "Quarterly Pass" with priority 2, cadence "CUSTOM_DAYS", recurrence days 90, amount "125.00 PLN"
     Then target "Quarterly Pass" in projections should have recurrence days 90
 
+  Scenario: Creating a target with custom months and custom years cadence
+    Given an open budget "Family Home"
+    When I create a bucket "Insurance" in group "Needs"
+    And I add a target "Quarterly Health Insurance" with priority 2, cadence "CUSTOM_MONTHS", recurrence interval 3, due in 90 days, amount "450.00 PLN"
+    And I add a target "Annual Car Insurance" with priority 3, cadence "CUSTOM_YEARS", recurrence interval 1, due in 180 days, amount "1,200.00 PLN"
+    Then target "Quarterly Health Insurance" in projections should have cadence "CUSTOM_MONTHS" and recurrence interval 3
+    And target "Annual Car Insurance" in projections should have cadence "CUSTOM_YEARS" and recurrence interval 1
+
   Scenario: Updating targets and validating deletion constraints on buckets
     Given an open budget "Family Home"
     And an existing bucket "Subscriptions" in group "Needs" with funded balance "100.00 PLN"
