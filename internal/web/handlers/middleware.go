@@ -16,11 +16,13 @@ import (
 )
 
 const (
-	SessionCookieName  = "balance_session"
-	ContextUserIDKey   = "userID"
-	ContextSessionKey  = "sessionToken"
-	ContextRoleKey     = "budgetRole"
-	ContextBudgetDBKey = "budgetDB"
+	SessionCookieName   = "balance_session"
+	ContextUserIDKey    = "userID"
+	ContextSessionKey   = "sessionToken"
+	ContextRoleKey      = "budgetRole"
+	ContextBudgetDBKey  = "budgetDB"
+	ContextDateFormatKey = "dateFormat"
+	ContextTimeFormatKey = "timeFormat"
 )
 
 // CorrelationIDMiddleware assigns or propagates correlation ID and attaches it to request context.
@@ -129,6 +131,19 @@ func SessionOrBearerAuthMiddleware(mainDB *sql.DB) echo.MiddlewareFunc {
 				}(mainDB, tokenHash, now)
 
 				c.Set(ContextUserIDKey, userID)
+
+				var userDateFormat, userTimeFormat string
+				_ = mainDB.QueryRowContext(c.Request().Context(), `
+					SELECT date_format, time_format FROM users WHERE id = ?`, userID).Scan(&userDateFormat, &userTimeFormat)
+				if userDateFormat == "" {
+					userDateFormat = "YYYY-MM-DD"
+				}
+				if userTimeFormat == "" {
+					userTimeFormat = "24h"
+				}
+				c.Set(ContextDateFormatKey, userDateFormat)
+				c.Set(ContextTimeFormatKey, userTimeFormat)
+
 				return next(c)
 			}
 
@@ -182,6 +197,19 @@ func SessionOrBearerAuthMiddleware(mainDB *sql.DB) echo.MiddlewareFunc {
 			c.Set(ContextUserIDKey, userID)
 			c.Set(ContextSessionKey, cookie.Value)
 			c.Set("csrfToken", csrfToken)
+
+			var userDateFormat, userTimeFormat string
+			_ = mainDB.QueryRowContext(c.Request().Context(), `
+				SELECT date_format, time_format FROM users WHERE id = ?`, userID).Scan(&userDateFormat, &userTimeFormat)
+			if userDateFormat == "" {
+				userDateFormat = "YYYY-MM-DD"
+			}
+			if userTimeFormat == "" {
+				userTimeFormat = "24h"
+			}
+			c.Set(ContextDateFormatKey, userDateFormat)
+			c.Set(ContextTimeFormatKey, userTimeFormat)
+
 			return next(c)
 		}
 	}

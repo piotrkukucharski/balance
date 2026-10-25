@@ -551,11 +551,14 @@ func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
 		`, html.EscapeString(name), html.EscapeString(defaultCurrency), html.EscapeString(timezone), html.EscapeString(role))
 	}
 
+	dFormat, tFormat := GetUserDateTimePreferences(c)
 	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="dark" data-date-format="%s" data-time-format="%s">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="user-date-format" content="%s">
+    <meta name="user-time-format" content="%s">
     <title>Balance — %s Settings</title>
     <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
     <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
@@ -607,22 +610,46 @@ func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
                     </div>
                 </div>
 
+                <!-- Personalization Shortcut Card -->
+                <div class="card card-border bg-base-100 border-base-300 shadow-md">
+                    <div class="card-body p-6">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <h2 class="card-title text-base font-bold flex items-center gap-2">
+                                    <span>👤</span>
+                                    <span>Personal Preferences</span>
+                                </h2>
+                                <p class="text-xs text-base-content/60 mt-1">Configure your personal date format (%s) and time format (%s).</p>
+                            </div>
+                            <a href="/budgets/%s/settings/profile" class="btn btn-sm btn-outline btn-primary font-medium">
+                                Customize Formats →
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
                 %s
             </div>
         </main>
     </div>
 
     %s
+    %s
 </body>
 </html>`,
+		html.EscapeString(dFormat), html.EscapeString(tFormat),
+		html.EscapeString(dFormat), html.EscapeString(tFormat),
 		html.EscapeString(name),
 		html.EscapeString(name),
 		html.EscapeString(role),
 		csrfToken,
 		sidebarHTML,
 		editFormHTML,
+		html.EscapeString(dFormat), html.EscapeString(tFormat),
+		budgetID,
 		dangerZoneHTML,
 		bottomDockHTML,
+		DateTimeFormatterScript(),
 	)
 
 	return c.HTML(http.StatusOK, htmlContent)

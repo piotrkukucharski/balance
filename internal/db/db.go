@@ -72,6 +72,11 @@ func ApplyMigrations(db *sql.DB, dir string) error {
 	ctx := context.Background()
 	ctx = logger.WithComponent(ctx, "infra:migrations")
 
+	// Ensure backward-compatibility schema migrations for main.db
+	if dir == "migrations/main" {
+		_ = ensureMainSchemaCompat(ctx, db)
+	}
+
 	entries, err := MigrationsFS.ReadDir(dir)
 	if err != nil {
 		logger.Error(ctx, "Failed reading migrations directory", "dir", dir, "error", err.Error())
@@ -438,6 +443,23 @@ func ensureTenantSchemaCompat(ctx context.Context, db *sql.DB) error {
 				logger.Error(ctx, "Failed migrating targets_projection schema to recurrence_interval", "error", err.Error())
 			} else {
 				logger.Info(ctx, "Successfully migrated targets_projection schema to recurrence_interval")
+			}
+		}
+	}
+	return nil
+}
+
+func ensureMainSchemaCompat(ctx context.Context, db *sql.DB) error {
+	var tableCount int
+	_ = db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='users'").Scan(&tableCount)
+	if tableCount > 0 {
+		var hasTimeFormat int
+		_ = db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('users') WHERE name = 'time_format'").Scan(&hasTimeFormat)
+		if hasTimeFormat == 0 {
+			if _, err := db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN time_format TEXT NOT NULL DEFAULT '24h'"); err != nil {
+				logger.Error(ctx, "Failed adding time_format to users", "error", err.Error())
+			} else {
+				logger.Info(ctx, "Successfully added time_format column to users table")
 			}
 		}
 	}

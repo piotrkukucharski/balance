@@ -85,8 +85,13 @@ func RenderSidebarNavigation(budgetID string, activeItem string) string {
 
 	settingsOpen := " open"
 	settingsSummaryClass := ""
-	if activeItem == "settings" || activeItem == "members" || activeItem == "tokens" {
+	if activeItem == "settings" || activeItem == "members" || activeItem == "tokens" || activeItem == "profile" {
 		settingsSummaryClass = ` class="font-bold text-primary"`
+	}
+
+	profileLink := "/settings/profile"
+	if budgetID != "" {
+		profileLink = fmt.Sprintf("/budgets/%s/settings/profile", budgetID)
 	}
 
 	return fmt.Sprintf(`
@@ -105,6 +110,7 @@ func RenderSidebarNavigation(budgetID string, activeItem string) string {
                             <li><a href="/budgets/%s/settings"%s>General</a></li>
                             <li><a href="/budgets/%s/settings/members"%s>👥 Members</a></li>
                             <li><a href="/budgets/%s/settings/tokens"%s>🔑 API Tokens</a></li>
+                            <li><a href="%s"%s>👤 Profile & Preferences</a></li>
                         </ul>
                     </details>
                 </li>
@@ -119,6 +125,7 @@ func RenderSidebarNavigation(budgetID string, activeItem string) string {
 		budgetID, itemClass("settings"),
 		budgetID, itemClass("members"),
 		budgetID, itemClass("tokens"),
+		profileLink, itemClass("profile"),
 	)
 }
 

@@ -61,6 +61,7 @@ type bddTestContext struct {
 	reportsHandler   *handlers.ReportsHandler
 	partiesHandler   *handlers.PartiesHandler
 	membersHandler   *handlers.MembersHandler
+	profileHandler   *handlers.ProfileHandler
 	historyHandler   *handlers.HistoryHandler
 	pwaHandler       *handlers.PWAHandler
 
@@ -112,6 +113,7 @@ func (tc *bddTestContext) setup() error {
 	tc.txHandler = handlers.NewTransactionsHandler(mainDB, tenantMgr)
 	tc.partiesHandler = handlers.NewPartiesHandler(mainDB, tenantMgr)
 	tc.membersHandler = handlers.NewMembersHandler(mainDB, tenantMgr)
+	tc.profileHandler = handlers.NewProfileHandler(mainDB)
 	tc.historyHandler = handlers.NewHistoryHandler(mainDB, tenantMgr)
 	tc.pwaHandler = handlers.NewPWAHandler()
 
@@ -349,6 +351,97 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 			return err
 		}
 		tc.activeBearer = fullPAT
+		return nil
+	})
+
+	ctx.Step(`^I navigate to user profile preferences$`, func() error {
+		if tc.activeUserID == "" && tc.sessionCookie != nil {
+			tokenHash := auth.HashToken(tc.sessionCookie.Value)
+			_ = tc.mainDB.QueryRow("SELECT user_id, csrf_token FROM sessions WHERE token_hash = ?", tokenHash).Scan(&tc.activeUserID, &tc.activeCSRF)
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/settings/profile", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		if err := tc.profileHandler.ProfileView(c); err != nil {
+			return err
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^the profile page should display date format options including "([^"]*)", "([^"]*)", "([^"]*)", "([^"]*)"$`, func(f1, f2, f3, f4 string) error {
+		body := tc.lastResponse.Body.String()
+		for _, f := range []string{f1, f2, f3, f4} {
+			if !strings.Contains(body, `value="`+f+`"`) {
+				return fmt.Errorf("expected date format option %q in page, got: %s", f, body)
+			}
+		}
+		return nil
+	})
+
+	ctx.Step(`^the profile page should display time format options including "([^"]*)" and "([^"]*)"$`, func(t1, t2 string) error {
+		body := tc.lastResponse.Body.String()
+		for _, t := range []string{t1, t2} {
+			if !strings.Contains(body, `value="`+t+`"`) {
+				return fmt.Errorf("expected time format option %q in page, got: %s", t, body)
+			}
+		}
+		return nil
+	})
+
+	ctx.Step(`^I update my date format to "([^"]*)" and time format to "([^"]*)"$`, func(dateFormat, timeFormat string) error {
+		form := url.Values{}
+		form.Set("csrf_token", tc.activeCSRF)
+		form.Set("display_name", "Updated Display Name")
+		form.Set("date_format", dateFormat)
+		form.Set("time_format", timeFormat)
+
+		req := httptest.NewRequest(http.MethodPost, "/settings/profile", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		if err := tc.profileHandler.UpdateProfile(c); err != nil {
+			return err
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^my user profile in "main.db" should store date format "([^"]*)" and time format "([^"]*)"$`, func(expectedDate, expectedTime string) error {
+		var dbDate, dbTime string
+		err := tc.mainDB.QueryRow("SELECT date_format, time_format FROM users WHERE id = ?", tc.activeUserID).Scan(&dbDate, &dbTime)
+		if err != nil {
+			return err
+		}
+		if dbDate != expectedDate || dbTime != expectedTime {
+			return fmt.Errorf("expected date_format=%q and time_format=%q, got %q and %q", expectedDate, expectedTime, dbDate, dbTime)
+		}
+		return nil
+	})
+
+	ctx.Step(`^subsequent HTML pages should render "data-date-format" as "([^"]*)" and "data-time-format" as "([^"]*)"$`, func(expectedDate, expectedTime string) error {
+		req := httptest.NewRequest(http.MethodGet, "/settings/profile", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		if err := tc.profileHandler.ProfileView(c); err != nil {
+			return err
+		}
+		body := rec.Body.String()
+		expectedDAttr := fmt.Sprintf(`data-date-format="%s"`, expectedDate)
+		expectedTAttr := fmt.Sprintf(`data-time-format="%s"`, expectedTime)
+		if !strings.Contains(body, expectedDAttr) || !strings.Contains(body, expectedTAttr) {
+			return fmt.Errorf("expected attributes %s and %s in html, got: %s", expectedDAttr, expectedTAttr, body)
+		}
 		return nil
 	})
 

@@ -1519,6 +1519,7 @@ components:
         - display_name
         - locale
         - date_format
+        - time_format
         - number_format
         - created_at
       properties:
@@ -1536,6 +1537,9 @@ components:
         date_format:
           type: string
           example: YYYY-MM-DD
+        time_format:
+          type: string
+          example: 24h
         number_format:
           type: string
           example: 1,234.56
@@ -1551,6 +1555,8 @@ components:
         locale:
           type: string
         date_format:
+          type: string
+        time_format:
           type: string
         number_format:
           type: string

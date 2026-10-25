@@ -57,6 +57,8 @@ func TestAuthAndWorkspaceFlow(t *testing.T) {
 	txHandler := NewTransactionsHandler(mainDB, tenantMgr)
 	partiesHandler := NewPartiesHandler(mainDB, tenantMgr)
 	membersHandler := NewMembersHandler(mainDB, tenantMgr)
+	tokensHandler := NewTokensHandler(mainDB)
+	profileHandler := NewProfileHandler(mainDB)
 	accountsHandler := NewAccountsHandler(mainDB, tenantMgr)
 
 	// 1. Test Register
@@ -181,8 +183,6 @@ func TestAuthAndWorkspaceFlow(t *testing.T) {
 	}
 
 	// 6. Test that all budget views render "💳 2. Accounts" and "⚙️ 6. Settings" in navigation menu
-	tokensHandler := NewTokensHandler(mainDB)
-
 	viewsToTest := []struct {
 		name    string
 		handler func(echo.Context) error
@@ -194,6 +194,7 @@ func TestAuthAndWorkspaceFlow(t *testing.T) {
 		{"Settings", workspaceHandler.SettingsView, "/budgets/" + budgetID + "/settings"},
 		{"Members", membersHandler.MembersView, "/budgets/" + budgetID + "/settings/members"},
 		{"Tokens", tokensHandler.TokensView, "/budgets/" + budgetID + "/settings/tokens"},
+		{"Profile", profileHandler.ProfileView, "/budgets/" + budgetID + "/settings/profile"},
 		{"Accounts", accountsHandler.AccountsView, "/budgets/" + budgetID + "/accounts"},
 		{"Budget", workspaceHandler.BudgetView, "/budgets/" + budgetID + "/budget"},
 	}
@@ -235,6 +236,10 @@ func TestAuthAndWorkspaceFlow(t *testing.T) {
 			expectedTokensLink := fmt.Sprintf(`/budgets/%s/settings/tokens`, budgetID)
 			if !strings.Contains(body, expectedTokensLink) {
 				t.Fatalf("expected %s view to contain Tokens sublink %s", vt.name, expectedTokensLink)
+			}
+			expectedProfileLink := fmt.Sprintf(`/budgets/%s/settings/profile`, budgetID)
+			if !strings.Contains(body, expectedProfileLink) {
+				t.Fatalf("expected %s view to contain Profile sublink %s", vt.name, expectedProfileLink)
 			}
 		})
 	}

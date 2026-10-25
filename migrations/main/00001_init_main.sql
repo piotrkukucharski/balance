@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
     display_name TEXT NOT NULL,
     locale TEXT NOT NULL DEFAULT 'en-US',
     date_format TEXT NOT NULL DEFAULT 'YYYY-MM-DD',
+    time_format TEXT NOT NULL DEFAULT '24h',
     number_format TEXT NOT NULL DEFAULT '1,234.56',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL

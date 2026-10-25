@@ -88,7 +88,7 @@ func (h *TokensHandler) TokensView(c echo.Context) error {
 			expiresStr := "Never"
 			isExpired := false
 			if t.ExpiresAt > 0 {
-				expiresStr = time.UnixMicro(t.ExpiresAt).UTC().Format("2006-01-02 15:04")
+				expiresStr = RenderTimeTagMicro(t.ExpiresAt, true, c)
 				if t.ExpiresAt < nowMicro {
 					isExpired = true
 				}
@@ -96,7 +96,7 @@ func (h *TokensHandler) TokensView(c echo.Context) error {
 
 			lastUsedStr := "Never"
 			if t.LastUsedAt != nil && *t.LastUsedAt > 0 {
-				lastUsedStr = time.UnixMicro(*t.LastUsedAt).UTC().Format("2006-01-02 15:04")
+				lastUsedStr = RenderTimeTagMicro(*t.LastUsedAt, true, c)
 			}
 
 			statusBadge := `<span class="badge badge-success badge-sm gap-1">Active</span>`
@@ -171,11 +171,15 @@ func (h *TokensHandler) TokensView(c echo.Context) error {
 		`, html.EscapeString(newTokenName), html.EscapeString(newTokenPlain), budgetID)
 	}
 
+	dFormat, tFormat := GetUserDateTimePreferences(c)
+
 	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="dark" data-date-format="%s" data-time-format="%s">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="user-date-format" content="%s">
+    <meta name="user-time-format" content="%s">
     <title>Balance — Personal Access Tokens</title>
     <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
     <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
@@ -279,8 +283,10 @@ func (h *TokensHandler) TokensView(c echo.Context) error {
 
     %s
     %s
+    %s
 </body>
 </html>`,
+		dFormat, tFormat, dFormat, tFormat,
 		budgetID, role, csrfToken,
 		sidebarHTML,
 		budgetID, csrfToken,
@@ -288,6 +294,7 @@ func (h *TokensHandler) TokensView(c echo.Context) error {
 		budgetID,
 		bottomDockHTML,
 		modalHTML,
+		DateTimeFormatterScript(),
 	)
 
 	return c.HTML(http.StatusOK, htmlContent)

@@ -221,6 +221,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 			&srcAcctID, &dstAcctID, &srcAcctName, &dstAcctName, &srcUserOwned, &dstUserOwned)
 
 		dateStr := time.UnixMicro(txDate).Format("2006-01-02")
+		dateTag := RenderTimeTagMicro(txDate, false, c)
 		amountMajor := float64(amountMinor) / 100.0
 
 		escapedNotes := strings.ReplaceAll(notes, "'", "\\'")
@@ -279,7 +280,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 					%s
 				</td>
 			</tr>`,
-			dateStr, bucketBadge, escapedNotes, notes, accountDisplay,
+			dateTag, bucketBadge, escapedNotes, notes, accountDisplay,
 			amountClass, amountDisplay, actionMenu,
 		))
 	}
@@ -321,7 +322,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 			var rDate, rAmountMinor int64
 			rawRows.Scan(&rID, &rAcctID, &rDate, &rAmountMinor, &rCurrency, &rPayee, &rIBAN, &rRef, &rAcctName, &rBookingStatus)
 
-			rDateStr := time.UnixMicro(rDate).Format("2006-01-02")
+			rDateTag := RenderTimeTagMicro(rDate, false, c)
 			rAmountMajor := float64(rAmountMinor) / 100.0
 
 			amountBadgeClass := "text-error"
@@ -452,7 +453,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 					</td>
 				</tr>`,
 				checkboxHTML,
-				rDateStr, rAcctName, rPayee, rPayee, rRef, rRef, suggestedBadge,
+				rDateTag, rAcctName, rPayee, rPayee, rRef, rRef, suggestedBadge,
 				amountBadgeClass, amountPrefix, rAmountMajor, rCurrency,
 				approveActionHTML, rawActionMenu,
 			))
@@ -473,11 +474,15 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 
 	todayDateStr := time.Now().UTC().Format("2006-01-02")
 
+	dFormat, tFormat := GetUserDateTimePreferences(c)
+
 	html := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="dark" data-date-format="%s" data-time-format="%s">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="user-date-format" content="%s">
+    <meta name="user-time-format" content="%s">
     <title>Balance — Transactions</title>
     <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
     <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
@@ -1349,8 +1354,10 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
             });
         }
     </script>
+    %s
 </body>
 </html>`,
+		dFormat, tFormat, dFormat, tFormat,
 		partySuggestions.String(),
 		budgetName, csrfToken,
 		RenderSidebarNavigation(budgetID, "transactions"),
@@ -1367,7 +1374,8 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		budgetID, budgetID, csrfToken, acctCheckboxes.String(), budgetID,
 		csrfToken, editAcctOptions.String(), editBucketOptions.String(),
 		csrfToken, bucketOptions.String(),
-		bucketOptions.String(), budgetID)
+		bucketOptions.String(), budgetID,
+		DateTimeFormatterScript())
 
 	_ = role
 	return c.HTML(http.StatusOK, html)

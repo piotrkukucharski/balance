@@ -44,7 +44,7 @@ func (h *MembersHandler) MembersView(c echo.Context) error {
 		var joinedAt int64
 		rows.Scan(&id, &email, &name, &mRole, &joinedAt)
 
-		joinedStr := time.UnixMicro(joinedAt).Format("2006-01-02")
+		joinedTag := RenderTimeTagMicro(joinedAt, false, c)
 		roleBadge := "badge-soft badge-primary"
 		if mRole == "OWNER" {
 			roleBadge = "badge-primary"
@@ -69,16 +69,20 @@ func (h *MembersHandler) MembersView(c echo.Context) error {
 				</td>
 				<td><span class="badge %s font-bold text-xs">%s</span></td>
 				<td class="text-xs font-mono text-base-content/60">%s</td>
-			</tr>`, strings.ToUpper(name[:1]), name, email, roleBadge, mRole, joinedStr))
+			</tr>`, strings.ToUpper(name[:1]), name, email, roleBadge, mRole, joinedTag))
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
 
+	dFormat, tFormat := GetUserDateTimePreferences(c)
+
 	html := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="dark" data-date-format="%s" data-time-format="%s">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="user-date-format" content="%s">
+    <meta name="user-time-format" content="%s">
     <title>Balance — Members & Access</title>
     <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
     <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
@@ -176,12 +180,16 @@ func (h *MembersHandler) MembersView(c echo.Context) error {
         </div>
         <form method="dialog" class="modal-backdrop"><button>close</button></form>
     </dialog>
+    %s
 </body>
-</html>`, csrfToken,
+</html>`,
+		dFormat, tFormat, dFormat, tFormat,
+		csrfToken,
 		RenderSidebarNavigation(budgetID, "members"),
 		memberRows.String(),
 		RenderBottomDock(budgetID, "settings"),
-		budgetID, csrfToken)
+		budgetID, csrfToken,
+		DateTimeFormatterScript())
 
 	_ = role
 	return c.HTML(http.StatusOK, html)

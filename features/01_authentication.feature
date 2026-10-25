@@ -53,5 +53,17 @@ Feature: User Authentication and Stateful Browser Sessions
     When I request a protected API endpoint "/budgets" with the Bearer token and JSON accept header
     Then the response status should be 401 Unauthorized
 
+  Scenario: Customizing user date and time format preferences in profile
+    Given an existing registered user with email "format_user@example.com" and password "Pass12345!"
+    When I submit a login request with email "format_user@example.com" and password "Pass12345!"
+    And I navigate to user profile preferences
+    Then the profile page should display date format options including "YYYY-MM-DD", "DD.MM.YYYY", "DD/MM/YYYY", "MM/DD/YYYY"
+    And the profile page should display time format options including "24h" and "12h"
+    When I update my date format to "DD.MM.YYYY" and time format to "12h"
+    Then the response status should be 303 Redirect to "/settings/profile?saved=true"
+    And my user profile in "main.db" should store date format "DD.MM.YYYY" and time format "12h"
+    And subsequent HTML pages should render "data-date-format" as "DD.MM.YYYY" and "data-time-format" as "12h"
+
+
 
 

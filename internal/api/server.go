@@ -251,20 +251,25 @@ func (s *Server) GetCurrentUser(ctx echo.Context) error {
 		return sendError(ctx, http.StatusUnauthorized, "Unauthorized", "UNAUTHORIZED", nil)
 	}
 
-	var email, displayName string
+	var email, displayName, locale, dateFormat, timeFormat, numberFormat string
 	var createdAt int64
 	err = s.mainDB.QueryRowContext(ctx.Request().Context(), `
-		SELECT email, display_name, created_at FROM users WHERE id = ?`, userID).Scan(&email, &displayName, &createdAt)
+		SELECT email, display_name, locale, date_format, time_format, number_format, created_at FROM users WHERE id = ?`, userID).Scan(
+		&email, &displayName, &locale, &dateFormat, &timeFormat, &numberFormat, &createdAt)
 	if err != nil {
 		return sendError(ctx, http.StatusNotFound, "User not found", "USER_NOT_FOUND", nil)
 	}
 
 	userUUID, _ := uuid.Parse(userID)
 	return ctx.JSON(http.StatusOK, UserResponse{
-		Id:          userUUID,
-		Email:       openapi_types.Email(email),
-		DisplayName: displayName,
-		CreatedAt:   createdAt,
+		Id:           userUUID,
+		Email:        openapi_types.Email(email),
+		DisplayName:  displayName,
+		Locale:       locale,
+		DateFormat:   dateFormat,
+		TimeFormat:   timeFormat,
+		NumberFormat: numberFormat,
+		CreatedAt:    createdAt,
 	})
 }
 
@@ -287,6 +292,32 @@ func (s *Server) UpdateCurrentUser(ctx echo.Context) error {
 			*req.DisplayName, now, userID)
 		if err != nil {
 			return sendError(ctx, http.StatusInternalServerError, "Failed updating user", "INTERNAL_ERROR", nil)
+		}
+	}
+	if req.DateFormat != nil && *req.DateFormat != "" {
+		switch *req.DateFormat {
+		case "YYYY-MM-DD", "DD.MM.YYYY", "DD/MM/YYYY", "MM/DD/YYYY":
+			_, err = s.mainDB.ExecContext(ctx.Request().Context(), `
+				UPDATE users SET date_format = ?, updated_at = ? WHERE id = ?`,
+				*req.DateFormat, now, userID)
+			if err != nil {
+				return sendError(ctx, http.StatusInternalServerError, "Failed updating user date format", "INTERNAL_ERROR", nil)
+			}
+		default:
+			return sendError(ctx, http.StatusBadRequest, "Unsupported date format", "INVALID_INPUT", nil)
+		}
+	}
+	if req.TimeFormat != nil && *req.TimeFormat != "" {
+		switch *req.TimeFormat {
+		case "24h", "12h":
+			_, err = s.mainDB.ExecContext(ctx.Request().Context(), `
+				UPDATE users SET time_format = ?, updated_at = ? WHERE id = ?`,
+				*req.TimeFormat, now, userID)
+			if err != nil {
+				return sendError(ctx, http.StatusInternalServerError, "Failed updating user time format", "INTERNAL_ERROR", nil)
+			}
+		default:
+			return sendError(ctx, http.StatusBadRequest, "Unsupported time format", "INVALID_INPUT", nil)
 		}
 	}
 

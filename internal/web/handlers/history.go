@@ -55,18 +55,21 @@ func (h *HistoryHandler) HistoryDrawer(c echo.Context) error {
 	csrfToken, _ := c.Get("csrfToken").(string)
 	isHTMX := c.Request().Header.Get("HX-Request") == "true"
 
-	drawerHTML := renderHistoryDrawerMarkup(budgetID, histResult, canRestore, csrfToken, "")
+	drawerHTML := renderHistoryDrawerMarkup(budgetID, histResult, canRestore, csrfToken, "", c)
 
 	if isHTMX {
 		return c.HTML(http.StatusOK, drawerHTML)
 	}
 
+	dFormat, tFormat := GetUserDateTimePreferences(c)
 	// Standalone page wrap for direct navigation or non-HTMX clients
 	page := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="dark" data-date-format="%s" data-time-format="%s">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="user-date-format" content="%s">
+    <meta name="user-time-format" content="%s">
     <title>Balance — History of %s</title>
     <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
     <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
@@ -83,8 +86,9 @@ func (h *HistoryHandler) HistoryDrawer(c echo.Context) error {
         </div>
         %s
     </div>
+    %s
 </body>
-</html>`, histResult.EntityName, budgetID, drawerHTML)
+</html>`, dFormat, tFormat, dFormat, tFormat, histResult.EntityName, budgetID, drawerHTML, DateTimeFormatterScript())
 
 	return c.HTML(http.StatusOK, page)
 }
@@ -159,14 +163,14 @@ func (h *HistoryHandler) RestoreVersion(c echo.Context) error {
 		csrfToken, _ := c.Get("csrfToken").(string)
 		msg := fmt.Sprintf("Version %d was successfully restored as v%d!", targetVersion, res.NewVersion)
 		c.Response().Header().Set("HX-Trigger", fmt.Sprintf(`{"entityRestored":{"id":"%s","version":%d}}`, entityID, res.NewVersion))
-		return c.HTML(http.StatusOK, renderHistoryDrawerMarkup(budgetID, histResult, true, csrfToken, msg))
+		return c.HTML(http.StatusOK, renderHistoryDrawerMarkup(budgetID, histResult, true, csrfToken, msg, c))
 	}
 
 	// Standard redirect
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/history/%s/%s", budgetID, entityType, entityID))
 }
 
-func renderHistoryDrawerMarkup(budgetID string, hist *history.EntityHistoryResult, canRestore bool, csrfToken, flashMsg string) string {
+func renderHistoryDrawerMarkup(budgetID string, hist *history.EntityHistoryResult, canRestore bool, csrfToken, flashMsg string, c echo.Context) string {
 	var sb strings.Builder
 
 	sb.WriteString(`<div id="history_drawer_backdrop" class="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex justify-end" onclick="if(event.target === this) this.remove()">`)
@@ -223,7 +227,7 @@ func renderHistoryDrawerMarkup(budgetID string, hist *history.EntityHistoryResul
                     ` + actionBadge(item.Action) + `
                     ` + currentBadge(item.IsCurrent) + `
                 </div>
-                <div class="text-xs text-base-content/50 font-mono">` + item.CreatedAtTime.Format("2006-01-02 15:04:05") + `</div>
+                <div class="text-xs text-base-content/50 font-mono">` + RenderTimeTag(item.CreatedAtTime, true, c) + `</div>
             </div>
         `)
 
