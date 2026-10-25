@@ -646,8 +646,11 @@ func parseReportFilter(c echo.Context, defaultCurrency string) report.ReportFilt
 
 // 1. Age of Money Data
 func (h *ReportsHandler) GetAgeOfMoneyData(c echo.Context) error {
+	budgetID := c.Param("budgetId")
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
-	res, err := h.CalculateAgeOfMoneyForBudget(c.Request().Context(), tenantDB)
+	currency := h.getBudgetCurrency(c.Request().Context(), budgetID)
+	filter := parseReportFilter(c, currency)
+	res, err := h.CalculateAgeOfMoneyForBudget(c.Request().Context(), tenantDB, filter)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -900,16 +903,29 @@ func (h *ReportsHandler) GetPartyCashflowData(c echo.Context) error {
 }
 
 // CalculateAgeOfMoneyForBudget calculates headline and history Age of Money for tenant DB.
-func (h *ReportsHandler) CalculateAgeOfMoneyForBudget(ctx context.Context, tenantDB *sql.DB) (*report.AgeOfMoneyResult, error) {
-	inflowRows, err := tenantDB.QueryContext(ctx, `
+func (h *ReportsHandler) CalculateAgeOfMoneyForBudget(ctx context.Context, tenantDB *sql.DB, filters ...report.ReportFilter) (*report.AgeOfMoneyResult, error) {
+	var filter report.ReportFilter
+	if len(filters) > 0 {
+		filter = filters[0]
+	}
+
+	inflowQuery := `
 		SELECT bt.transaction_date, bt.destination_amount_minor
 		FROM budget_transactions_current bt
 		JOIN accounts_current sa ON bt.source_account_id = sa.id
 		JOIN parties_current sp ON sa.party_id = sp.id
 		JOIN accounts_current da ON bt.destination_account_id = da.id
 		JOIN parties_current dp ON da.party_id = dp.id
-		WHERE sp.is_user_owned = 0 AND dp.is_user_owned = 1
-		ORDER BY bt.transaction_date ASC`)
+		WHERE dp.is_user_owned = 1 AND da.account_type IN ('CHECKING', 'SAVINGS', 'CASH')
+		  AND (sp.is_user_owned = 0 OR (sp.is_user_owned = 1 AND sa.account_type NOT IN ('CHECKING', 'SAVINGS', 'CASH')))`
+	var inflowArgs []any
+	if filter.EndDateMicros > 0 {
+		inflowQuery += ` AND bt.transaction_date <= ?`
+		inflowArgs = append(inflowArgs, filter.EndDateMicros)
+	}
+	inflowQuery += ` ORDER BY bt.transaction_date ASC`
+
+	inflowRows, err := tenantDB.QueryContext(ctx, inflowQuery, inflowArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -918,19 +934,29 @@ func (h *ReportsHandler) CalculateAgeOfMoneyForBudget(ctx context.Context, tenan
 	var inflows []report.InflowBucket
 	for inflowRows.Next() {
 		var ts, amount int64
-		inflowRows.Scan(&ts, &amount)
+		if err := inflowRows.Scan(&ts, &amount); err != nil {
+			return nil, err
+		}
 		inflows = append(inflows, report.InflowBucket{TimestampMicro: ts, RemainingMinor: amount})
 	}
 
-	outflowRows, err := tenantDB.QueryContext(ctx, `
+	outflowQuery := `
 		SELECT bt.id, bt.transaction_date, bt.source_amount_minor
 		FROM budget_transactions_current bt
 		JOIN accounts_current sa ON bt.source_account_id = sa.id
 		JOIN parties_current sp ON sa.party_id = sp.id
 		JOIN accounts_current da ON bt.destination_account_id = da.id
 		JOIN parties_current dp ON da.party_id = dp.id
-		WHERE sp.is_user_owned = 1 AND dp.is_user_owned = 0
-		ORDER BY bt.transaction_date ASC`)
+		WHERE sp.is_user_owned = 1 AND sa.account_type IN ('CHECKING', 'SAVINGS', 'CASH')
+		  AND (dp.is_user_owned = 0 OR (dp.is_user_owned = 1 AND da.account_type NOT IN ('CHECKING', 'SAVINGS', 'CASH')))`
+	var outflowArgs []any
+	if filter.EndDateMicros > 0 {
+		outflowQuery += ` AND bt.transaction_date <= ?`
+		outflowArgs = append(outflowArgs, filter.EndDateMicros)
+	}
+	outflowQuery += ` ORDER BY bt.transaction_date ASC`
+
+	outflowRows, err := tenantDB.QueryContext(ctx, outflowQuery, outflowArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -940,15 +966,55 @@ func (h *ReportsHandler) CalculateAgeOfMoneyForBudget(ctx context.Context, tenan
 	for outflowRows.Next() {
 		var id string
 		var ts, amount int64
-		outflowRows.Scan(&id, &ts, &amount)
+		if err := outflowRows.Scan(&id, &ts, &amount); err != nil {
+			return nil, err
+		}
 		outflows = append(outflows, report.OutflowRecord{ID: id, TimestampMicro: ts, AmountMinor: amount})
 	}
 
 	if len(inflows) == 0 || len(outflows) == 0 {
-		return &report.AgeOfMoneyResult{HeadlineDays: 0}, nil
+		return &report.AgeOfMoneyResult{HeadlineDays: 0, History: []report.AgeOfMoneyPoint{}}, nil
 	}
 
-	return report.CalculateAgeOfMoney(inflows, outflows)
+	res, err := report.CalculateAgeOfMoney(inflows, outflows)
+	if err != nil {
+		return nil, err
+	}
+	if res.History == nil {
+		res.History = []report.AgeOfMoneyPoint{}
+	}
+
+	if filter.StartDateMicros > 0 || filter.EndDateMicros > 0 {
+		var filteredHistory []report.AgeOfMoneyPoint
+		var windowAges []int
+		for _, pt := range res.History {
+			if filter.StartDateMicros > 0 && pt.TimestampMicro < filter.StartDateMicros {
+				continue
+			}
+			if filter.EndDateMicros > 0 && pt.TimestampMicro > filter.EndDateMicros {
+				continue
+			}
+			filteredHistory = append(filteredHistory, pt)
+			windowAges = append(windowAges, pt.AgeDays)
+		}
+		res.History = filteredHistory
+		if len(windowAges) > 0 {
+			startIdx := len(windowAges) - 10
+			if startIdx < 0 {
+				startIdx = 0
+			}
+			last10 := windowAges[startIdx:]
+			var sum int
+			for _, a := range last10 {
+				sum += a
+			}
+			res.HeadlineDays = sum / len(last10)
+		} else {
+			res.HeadlineDays = 0
+		}
+	}
+
+	return res, nil
 }
 
 // ReportDetailMeta holds presentation info for dedicated report views.

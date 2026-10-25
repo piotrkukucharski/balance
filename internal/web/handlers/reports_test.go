@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/logger"
+	"github.com/balance/balance/internal/report"
 	"github.com/labstack/echo/v4"
 )
 
@@ -397,5 +399,152 @@ func TestSavedReportsManagement(t *testing.T) {
 	_ = tenantDB.QueryRow("SELECT COUNT(*) FROM saved_reports WHERE id = ? AND action = 'SOFT_DELETE'", savedID).Scan(&count)
 	if count != 1 {
 		t.Fatalf("expected 1 SOFT_DELETE audit log in saved_reports, got %d", count)
+	}
+}
+
+func TestCalculateAgeOfMoney_LiquidScopeAndDeployments(t *testing.T) {
+	logger.BindTestLogger(t)
+
+	tmpDir, err := os.MkdirTemp("", "balance_aom_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mainPath := filepath.Join(tmpDir, "main.db")
+	mainDB, err := db.OpenDB(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tmpDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+
+	userID := domain.NewUUIDv7()
+	budgetID := domain.NewUUIDv7()
+	now := time.Now().UTC()
+	nowMicros := now.UnixMicro()
+
+	_, _ = mainDB.Exec(`INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, 'user@test.com', 'h', 'User', ?, ?)`, userID, nowMicros, nowMicros)
+	_, _ = mainDB.Exec(`INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at) VALUES (?, 'Test Budget', 'PLN', 'UTC', ?, ?, ?)`, budgetID, userID, nowMicros, nowMicros)
+
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	userPartyID := domain.NewUUIDv7()
+	extPartyID := domain.NewUUIDv7()
+
+	_, err = tenantDB.Exec(`INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at) VALUES
+		(?, 1, 'My Family', 'USER', 1, ?, ?),
+		(?, 1, 'External Merchant/Employer', 'EXTERNAL', 0, ?, ?)`,
+		userPartyID, userID, nowMicros,
+		extPartyID, userID, nowMicros,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	checkingAcctID := domain.NewUUIDv7()
+	savingsAcctID := domain.NewUUIDv7()
+	investAcctID := domain.NewUUIDv7()
+	extAcctID := domain.NewUUIDv7()
+
+	_, err = tenantDB.Exec(`INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at) VALUES
+		(?, 1, ?, 'Checking', 'CHECKING', 'PLN', 0, ?, ?),
+		(?, 1, ?, 'Savings', 'SAVINGS', 'PLN', 0, ?, ?),
+		(?, 1, ?, 'Brokerage', 'INVESTMENT', 'PLN', 0, ?, ?),
+		(?, 1, ?, 'Merchant/Employer', 'EXTERNAL', 'PLN', 0, ?, ?)`,
+		checkingAcctID, userPartyID, userID, nowMicros,
+		savingsAcctID, userPartyID, userID, nowMicros,
+		investAcctID, userPartyID, userID, nowMicros,
+		extAcctID, extPartyID, userID, nowMicros,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dayMicros := int64(24 * 3600 * 1_000_000)
+	t0 := now.AddDate(0, 0, -100).UnixMicro() // Day 0
+	t10 := t0 + 10*dayMicros                  // Day 10
+	t20 := t0 + 20*dayMicros                  // Day 20
+	t30 := t0 + 30*dayMicros                  // Day 30
+	t40 := t0 + 40*dayMicros                  // Day 40
+
+	// 1. External income to Checking: 10,000 PLN at Day 0 (Inflow)
+	// 2. Liquid-to-liquid transfer: Checking -> Savings: 2,000 PLN at Day 10 (Ignored!)
+	// 3. Liquid-to-investment: Checking -> Investment: 3,000 PLN at Day 20 (Capital deployment Outflow!)
+	// 4. Investment return: Investment -> Checking: 1,000 PLN at Day 30 (Inflow!)
+	// 5. External spending: Checking -> Merchant: 2,000 PLN at Day 40 (Spending Outflow!)
+	_, err = tenantDB.Exec(`INSERT INTO budget_transactions_current 
+		(id, version, source_account_id, destination_account_id, source_amount_minor, source_currency, destination_amount_minor, destination_currency, transaction_date, updated_at) VALUES
+		(?, 1, ?, ?, 1000000, 'PLN', 1000000, 'PLN', ?, ?),
+		(?, 1, ?, ?, 200000, 'PLN', 200000, 'PLN', ?, ?),
+		(?, 1, ?, ?, 300000, 'PLN', 300000, 'PLN', ?, ?),
+		(?, 1, ?, ?, 100000, 'PLN', 100000, 'PLN', ?, ?),
+		(?, 1, ?, ?, 200000, 'PLN', 200000, 'PLN', ?, ?)`,
+		domain.NewUUIDv7(), extAcctID, checkingAcctID, t0, t0,
+		domain.NewUUIDv7(), checkingAcctID, savingsAcctID, t10, t10,
+		domain.NewUUIDv7(), checkingAcctID, investAcctID, t20, t20,
+		domain.NewUUIDv7(), investAcctID, checkingAcctID, t30, t30,
+		domain.NewUUIDv7(), checkingAcctID, extAcctID, t40, t40,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Calculate unfiltered Age of Money
+	ctx := context.Background()
+	res, err := reportsHandler.CalculateAgeOfMoneyForBudget(ctx, tenantDB)
+	if err != nil {
+		t.Fatalf("CalculateAgeOfMoneyForBudget failed: %v", err)
+	}
+
+	// Should have exactly 2 outflows in history:
+	// - Day 20 deployment (age = 20 days)
+	// - Day 40 spending (age = 40 days)
+	if len(res.History) != 2 {
+		t.Fatalf("expected 2 history points, got %d", len(res.History))
+	}
+	if res.History[0].AgeDays != 20 {
+		t.Errorf("expected first outflow age 20 days, got %d", res.History[0].AgeDays)
+	}
+	if res.History[1].AgeDays != 40 {
+		t.Errorf("expected second outflow age 40 days, got %d", res.History[1].AgeDays)
+	}
+	expectedHeadline := (20 + 40) / 2
+	if res.HeadlineDays != expectedHeadline {
+		t.Errorf("expected headline %d, got %d", expectedHeadline, res.HeadlineDays)
+	}
+
+	// Calculate with date filter: only include Day 35 to Day 50
+	filter := report.ReportFilter{
+		StartDateMicros: t0 + 35*dayMicros,
+		EndDateMicros:   t0 + 50*dayMicros,
+	}
+	filteredRes, err := reportsHandler.CalculateAgeOfMoneyForBudget(ctx, tenantDB, filter)
+	if err != nil {
+		t.Fatalf("CalculateAgeOfMoneyForBudget with filter failed: %v", err)
+	}
+	if len(filteredRes.History) != 1 {
+		t.Fatalf("expected 1 history point in filtered range, got %d", len(filteredRes.History))
+	}
+	if filteredRes.History[0].AgeDays != 40 {
+		t.Errorf("expected filtered outflow age 40 days, got %d", filteredRes.History[0].AgeDays)
+	}
+	if filteredRes.HeadlineDays != 40 {
+		t.Errorf("expected headline 40 for filtered range, got %d", filteredRes.HeadlineDays)
 	}
 }
