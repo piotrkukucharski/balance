@@ -43,6 +43,13 @@ Feature: Central Bank Exchange Rates and Multi-Currency Conversion
     When I attempt to convert "100.00 EUR" to "PLN" on "2026-01-15"
     Then the conversion should fail with an exchange rate not found error
 
+  Scenario: Triangulated conversion fails fast without stack overflow when exchange rate history is missing
+    Given the exchange rate storage in "main.db" is empty
+    When I attempt to convert "100.00 GBP" to "PLN" on "2026-10-25"
+    Then the conversion should fail with an exchange rate not found error
+    When I attempt to convert "100.00 GBP" to "USD" on "2026-10-25"
+    Then the conversion should fail with an exchange rate not found error
+
   Scenario: Manual exchange rate synchronization via REST API
     Given an authenticated API user
     When I send a POST request to "/api/v1/exchange-rates/sync"

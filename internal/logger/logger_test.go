@@ -179,3 +179,34 @@ func TestBindTestLoggerFailureFlushed(t *testing.T) {
 		t.Errorf("flushed log missing expected message: %s", fake.logs[0])
 	}
 }
+
+func TestRecoverGoroutine(t *testing.T) {
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	syncWriter := &threadSafeWriter{buf: &buf, mu: &mu}
+
+	logger.SetOutput(syncWriter, slog.LevelDebug)
+	defer logger.ResetDefault()
+
+	ctx, _ := logger.WithCorrelationID(context.Background(), "")
+	ctx = logger.WithComponent(ctx, "biz:panic_test")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer logger.RecoverGoroutine(ctx, "test_panic_worker")
+		panic("simulated background worker crash")
+	}()
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	output := buf.String()
+	if !strings.Contains(output, "Recovered from panic in background goroutine") {
+		t.Errorf("expected panic recovery log message, got: %s", output)
+	}
+	if !strings.Contains(output, "simulated background worker crash") {
+		t.Errorf("expected panic reason in log output, got: %s", output)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
@@ -216,4 +217,20 @@ func Debug(ctx context.Context, msg string, args ...any) {
 // Default returns underlying *slog.Logger.
 func Default() *slog.Logger {
 	return getLogger()
+}
+
+// RecoverGoroutine catches any unrecovered panic inside a background or worker goroutine,
+// logging a structured ERROR with stack trace instead of crashing the entire Go process.
+// Usage: defer logger.RecoverGoroutine(ctx, "worker_name")
+func RecoverGoroutine(ctx context.Context, goroutineName string) {
+	if r := recover(); r != nil {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		Error(ctx, "Recovered from panic in background goroutine",
+			"goroutine", goroutineName,
+			"panic", r,
+			"stack", string(debug.Stack()),
+		)
+	}
 }

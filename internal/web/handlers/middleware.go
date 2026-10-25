@@ -127,6 +127,7 @@ func SessionOrBearerAuthMiddleware(mainDB *sql.DB) echo.MiddlewareFunc {
 				go func(db *sql.DB, hash string, usedAt int64) {
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
+					defer logger.RecoverGoroutine(ctx, "pat_last_used_updater")
 					_, _ = db.ExecContext(ctx, `UPDATE api_tokens SET last_used_at = ? WHERE token_hash = ?`, usedAt, hash)
 				}(mainDB, tokenHash, now)
 

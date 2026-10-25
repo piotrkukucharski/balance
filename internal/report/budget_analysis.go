@@ -89,6 +89,7 @@ func CalculateBudgetAnalysis(ctx context.Context, tenantDB *sql.DB, mainDB *sql.
 		}
 		point.BudgetedMinor += converted
 	}
+	eventRows.Close()
 
 	// 2. Fetch actual envelope spending from budget_transactions_current
 	txQuery := `

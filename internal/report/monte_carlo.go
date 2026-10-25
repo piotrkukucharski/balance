@@ -84,6 +84,8 @@ func RunMonteCarloSimulation(ctx context.Context, cfg MonteCarloConfig) (*MonteC
 	years := cfg.TargetAge - cfg.CurrentAge
 	if years < 1 {
 		years = 1
+	} else if years > 100 {
+		years = 100
 	}
 
 	simCtx := logger.WithComponent(ctx, "biz:report:monte_carlo")
@@ -96,6 +98,9 @@ func RunMonteCarloSimulation(ctx context.Context, cfg MonteCarloConfig) (*MonteC
 	)
 
 	trajectories := make([][]int64, count)
+	for i := 0; i < count; i++ {
+		trajectories[i] = make([]int64, years+1)
+	}
 	successCount := 0
 	depletionHistogram := make(map[int]int)
 	var mu sync.Mutex
@@ -110,6 +115,7 @@ func RunMonteCarloSimulation(ctx context.Context, cfg MonteCarloConfig) (*MonteC
 		go func(workerID int) {
 			defer wg.Done()
 			workerCtx := logger.WithComponent(simCtx, "biz:report:monte_carlo:worker")
+			defer logger.RecoverGoroutine(workerCtx, "monte_carlo_worker")
 			logger.Debug(workerCtx, "Monte Carlo async worker started",
 				"worker_id", workerID,
 				"async", true,

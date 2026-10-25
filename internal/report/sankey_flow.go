@@ -73,15 +73,18 @@ func CalculateSankeyFlow(ctx context.Context, tenantDB *sql.DB, mainDB *sql.DB, 
 		var txDate, amount int64
 		var curr, partyName string
 		if err := inflowRows.Scan(&txDate, &amount, &curr, &partyName); err != nil {
+			inflowRows.Close()
 			return nil, err
 		}
 		converted, err := rates.ConvertTo(amount, curr, targetCurr, txDate)
 		if err != nil {
+			inflowRows.Close()
 			return nil, err
 		}
 		partyIncomeMap[partyName] += converted
 		totalIncome += converted
 	}
+	inflowRows.Close()
 
 	// 2. Outflows from user accounts to buckets
 	outflowQuery := `

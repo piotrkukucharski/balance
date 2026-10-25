@@ -311,6 +311,59 @@ func TestService_Convert_StrictErrorOnMissingHistory(t *testing.T) {
 	}
 }
 
+func TestService_Convert_MissingHistory_NoInfiniteRecursion(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+	defer db.Close()
+
+	svc := NewService(db, &mockECBClient{}, &mockNBPClient{})
+	d, _ := ParseDateBoundaryMicros("2026-10-25")
+
+	// All pairs that trigger EUR and PLN triangulation must return ErrExchangeRateNotFound immediately
+	// without entering mutual recursion (GBP->PLN <-> GBP->EUR).
+	pairs := [][2]string{
+		{"GBP", "PLN"},
+		{"USD", "PLN"},
+		{"GBP", "EUR"},
+		{"GBP", "USD"},
+		{"CHF", "CAD"},
+	}
+
+	for _, pair := range pairs {
+		_, err := svc.Convert(ctx, 10000, pair[0], pair[1], d)
+		if err != ErrExchangeRateNotFound {
+			t.Errorf("Convert(%s -> %s) on empty DB: expected ErrExchangeRateNotFound, got %v", pair[0], pair[1], err)
+		}
+	}
+}
+
+func TestService_Convert_TriangulationViaPLN(t *testing.T) {
+	ctx := context.Background()
+	db := setupTestDB(t)
+	defer db.Close()
+
+	d, _ := ParseDateBoundaryMicros("2026-10-23")
+	nbpMock := &mockNBPClient{
+		quotes: []RateQuote{
+			{BaseCurrency: "GBP", TargetCurrency: "PLN", RateDate: d, RateMicros: 5000000, Source: "NBP"},
+			{BaseCurrency: "USD", TargetCurrency: "PLN", RateDate: d, RateMicros: 4000000, Source: "NBP"},
+		},
+	}
+	svc := NewService(db, &mockECBClient{}, nbpMock)
+	if _, err := svc.Sync(ctx, SyncOptions{Source: "NBP"}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	// 100.00 GBP -> PLN (5.00) -> USD (1/4.00 = 0.25) => composite rate 1.25 => 125.00 USD (12500 minor)
+	usdMinor, err := svc.Convert(ctx, 10000, "GBP", "USD", d)
+	if err != nil {
+		t.Fatalf("GBP to USD via PLN failed: %v", err)
+	}
+	if usdMinor != 12500 {
+		t.Errorf("expected 12500 minor units USD (125.00), got %d", usdMinor)
+	}
+}
+
 func TestECB_XMLParsing(t *testing.T) {
 	xmlData := `<?xml version="1.0" encoding="UTF-8"?>
 	<gesmes:Envelope xmlns:gesmes="http://www.gesmes.org/xml/2002-08-01" xmlns="http://www.ecb.int/vocabulary/2002-08-01/eurofxref">

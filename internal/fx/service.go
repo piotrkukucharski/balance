@@ -9,7 +9,46 @@ import (
 	"time"
 
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/logger"
 )
+
+// MaxTriangulationDepth bounds the maximum number of intermediate pivot hops during FX triangulation.
+// Prevents unbounded recursion or stack overflow on cyclic or missing currency pairs.
+const MaxTriangulationDepth = 2
+
+type triangulationState struct {
+	depth int
+	count int
+	seen  [6]string
+}
+
+func newTriangulationState(fromCurr, toCurr string) triangulationState {
+	var st triangulationState
+	st.seen[0] = fromCurr
+	st.seen[1] = toCurr
+	st.count = 2
+	return st
+}
+
+func (st triangulationState) hasSeen(curr string) bool {
+	for i := 0; i < st.count; i++ {
+		if st.seen[i] == curr {
+			return true
+		}
+	}
+	return false
+}
+
+func (st triangulationState) withPivot(pivot string) (triangulationState, bool) {
+	if st.depth >= MaxTriangulationDepth || st.hasSeen(pivot) || st.count >= len(st.seen) {
+		return st, false
+	}
+	next := st
+	next.depth++
+	next.seen[next.count] = pivot
+	next.count++
+	return next, true
+}
 
 // Service manages exchange rate synchronization, storage, and conversions.
 type Service struct {
@@ -160,6 +199,65 @@ func (s *Service) GetRate(ctx context.Context, fromCurr, toCurr string, dateMicr
 		dateMicros = time.Now().UTC().UnixMicro()
 	}
 
+	return s.getRateBounded(ctx, fromCurr, toCurr, dateMicros, newTriangulationState(fromCurr, toCurr))
+}
+
+func (s *Service) getRateBounded(ctx context.Context, fromCurr, toCurr string, dateMicros int64, state triangulationState) (int64, string, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return 0, "", err
+		}
+	}
+	if state.depth > MaxTriangulationDepth {
+		logger.Warn(ctx, "FX triangulation recursion depth limit exceeded",
+			"from_currency", fromCurr,
+			"to_currency", toCurr,
+			"depth", state.depth,
+		)
+		return 0, "", ErrExchangeRateNotFound
+	}
+
+	// 1 & 2. Direct or Inverse pair resolution
+	if rate, src, err := s.resolveDirectOrInversePair(ctx, fromCurr, toCurr, dateMicros); err == nil {
+		return rate, src, nil
+	}
+
+	if state.depth >= MaxTriangulationDepth {
+		return 0, "", ErrExchangeRateNotFound
+	}
+
+	// 3. Triangulation via EUR (only if EUR has not been visited on the current path)
+	if nextState, ok := state.withPivot("EUR"); ok {
+		rateFromToEUR, src1, err1 := s.getRateBounded(ctx, fromCurr, "EUR", dateMicros, nextState)
+		if err1 == nil {
+			rateEURToTarget, src2, err2 := s.getRateBounded(ctx, "EUR", toCurr, dateMicros, nextState)
+			if err2 == nil {
+				compositeRate, err := MultiplyRatesMicros(rateFromToEUR, rateEURToTarget)
+				if err == nil {
+					return compositeRate, src1 + "/" + src2, nil
+				}
+			}
+		}
+	}
+
+	// 4. Triangulation via PLN (only if PLN has not been visited on the current path)
+	if nextState, ok := state.withPivot("PLN"); ok {
+		rateFromToPLN, src1, err1 := s.getRateBounded(ctx, fromCurr, "PLN", dateMicros, nextState)
+		if err1 == nil {
+			ratePLNToTarget, src2, err2 := s.getRateBounded(ctx, "PLN", toCurr, dateMicros, nextState)
+			if err2 == nil {
+				compositeRate, err := MultiplyRatesMicros(rateFromToPLN, ratePLNToTarget)
+				if err == nil {
+					return compositeRate, src1 + "/" + src2, nil
+				}
+			}
+		}
+	}
+
+	return 0, "", ErrExchangeRateNotFound
+}
+
+func (s *Service) resolveDirectOrInversePair(ctx context.Context, fromCurr, toCurr string, dateMicros int64) (int64, string, error) {
 	// 1. Direct pair resolution
 	directRate, directSource, err := s.resolveDirectPair(ctx, fromCurr, toCurr, dateMicros)
 	if err == nil {
@@ -170,30 +268,8 @@ func (s *Service) GetRate(ctx context.Context, fromCurr, toCurr string, dateMicr
 	invRate, invSource, err := s.resolveDirectPair(ctx, toCurr, fromCurr, dateMicros)
 	if err == nil {
 		derivedRate := InvertRateMicros(invRate)
-		return derivedRate, invSource, nil
-	}
-
-	// 3. Triangulation via EUR
-	if fromCurr != "EUR" && toCurr != "EUR" {
-		rateFromToEUR, src1, err1 := s.GetRate(ctx, fromCurr, "EUR", dateMicros)
-		rateEURToTarget, src2, err2 := s.GetRate(ctx, "EUR", toCurr, dateMicros)
-		if err1 == nil && err2 == nil {
-			compositeRate, err := MultiplyRatesMicros(rateFromToEUR, rateEURToTarget)
-			if err == nil {
-				return compositeRate, src1 + "/" + src2, nil
-			}
-		}
-	}
-
-	// 4. Triangulation via PLN
-	if fromCurr != "PLN" && toCurr != "PLN" {
-		rateFromToPLN, src1, err1 := s.GetRate(ctx, fromCurr, "PLN", dateMicros)
-		ratePLNToTarget, src2, err2 := s.GetRate(ctx, "PLN", toCurr, dateMicros)
-		if err1 == nil && err2 == nil {
-			compositeRate, err := MultiplyRatesMicros(rateFromToPLN, ratePLNToTarget)
-			if err == nil {
-				return compositeRate, src1 + "/" + src2, nil
-			}
+		if derivedRate > 0 {
+			return derivedRate, invSource, nil
 		}
 	}
 

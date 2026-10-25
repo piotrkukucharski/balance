@@ -49,10 +49,12 @@ func CalculateNetWorth(ctx context.Context, tenantDB *sql.DB, mainDB *sql.DB, fi
 	for acctRows.Next() {
 		var id, aType, pCurr string
 		if err := acctRows.Scan(&id, &aType, &pCurr); err != nil {
+			acctRows.Close()
 			return nil, err
 		}
 		accountTypes[id] = aType
 	}
+	acctRows.Close()
 
 	// 2. Fetch all transactions involving user accounts ordered chronologically
 	query := `

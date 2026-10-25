@@ -2222,7 +2222,10 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 
 	if isAsync {
 		bgCtx := context.WithoutCancel(c.Request().Context())
-		go syncFunc(bgCtx)
+		go func() {
+			defer logger.RecoverGoroutine(bgCtx, "async_bank_sync")
+			_, _ = syncFunc(bgCtx)
+		}()
 		return c.HTML(http.StatusAccepted, `
 			<div role="alert" class="alert alert-info shadow-lg animate-fade-in">
 				<span class="loading loading-spinner loading-sm text-info"></span>
