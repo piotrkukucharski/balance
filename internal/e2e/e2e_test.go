@@ -2082,10 +2082,56 @@ func InitializeE2EScenario(ctx *godog.ScenarioContext) {
 		if err != nil {
 			return err
 		}
-		if !strings.Contains(txt, "No Envelopes Created Yet") {
-			return fmt.Errorf("expected empty structure state card with 'No Envelopes Created Yet', got: %s", txt)
+		if !strings.Contains(txt, "No Buckets Created Yet") && !strings.Contains(txt, "No Envelopes Created Yet") {
+			return fmt.Errorf("expected empty structure state card with 'No Buckets Created Yet', got: %s", txt)
 		}
 		return nil
+	})
+
+	ctx.Step(`^the structure preview should detect existing bucket "([^"]*)"$`, func(bucketName string) error {
+		res, err := tc.page.Eval(`(bName) => {
+			const cards = Array.from(document.querySelectorAll('.bucket-card'));
+			for (const c of cards) {
+				const nameInput = c.querySelector('.bucket-name-input');
+				if (nameInput && nameInput.value.toLowerCase().includes(bName.toLowerCase())) {
+					const conflictBadge = c.querySelector('.bucket-conflict-select');
+					return conflictBadge !== null;
+				}
+			}
+			return false;
+		}`, bucketName)
+		if err != nil {
+			return err
+		}
+		if !res.Value.Bool() {
+			return fmt.Errorf("expected existing bucket conflict detected for %q", bucketName)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I set priority of target "([^"]*)" to "([^"]*)" in the structure preview$`, func(targetName, prio string) error {
+		prioNum := "2"
+		if strings.Contains(prio, "3") {
+			prioNum = "3"
+		} else if strings.Contains(prio, "1") {
+			prioNum = "1"
+		}
+		_, err := tc.page.Eval(`(tName, pVal) => {
+			const rows = Array.from(document.querySelectorAll('.target-chk')).map(chk => chk.closest('div'));
+			for (const r of rows) {
+				const nameInput = r.querySelector('.target-name-input');
+				if (nameInput && nameInput.value.toLowerCase().includes(tName.toLowerCase())) {
+					const sel = r.querySelector('.target-prio-select');
+					if (sel) {
+						sel.value = pVal;
+						sel.dispatchEvent(new Event('change', { bubbles: true }));
+						return true;
+					}
+				}
+			}
+			return false;
+		}`, targetName, prioNum)
+		return err
 	})
 
 	ctx.Step(`^I open the AI Structure generator modal$`, func() error {
@@ -2188,11 +2234,15 @@ func InitializeE2EScenario(ctx *godog.ScenarioContext) {
 }
 
 func TestBrowserE2E(t *testing.T) {
+	paths := []string{"../../features/e2e"}
+	if feat := os.Getenv("GODOG_FEATURE"); feat != "" {
+		paths = []string{feat}
+	}
 	suite := godog.TestSuite{
 		ScenarioInitializer: InitializeE2EScenario,
 		Options: &godog.Options{
 			Format:   "pretty",
-			Paths:    []string{"../../features/e2e"},
+			Paths:    paths,
 			Tags:     "@e2e",
 			TestingT: t,
 		},

@@ -3,15 +3,17 @@ package budget
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/balance/balance/internal/ai"
+	"github.com/balance/balance/internal/domain"
 )
 
 // ApplyBudgetStructure applies a hierarchical budget structure (groups, buckets, targets) to a tenant database in a single atomic transaction.
-// Existing buckets with the same name are reused without duplication; existing targets with the same name in a bucket are skipped.
+// Supports conflict resolution for existing buckets: MERGE (default), REPLACE, or SKIP.
 // If any error occurs, the entire transaction is rolled back so that all items are created atomically or none.
 func ApplyBudgetStructure(ctx context.Context, tenantDB *sql.DB, structure *ai.BudgetStructure, agentID, correlationID string) (int, int, error) {
 	if structure == nil || len(structure.Groups) == 0 {
@@ -40,13 +42,98 @@ func ApplyBudgetStructure(ctx context.Context, tenantDB *sql.DB, structure *ai.B
 			}
 
 			// Check if bucket with the same name already exists in this transaction
-			var bucketID string
-			err := tx.QueryRowContext(ctx, `SELECT id FROM buckets_projection WHERE name = ? AND is_archived = 0 LIMIT 1`, bucketName).Scan(&bucketID)
+			var bucketID, existingGroup string
+			var bucketVersion int
+			err := tx.QueryRowContext(ctx, `SELECT id, group_name, version FROM buckets_projection WHERE lower(trim(name)) = lower(trim(?)) AND is_archived = 0 LIMIT 1`, bucketName).Scan(&bucketID, &existingGroup, &bucketVersion)
 			if err != nil && err != sql.ErrNoRows {
 				return 0, 0, fmt.Errorf("failed checking existing bucket '%s': %w", bucketName, err)
 			}
 
-			if bucketID == "" {
+			conflictRes := strings.ToUpper(strings.TrimSpace(proposedBucket.ConflictResolution))
+			if conflictRes == "" {
+				conflictRes = "MERGE"
+			}
+
+			if bucketID != "" {
+				if conflictRes == "SKIP" {
+					continue
+				}
+
+				// If user changed the group name, update it in buckets_projection
+				if groupName != "" && existingGroup != "" && groupName != existingGroup {
+					now := time.Now().UTC().UnixMicro()
+					newBucketVersion := bucketVersion + 1
+					eventID := domain.NewUUIDv7()
+					payload, _ := json.Marshal(map[string]any{
+						"bucket_id":  bucketID,
+						"group_name": groupName,
+						"name":       bucketName,
+					})
+					_, err = tx.ExecContext(ctx, `
+						INSERT INTO bucket_events (event_id, aggregate_id, version, event_type, payload, agent_id, correlation_id, occurred_at)
+						VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+						eventID, bucketID, newBucketVersion, EventTypeBucketUpdated, string(payload), agentID, correlationID, now,
+					)
+					if err != nil {
+						return 0, 0, fmt.Errorf("failed writing bucket event: %w", err)
+					}
+					_, err = tx.ExecContext(ctx, `
+						UPDATE buckets_projection
+						SET group_name = ?, version = ?, updated_at = ?
+						WHERE id = ?`,
+						groupName, newBucketVersion, now, bucketID,
+					)
+					if err != nil {
+						return 0, 0, fmt.Errorf("failed updating bucket group: %w", err)
+					}
+				}
+
+				if conflictRes == "REPLACE" {
+					// Archive all active targets for this bucket
+					tRows, err := tx.QueryContext(ctx, `SELECT id, version FROM targets_projection WHERE bucket_id = ? AND is_archived = 0`, bucketID)
+					if err != nil {
+						return 0, 0, fmt.Errorf("failed querying targets for replace in bucket '%s': %w", bucketName, err)
+					}
+					type oldTarget struct {
+						id      string
+						version int
+					}
+					var oldTargets []oldTarget
+					for tRows.Next() {
+						var ot oldTarget
+						if err := tRows.Scan(&ot.id, &ot.version); err != nil {
+							tRows.Close()
+							return 0, 0, err
+						}
+						oldTargets = append(oldTargets, ot)
+					}
+					tRows.Close()
+
+					now := time.Now().UTC().UnixMicro()
+					for _, ot := range oldTargets {
+						newTVersion := ot.version + 1
+						tEventID := domain.NewUUIDv7()
+						tPayload, _ := json.Marshal(map[string]any{"target_id": ot.id})
+						_, err = tx.ExecContext(ctx, `
+							INSERT INTO target_events (event_id, aggregate_id, bucket_id, version, event_type, payload, agent_id, correlation_id, occurred_at)
+							VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+							tEventID, ot.id, bucketID, newTVersion, EventTypeTargetArchived, string(tPayload), agentID, correlationID, now,
+						)
+						if err != nil {
+							return 0, 0, fmt.Errorf("failed archiving target event: %w", err)
+						}
+						_, err = tx.ExecContext(ctx, `
+							UPDATE targets_projection
+							SET is_archived = 1, version = ?, updated_at = ?
+							WHERE id = ?`,
+							newTVersion, now, ot.id,
+						)
+						if err != nil {
+							return 0, 0, fmt.Errorf("failed archiving target '%s': %w", ot.id, err)
+						}
+					}
+				}
+			} else {
 				newID, err := CreateBucketTx(ctx, tx, CreateBucketInput{
 					GroupName:     groupName,
 					Name:          bucketName,
@@ -67,15 +154,17 @@ func ApplyBudgetStructure(ctx context.Context, tenantDB *sql.DB, structure *ai.B
 					continue
 				}
 
-				// Check if target with the same name already exists in this bucket in this transaction
-				var targetCount int
-				err := tx.QueryRowContext(ctx, `SELECT count(*) FROM targets_projection WHERE bucket_id = ? AND name = ? AND is_archived = 0`, bucketID, targetName).Scan(&targetCount)
-				if err != nil {
-					return 0, 0, fmt.Errorf("failed checking existing target '%s': %w", targetName, err)
-				}
-				if targetCount > 0 {
-					// Skip existing target
-					continue
+				if conflictRes != "REPLACE" {
+					// Check if target with the same name already exists in this bucket in this transaction
+					var targetCount int
+					err := tx.QueryRowContext(ctx, `SELECT count(*) FROM targets_projection WHERE bucket_id = ? AND lower(trim(name)) = lower(trim(?)) AND is_archived = 0`, bucketID, targetName).Scan(&targetCount)
+					if err != nil {
+						return 0, 0, fmt.Errorf("failed checking existing target '%s': %w", targetName, err)
+					}
+					if targetCount > 0 {
+						// Skip existing target
+						continue
+					}
 				}
 
 				tType := proposedTarget.TargetType
@@ -262,4 +351,66 @@ func ExportBudgetStructure(ctx context.Context, tenantDB *sql.DB) (*ai.BudgetStr
 	}
 
 	return &res, nil
+}
+
+// GetExistingGroupNames returns all distinct active group names from the tenantDB.
+func GetExistingGroupNames(ctx context.Context, tenantDB *sql.DB) ([]string, error) {
+	groupRows, err := tenantDB.QueryContext(ctx, `SELECT DISTINCT group_name FROM buckets_projection WHERE is_archived = 0 ORDER BY group_name ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("failed querying groups: %w", err)
+	}
+	defer groupRows.Close()
+
+	var existingGroups []string
+	for groupRows.Next() {
+		var g string
+		if err := groupRows.Scan(&g); err == nil && strings.TrimSpace(g) != "" {
+			existingGroups = append(existingGroups, strings.TrimSpace(g))
+		}
+	}
+	return existingGroups, nil
+}
+
+// DetectAndEnrichStructureConflicts checks proposed buckets against existing active buckets in tenantDB,
+// marking IsExisting, ExistingGroup, and populating ExistingGroups on structure.
+func DetectAndEnrichStructureConflicts(ctx context.Context, tenantDB *sql.DB, structure *ai.BudgetStructure) error {
+	if structure == nil {
+		return nil
+	}
+
+	// 1. Fetch all distinct active group names
+	existingGroups, err := GetExistingGroupNames(ctx, tenantDB)
+	if err != nil {
+		return err
+	}
+	structure.ExistingGroups = existingGroups
+
+	// 2. Fetch all active buckets
+	bRows, err := tenantDB.QueryContext(ctx, `SELECT lower(trim(name)), group_name FROM buckets_projection WHERE is_archived = 0`)
+	if err != nil {
+		return fmt.Errorf("failed querying buckets: %w", err)
+	}
+	defer bRows.Close()
+
+	existingBuckets := make(map[string]string) // normalized name -> group_name
+	for bRows.Next() {
+		var name, grp string
+		if err := bRows.Scan(&name, &grp); err == nil {
+			existingBuckets[name] = grp
+		}
+	}
+
+	// 3. Mark existing buckets in structure
+	for gIdx := range structure.Groups {
+		for bIdx := range structure.Groups[gIdx].Buckets {
+			b := &structure.Groups[gIdx].Buckets[bIdx]
+			normName := strings.ToLower(strings.TrimSpace(b.Name))
+			if origGroup, exists := existingBuckets[normName]; exists {
+				b.IsExisting = true
+				b.ExistingGroup = origGroup
+			}
+		}
+	}
+
+	return nil
 }

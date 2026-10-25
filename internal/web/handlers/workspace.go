@@ -1209,8 +1209,8 @@ func renderBucketRowsDesktop(allBucketsCount int, bucketGroups []bucketGroupView
 					<div class="card card-border bg-base-100 border-dashed border-base-300 p-8 text-center flex flex-col items-center justify-center gap-4">
 						<div class="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-3xl font-bold">✨</div>
 						<div>
-							<h3 class="font-extrabold text-lg tracking-tight">No Envelopes Created Yet</h3>
-							<p class="text-xs text-base-content/60 max-w-md mx-auto mt-1">Get started quickly by generating a complete envelope structure with AI, importing from another budget, or adding envelopes manually.</p>
+							<h3 class="font-extrabold text-lg tracking-tight">No Buckets Created Yet</h3>
+							<p class="text-xs text-base-content/60 max-w-md mx-auto mt-1">Get started quickly by generating a complete bucket structure with AI, importing from another budget, or adding buckets manually.</p>
 						</div>
 						<div class="flex flex-wrap items-center justify-center gap-2 mt-2">
 							<button type="button" class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('ai')">
@@ -2199,7 +2199,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             <div class="flex justify-between items-center mb-4 shrink-0">
                 <div class="flex items-center gap-2">
                     <span class="text-xl">✨</span>
-                    <h3 class="font-extrabold text-xl tracking-tight">Envelope Structure Assistant</h3>
+                    <h3 class="font-extrabold text-xl tracking-tight">Bucket Structure Assistant</h3>
                 </div>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
             </div>
@@ -2219,7 +2219,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 <div class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Describe your budget in natural language</span></label>
                     <textarea id="structure_ai_prompt" rows="3" placeholder="e.g. Rodzina 2+1, wynajem mieszkania 2800 PLN, rachunki i internet 350 PLN, zakupy spożywcze 1600 PLN, paliwo 400 PLN, poduszka finansowa 500 PLN, wakacje 300 PLN..." class="textarea textarea-bordered w-full text-xs focus:textarea-primary"></textarea>
-                    <div class="text-[10px] text-base-content/50 mt-1">Our AI assistant will propose organized envelope groups, buckets, and monthly targets.</div>
+                    <div class="text-[10px] text-base-content/50 mt-1">Our AI assistant will propose organized bucket groups, buckets, and monthly targets.</div>
                 </div>
                 <button type="button" id="btn_generate_preview" class="btn btn-primary btn-sm self-start font-semibold shadow gap-2" onclick="runAIGeneration()">
                     <span>✨</span>
@@ -2244,7 +2244,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             <!-- Loading Spinner -->
             <div id="structure_loading" class="hidden flex flex-col items-center justify-center p-8 gap-3 shrink-0">
                 <span class="loading loading-spinner loading-md text-primary"></span>
-                <span class="text-xs text-base-content/60" id="structure_loading_text">Analyzing description and generating budget envelopes...</span>
+                <span class="text-xs text-base-content/60" id="structure_loading_text">Analyzing description and generating budget buckets...</span>
             </div>
 
             <!-- Error Banner -->
@@ -2259,7 +2259,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                         <input type="checkbox" id="structure_select_all" class="checkbox checkbox-primary checkbox-xs" checked onchange="toggleSelectAllStructure(this.checked)" />
                         <label for="structure_select_all" class="text-xs font-bold cursor-pointer">Select All Items</label>
                     </div>
-                    <span id="structure_stats_badge" class="badge badge-neutral badge-xs font-mono">0 envelopes, 0 targets</span>
+                    <span id="structure_stats_badge" class="badge badge-neutral badge-xs font-mono">0 buckets, 0 targets</span>
                 </div>
 
                 <div id="structure_preview_list" class="space-y-4 text-xs">
@@ -2325,8 +2325,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 			<div class="card card-border bg-base-100 border-dashed border-base-300 p-8 text-center flex flex-col items-center justify-center gap-4">
 				<div class="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-3xl font-bold">✨</div>
 				<div>
-					<h3 class="font-extrabold text-lg tracking-tight">No Envelopes Created Yet</h3>
-					<p class="text-xs text-base-content/60 max-w-md mx-auto mt-1">Get started quickly by generating a complete envelope structure with AI, importing from another budget, or adding envelopes manually.</p>
+					<h3 class="font-extrabold text-lg tracking-tight">No Buckets Created Yet</h3>
+					<p class="text-xs text-base-content/60 max-w-md mx-auto mt-1">Get started quickly by generating a complete bucket structure with AI, importing from another budget, or adding buckets manually.</p>
 				</div>
 				<div class="flex flex-wrap items-center justify-center gap-2 mt-2">
 					<button type="button" class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('ai')">
@@ -3347,7 +3347,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 showStructureError('Please enter a budget description.');
                 return;
             }
-            showStructureLoading(true, 'Analyzing description and generating budget envelopes with AI...');
+            showStructureLoading(true, 'Analyzing description and generating budget buckets with AI...');
             fetch('/budgets/' + currentBudgetID + '/structure/generate-ai-preview', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfTokenVal },
@@ -3374,7 +3374,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 showStructureError('Please select a source budget.');
                 return;
             }
-            showStructureLoading(true, 'Loading envelopes and targets from source budget...');
+            showStructureLoading(true, 'Loading buckets and targets from source budget...');
             fetch('/budgets/' + currentBudgetID + '/structure/preview-source?source_budget_id=' + encodeURIComponent(sel.value))
             .then(res => res.json())
             .then(data => {
@@ -3407,6 +3407,30 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             el.classList.remove('hidden');
         }
 
+        function onBucketGroupChange(gIdx, bIdx, val) {
+            const customInput = document.querySelector('.bucket-custom-group-input[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
+            if (customInput) {
+                const isNew = (val === '__NEW__');
+                customInput.classList.toggle('hidden', !isNew);
+                if (isNew) {
+                    customInput.focus();
+                }
+            }
+        }
+
+        function onBucketConflictChange(gIdx, bIdx, action) {
+            const bucketCard = document.querySelector('.bucket-card[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
+            if (bucketCard) {
+                bucketCard.classList.toggle('opacity-50', action === 'SKIP');
+            }
+            const bChk = document.querySelector('.bucket-chk[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
+            if (bChk) {
+                bChk.checked = (action !== 'SKIP');
+                onBucketCheckboxToggle(gIdx, bIdx, bChk.checked);
+            }
+            updateCountsBadge();
+        }
+
         function renderPreviewData(data) {
             loadedStructureData = data;
             const container = document.getElementById('structure_preview_list');
@@ -3416,9 +3440,19 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             let totalTargets = 0;
 
             if (!data.groups || data.groups.length === 0) {
-                showStructureError('No envelopes or categories could be generated.');
+                showStructureError('No buckets or categories could be generated.');
                 return;
             }
+
+            // Gather all distinct group names (from existing groups in budget + proposed groups)
+            const groupSet = new Set();
+            if (data.existing_groups && Array.isArray(data.existing_groups)) {
+                data.existing_groups.forEach(g => { if (g && g.trim()) groupSet.add(g.trim()); });
+            }
+            if (data.groups && Array.isArray(data.groups)) {
+                data.groups.forEach(g => { if (g && g.group_name && g.group_name.trim()) groupSet.add(g.group_name.trim()); });
+            }
+            const allKnownGroups = Array.from(groupSet);
 
             data.groups.forEach((g, gIdx) => {
                 const groupEl = document.createElement('div');
@@ -3432,8 +3466,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                         if (b.targets) {
                             b.targets.forEach((t, tIdx) => {
                                 totalTargets++;
-                                const prioText = t.priority === 3 ? 'Mandatory' : (t.priority === 2 ? 'Recommended' : 'Optional');
-                                const prioBadgeClass = t.priority === 3 ? 'badge-error' : (t.priority === 2 ? 'badge-primary' : 'badge-ghost');
+                                const pVal = t.priority || 2;
                                 const amtVal = (t.amount_minor / 100).toFixed(2);
 
                                 targetsHtml += 
@@ -3444,17 +3477,55 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                                             '<input type="number" step="0.01" class="input input-bordered input-xs w-20 text-right font-mono target-amount-input" value="' + amtVal + '" data-group="' + gIdx + '" data-bucket="' + bIdx + '" data-target="' + tIdx + '">' +
                                             '<span class="text-[10px] font-bold text-base-content/60">' + (t.currency || currentCurrency) + '</span>' +
                                         '</div>' +
-                                        '<span class="badge ' + prioBadgeClass + ' badge-xs shrink-0">' + prioText + '</span>' +
+                                        '<select class="select select-bordered select-xs target-prio-select shrink-0 font-medium" data-group="' + gIdx + '" data-bucket="' + bIdx + '" data-target="' + tIdx + '">' +
+                                            '<option value="3"' + (pVal === 3 ? ' selected' : '') + ' class="text-error font-bold">P3 - Mandatory</option>' +
+                                            '<option value="2"' + (pVal === 2 ? ' selected' : '') + ' class="text-primary font-bold">P2 - Recommended</option>' +
+                                            '<option value="1"' + (pVal === 1 ? ' selected' : '') + ' class="text-base-content/60 font-medium">P1 - Optional</option>' +
+                                        '</select>' +
                                     '</div>';
                             });
                         }
 
+                        // Group selector options
+                        const currentBucketGroup = g.group_name || 'General';
+                        let groupOptionsHtml = '';
+                        allKnownGroups.forEach(grpName => {
+                            const isSelected = (grpName === currentBucketGroup);
+                            groupOptionsHtml += '<option value="' + escapeHtml(grpName) + '"' + (isSelected ? ' selected' : '') + '>' + escapeHtml(grpName) + '</option>';
+                        });
+                        groupOptionsHtml += '<option value="__NEW__">+ New Group...</option>';
+
+                        // Conflict resolution UI if existing bucket detected
+                        let conflictHtml = '';
+                        if (b.is_existing) {
+                            conflictHtml = 
+                                '<div class="flex flex-wrap items-center gap-1.5 bg-warning/10 border border-warning/30 rounded px-2 py-1 text-[11px] mt-1">' +
+                                    '<span class="badge badge-warning badge-xs font-bold gap-1">⚠️ Existing Bucket</span>' +
+                                    (b.existing_group ? '<span class="text-[10px] text-base-content/60">(currently in: ' + escapeHtml(b.existing_group) + ')</span>' : '') +
+                                    '<span class="font-semibold text-base-content/80 ml-auto">Conflict:</span>' +
+                                    '<select class="select select-bordered select-xs bucket-conflict-select font-semibold" data-group="' + gIdx + '" data-bucket="' + bIdx + '" onchange="onBucketConflictChange(' + gIdx + ', ' + bIdx + ', this.value)">' +
+                                        '<option value="MERGE" selected>Add new targets (Merge)</option>' +
+                                        '<option value="REPLACE">Replace existing targets (Overwrite)</option>' +
+                                        '<option value="SKIP">Skip bucket (Ignore)</option>' +
+                                    '</select>' +
+                                '</div>';
+                        }
+
                         bucketsHtml += 
-                            '<div class="border border-base-200 rounded p-2 bg-base-200/30 flex flex-col gap-1.5">' +
-                                '<div class="flex items-center gap-2">' +
+                            '<div class="border border-base-200 rounded p-2 bg-base-200/30 flex flex-col gap-1.5 bucket-card" data-group="' + gIdx + '" data-bucket="' + bIdx + '">' +
+                                '<div class="flex flex-wrap items-center gap-2">' +
                                     '<input type="checkbox" class="checkbox checkbox-primary checkbox-xs bucket-chk" checked data-group="' + gIdx + '" data-bucket="' + bIdx + '" onchange="onBucketCheckboxToggle(' + gIdx + ', ' + bIdx + ', this.checked)">' +
                                     '<span class="text-xs font-bold text-primary">📁</span>' +
-                                    '<input type="text" class="input input-bordered input-xs font-bold flex-1 bucket-name-input" value="' + escapeHtml(b.name) + '" data-group="' + gIdx + '" data-bucket="' + bIdx + '">' +
+                                    '<input type="text" class="input input-bordered input-xs font-bold flex-1 min-w-[120px] bucket-name-input" value="' + escapeHtml(b.name) + '" data-group="' + gIdx + '" data-bucket="' + bIdx + '">' +
+                                    '<div class="flex items-center gap-1 shrink-0">' +
+                                        '<span class="text-[11px] text-base-content/60 font-medium">Group:</span>' +
+                                        '<select class="select select-bordered select-xs bucket-group-select" data-group="' + gIdx + '" data-bucket="' + bIdx + '" onchange="onBucketGroupChange(' + gIdx + ', ' + bIdx + ', this.value)">' +
+                                            groupOptionsHtml +
+                                        '</select>' +
+                                        '<input type="text" class="input input-bordered input-xs hidden w-28 bucket-custom-group-input" placeholder="New group..." data-group="' + gIdx + '" data-bucket="' + bIdx + '">' +
+                                    '</div>' +
+                                '</div>' +
+                                conflictHtml +
                                 (targetsHtml ? '<div class="flex flex-col">' + targetsHtml + '</div>' : '') +
                             '</div>';
                     });
@@ -3469,7 +3540,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 container.appendChild(groupEl);
             });
 
-            document.getElementById('structure_stats_badge').innerText = totalBuckets + ' envelopes, ' + totalTargets + ' targets';
+            document.getElementById('structure_stats_badge').innerText = totalBuckets + ' buckets, ' + totalTargets + ' targets';
             document.getElementById('structure_select_all').checked = true;
             document.getElementById('structure_preview_wrapper').classList.remove('hidden');
             document.getElementById('btn_apply_structure').classList.remove('hidden');
@@ -3493,20 +3564,45 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
         function updateCountsBadge() {
             const bChecked = document.querySelectorAll('.bucket-chk:checked').length;
             const tChecked = document.querySelectorAll('.target-chk:checked').length;
-            document.getElementById('structure_stats_badge').innerText = bChecked + ' envelopes, ' + tChecked + ' targets selected';
+            document.getElementById('structure_stats_badge').innerText = bChecked + ' buckets, ' + tChecked + ' targets selected';
         }
 
         function applyStructureConfirmed() {
             if (!loadedStructureData) return;
 
-            const finalGroups = [];
+            const groupBucketsMap = new Map();
+
             loadedStructureData.groups.forEach((g, gIdx) => {
-                const finalBuckets = [];
+                if (!g.buckets) return;
                 g.buckets.forEach((b, bIdx) => {
                     const bChk = document.querySelector('.bucket-chk[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
                     if (bChk && bChk.checked) {
                         const nameInput = document.querySelector('.bucket-name-input[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
                         const bucketName = nameInput ? nameInput.value.trim() : b.name;
+
+                        // Target group resolution
+                        let targetGroup = g.group_name || 'Default';
+                        const grpSelect = document.querySelector('.bucket-group-select[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
+                        if (grpSelect) {
+                            if (grpSelect.value === '__NEW__') {
+                                const customInput = document.querySelector('.bucket-custom-group-input[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
+                                if (customInput && customInput.value.trim()) {
+                                    targetGroup = customInput.value.trim();
+                                }
+                            } else if (grpSelect.value) {
+                                targetGroup = grpSelect.value.trim();
+                            }
+                        }
+
+                        // Conflict resolution
+                        let conflictRes = 'MERGE';
+                        const conflictSelect = document.querySelector('.bucket-conflict-select[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
+                        if (conflictSelect) {
+                            conflictRes = conflictSelect.value;
+                        }
+                        if (conflictRes === 'SKIP') {
+                            return; // User opted to skip this bucket entirely
+                        }
 
                         const finalTargets = [];
                         if (b.targets) {
@@ -3515,6 +3611,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                                 if (tChk && tChk.checked) {
                                     const tNameInput = document.querySelector('.target-name-input[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"][data-target="' + tIdx + '"]');
                                     const tAmtInput = document.querySelector('.target-amount-input[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"][data-target="' + tIdx + '"]');
+                                    const tPrioSelect = document.querySelector('.target-prio-select[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"][data-target="' + tIdx + '"]');
+
                                     const tName = tNameInput ? tNameInput.value.trim() : t.name;
                                     let amtMinor = t.amount_minor;
                                     if (tAmtInput) {
@@ -3523,10 +3621,18 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                                             amtMinor = Math.round(parsed * 100);
                                         }
                                     }
+                                    let priority = t.priority || 2;
+                                    if (tPrioSelect) {
+                                        const pVal = parseInt(tPrioSelect.value, 10);
+                                        if (!isNaN(pVal) && pVal >= 1 && pVal <= 3) {
+                                            priority = pVal;
+                                        }
+                                    }
+
                                     finalTargets.push({
                                         name: tName,
                                         target_type: t.target_type || 'EXPENSE',
-                                        priority: t.priority || 2,
+                                        priority: priority,
                                         amount_minor: amtMinor,
                                         currency: t.currency || currentCurrency,
                                         recurrence_cadence: t.recurrence_cadence || 'MONTHLY',
@@ -3537,23 +3643,32 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                             });
                         }
 
-                        finalBuckets.push({
+                        const bucketData = {
                             name: bucketName,
+                            conflict_resolution: conflictRes,
                             targets: finalTargets
-                        });
+                        };
+
+                        if (!groupBucketsMap.has(targetGroup)) {
+                            groupBucketsMap.set(targetGroup, []);
+                        }
+                        groupBucketsMap.get(targetGroup).push(bucketData);
                     }
                 });
+            });
 
-                if (finalBuckets.length > 0) {
+            const finalGroups = [];
+            groupBucketsMap.forEach((buckets, grpName) => {
+                if (buckets.length > 0) {
                     finalGroups.push({
-                        group_name: g.group_name || 'Default',
-                        buckets: finalBuckets
+                        group_name: grpName,
+                        buckets: buckets
                     });
                 }
             });
 
             if (finalGroups.length === 0) {
-                showStructureError('No envelopes or targets selected.');
+                showStructureError('No buckets or targets selected.');
                 return;
             }
 
@@ -4112,9 +4227,12 @@ func (h *WorkspaceHandler) GenerateStructurePreview(c echo.Context) error {
 		h.structureAI = ai.NewBudgetStructureProvider()
 	}
 
+	existingGroups, _ := h.appService.GetExistingGroupNames(c.Request().Context(), budgetID)
+
 	res, err := h.structureAI.GenerateBudgetStructure(c.Request().Context(), ai.BudgetStructurePromptRequest{
 		Prompt:          req.Prompt,
 		DefaultCurrency: curr,
+		ExistingGroups:  existingGroups,
 	})
 	if err != nil {
 		c.Set("error", err.Error())
@@ -4125,11 +4243,16 @@ func (h *WorkspaceHandler) GenerateStructurePreview(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
+	if err := h.appService.DetectAndEnrichStructureConflicts(c.Request().Context(), budgetID, res); err != nil {
+		logger.Warn(c.Request().Context(), "Failed enriching structure preview with conflicts", "budget_id", budgetID, "error", err.Error())
+	}
+
 	return c.JSON(http.StatusOK, res)
 }
 
 // PreviewSourceStructure reads and returns the existing structure of a source budget.
 func (h *WorkspaceHandler) PreviewSourceStructure(c echo.Context) error {
+	budgetID := c.Param("budgetId")
 	sourceBudgetID := c.QueryParam("source_budget_id")
 	if sourceBudgetID == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "source_budget_id is required"})
@@ -4145,6 +4268,10 @@ func (h *WorkspaceHandler) PreviewSourceStructure(c echo.Context) error {
 	exported, err := h.appService.ExportBudgetStructure(c.Request().Context(), sourceBudgetID)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed loading source structure"})
+	}
+
+	if err := h.appService.DetectAndEnrichStructureConflicts(c.Request().Context(), budgetID, exported); err != nil {
+		logger.Warn(c.Request().Context(), "Failed enriching imported structure preview with conflicts", "budget_id", budgetID, "error", err.Error())
 	}
 
 	return c.JSON(http.StatusOK, exported)

@@ -33,8 +33,11 @@ type ProposedTarget struct {
 
 // ProposedBucket represents an envelope/bucket containing proposed targets.
 type ProposedBucket struct {
-	Name    string           `json:"name"`
-	Targets []ProposedTarget `json:"targets"`
+	Name               string           `json:"name"`
+	ConflictResolution string           `json:"conflict_resolution,omitempty"` // MERGE (default), REPLACE, SKIP
+	IsExisting         bool             `json:"is_existing,omitempty"`
+	ExistingGroup      string           `json:"existing_group,omitempty"`
+	Targets            []ProposedTarget `json:"targets"`
 }
 
 // ProposedGroup represents a logical group of buckets (e.g., Housing, Living, Savings).
@@ -45,13 +48,15 @@ type ProposedGroup struct {
 
 // BudgetStructure holds the complete hierarchy of groups, buckets, and targets.
 type BudgetStructure struct {
-	Groups []ProposedGroup `json:"groups"`
+	Groups         []ProposedGroup `json:"groups"`
+	ExistingGroups []string        `json:"existing_groups,omitempty"`
 }
 
 // BudgetStructurePromptRequest contains the user's natural language description and budget context.
 type BudgetStructurePromptRequest struct {
-	Prompt          string `json:"prompt"`
-	DefaultCurrency string `json:"default_currency"`
+	Prompt          string   `json:"prompt"`
+	DefaultCurrency string   `json:"default_currency"`
+	ExistingGroups  []string `json:"existing_groups,omitempty"`
 }
 
 // BudgetStructureAIProvider is the interface for AI-based budget structure generators.
@@ -176,19 +181,24 @@ func (m *MockBudgetStructureAIProvider) GenerateBudgetStructure(ctx context.Cont
 	}
 
 	if len(customBuckets) >= 2 {
+		groupName := "Generated Categories"
+		if len(req.ExistingGroups) > 0 {
+			groupName = req.ExistingGroups[0]
+		}
 		return &BudgetStructure{
 			Groups: []ProposedGroup{
 				{
-					GroupName: "Generated Categories",
+					GroupName: groupName,
 					Buckets:   customBuckets,
 				},
 			},
+			ExistingGroups: req.ExistingGroups,
 		}, nil
 	}
 
 	// Deterministic Mock presets for common scenarios
 	if strings.Contains(promptLower, "student") {
-		return &BudgetStructure{
+		return adaptPresetsWithExistingGroups(&BudgetStructure{
 			Groups: []ProposedGroup{
 				{
 					GroupName: "Housing & Living",
@@ -225,7 +235,7 @@ func (m *MockBudgetStructureAIProvider) GenerateBudgetStructure(ctx context.Cont
 					},
 				},
 			},
-		}, nil
+		}, req.ExistingGroups), nil
 	}
 
 	// Standard Polish / Universal Family & Personal Budget preset
@@ -235,7 +245,7 @@ func (m *MockBudgetStructureAIProvider) GenerateBudgetStructure(ctx context.Cont
 		curr == "PLN"
 
 	if isPolish {
-		return &BudgetStructure{
+		return adaptPresetsWithExistingGroups(&BudgetStructure{
 			Groups: []ProposedGroup{
 				{
 					GroupName: "Koszty stałe",
@@ -289,11 +299,11 @@ func (m *MockBudgetStructureAIProvider) GenerateBudgetStructure(ctx context.Cont
 					},
 				},
 			},
-		}, nil
+		}, req.ExistingGroups), nil
 	}
 
 	// English universal preset
-	return &BudgetStructure{
+	return adaptPresetsWithExistingGroups(&BudgetStructure{
 		Groups: []ProposedGroup{
 			{
 				GroupName: "Fixed Obligations",
@@ -347,7 +357,28 @@ func (m *MockBudgetStructureAIProvider) GenerateBudgetStructure(ctx context.Cont
 				},
 			},
 		},
-	}, nil
+	}, req.ExistingGroups), nil
+}
+
+func adaptPresetsWithExistingGroups(res *BudgetStructure, existingGroups []string) *BudgetStructure {
+	if res == nil {
+		return nil
+	}
+	res.ExistingGroups = existingGroups
+	if len(existingGroups) == 0 {
+		return res
+	}
+	egMap := make(map[string]string)
+	for _, eg := range existingGroups {
+		egMap[strings.ToLower(strings.TrimSpace(eg))] = eg
+	}
+	for i := range res.Groups {
+		gLower := strings.ToLower(strings.TrimSpace(res.Groups[i].GroupName))
+		if matched, ok := egMap[gLower]; ok {
+			res.Groups[i].GroupName = matched
+		}
+	}
+	return res
 }
 
 // GeminiBudgetStructureProvider implements direct HTTP calls to Gemini REST API with Structured Outputs.
@@ -475,6 +506,11 @@ Return JSON strictly matching the BudgetStructure schema.`
 		}
 	}
 
+	promptContext := fmt.Sprintf("Default Currency: %s\nUser budget description: %s", curr, req.Prompt)
+	if len(req.ExistingGroups) > 0 {
+		promptContext += fmt.Sprintf("\nExisting budget groups: %s\nIMPORTANT: Prioritize categorizing buckets into these existing groups whenever suitable before introducing new groups.", strings.Join(req.ExistingGroups, ", "))
+	}
+
 	bodyData := map[string]interface{}{
 		"systemInstruction": map[string]interface{}{
 			"parts": []map[string]interface{}{
@@ -484,7 +520,7 @@ Return JSON strictly matching the BudgetStructure schema.`
 		"contents": []map[string]interface{}{
 			{
 				"parts": []map[string]interface{}{
-					{"text": fmt.Sprintf("Default Currency: %s\nUser budget description: %s", curr, req.Prompt)},
+					{"text": promptContext},
 				},
 			},
 		},
@@ -555,6 +591,7 @@ Return JSON strictly matching the BudgetStructure schema.`
 		logger.Error(ctx, "Failed parsing Gemini JSON output into BudgetStructure", "model", g.model, "error", err.Error(), "duration_ms", durationMs)
 		return nil, fmt.Errorf("failed parsing Gemini JSON output: %w", err)
 	}
+	out.ExistingGroups = req.ExistingGroups
 
 	logger.Info(ctx, "Gemini budget structure generated successfully",
 		"model", g.model,

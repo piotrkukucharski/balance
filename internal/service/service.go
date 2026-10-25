@@ -651,6 +651,24 @@ func (s *AppService) ApplyBudgetStructure(ctx context.Context, budgetID string, 
 	return budget.ApplyBudgetStructure(ctx, tenantDB, structure, agentID, correlationID)
 }
 
+// GetExistingGroupNames returns all distinct active group names from the budget.
+func (s *AppService) GetExistingGroupNames(ctx context.Context, budgetID string) ([]string, error) {
+	tenantDB, err := s.tenantMgr.GetTenantDB(budgetID, false)
+	if err != nil {
+		return nil, err
+	}
+	return budget.GetExistingGroupNames(ctx, tenantDB)
+}
+
+// DetectAndEnrichStructureConflicts enriches a proposed structure with existing groups and conflict flags.
+func (s *AppService) DetectAndEnrichStructureConflicts(ctx context.Context, budgetID string, structure *ai.BudgetStructure) error {
+	tenantDB, err := s.tenantMgr.GetTenantDB(budgetID, false)
+	if err != nil {
+		return err
+	}
+	return budget.DetectAndEnrichStructureConflicts(ctx, tenantDB, structure)
+}
+
 // CloneBudgetInput holds parameters for cloning an existing budget.
 type CloneBudgetInput struct {
 	SourceBudgetID      string

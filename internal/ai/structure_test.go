@@ -63,6 +63,24 @@ func TestMockBudgetStructureAIProvider_Presets(t *testing.T) {
 		}
 	})
 
+	t.Run("Custom line items with existing groups", func(t *testing.T) {
+		prompt := "Czynsz: 2500 PLN\nJedzenie: 1200 PLN\nOszczędności: 500 PLN"
+		res, err := provider.GenerateBudgetStructure(context.Background(), BudgetStructurePromptRequest{
+			Prompt:          prompt,
+			DefaultCurrency: "PLN",
+			ExistingGroups:  []string{"Moje Wydatki", "Inwestycje"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(res.Groups) != 1 || res.Groups[0].GroupName != "Moje Wydatki" {
+			t.Fatalf("expected group name 'Moje Wydatki', got: %v", res.Groups[0].GroupName)
+		}
+		if len(res.ExistingGroups) != 2 || res.ExistingGroups[0] != "Moje Wydatki" {
+			t.Fatalf("expected existing groups preserved, got: %v", res.ExistingGroups)
+		}
+	})
+
 	t.Run("Student preset with EUR", func(t *testing.T) {
 		res, err := provider.GenerateBudgetStructure(context.Background(), BudgetStructurePromptRequest{
 			Prompt:          "I am a student living in dormitory",

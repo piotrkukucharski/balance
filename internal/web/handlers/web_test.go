@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/balance/balance/internal/ai"
 	"github.com/balance/balance/internal/auth"
 	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/clock"
@@ -1835,6 +1837,196 @@ func TestTargetCurrencySelectionAndImmutability(t *testing.T) {
 	}
 	if updatedAmt != 35000 {
 		t.Fatalf("expected amount minor 35000, got %d", updatedAmt)
+	}
+}
+
+func TestBucketStructureAssistantFlow(t *testing.T) {
+	logger.BindTestLogger(t)
+	tmpDir, err := os.MkdirTemp("", "balance_structure_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mainDBPath := filepath.Join(tmpDir, "main.db")
+	mainDB, err := db.OpenDB(mainDBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tmpDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+	appService := service.NewAppService(mainDB, tenantMgr, clock.NewSystemClock(time.UTC))
+	workspaceHandler.SetService(appService)
+	e := echo.New()
+
+	userID := domain.NewUUIDv7()
+	now := time.Now().UTC().UnixMicro()
+	_, _ = mainDB.Exec(`INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, 'structure@example.com', 'h', 'User', ?, ?)`, userID, now, now)
+
+	budgetID := domain.NewUUIDv7()
+	_, err = mainDB.Exec(`
+		INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at)
+		VALUES (?, 'Assistant Budget', 'PLN', 'Europe/Warsaw', ?, ?, ?)`, budgetID, userID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = mainDB.Exec(`
+		INSERT INTO budget_members (budget_id, user_id, role, joined_at)
+		VALUES (?, ?, 'OWNER', ?)`, budgetID, userID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
+	if err != nil {
+		t.Fatalf("failed getting tenant db: %v", err)
+	}
+
+	// 1. Pre-create a bucket in an existing group to test conflict detection and group prioritization
+	_, err = budget.CreateBucket(context.Background(), tenantDB, budget.CreateBucketInput{
+		GroupName:     "Koszty stałe",
+		Name:          "Czynsz",
+		AgentID:       userID,
+		CorrelationID: domain.NewUUIDv7(),
+	})
+	if err != nil {
+		t.Fatalf("failed pre-creating bucket: %v", err)
+	}
+
+	// 2. Test GenerateStructurePreview endpoint
+	genBody := `{"prompt":"Czynsz: 2500 PLN\nJedzenie: 1200 PLN\nOszczędności: 500 PLN","currency":"PLN"}`
+	genReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/structure/generate-ai-preview", strings.NewReader(genBody))
+	genReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	genRec := httptest.NewRecorder()
+	genCtx := e.NewContext(genReq, genRec)
+	genCtx.SetParamNames("budgetId")
+	genCtx.SetParamValues(budgetID)
+	genCtx.Set(ContextBudgetDBKey, tenantDB)
+	genCtx.Set(ContextUserIDKey, userID)
+	genCtx.Set(ContextRoleKey, "OWNER")
+	genCtx.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.GenerateStructurePreview(genCtx); err != nil {
+		t.Fatalf("GenerateStructurePreview failed: %v", err)
+	}
+	if genRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from generate preview, got %d: %s", genRec.Code, genRec.Body.String())
+	}
+
+	var previewData ai.BudgetStructure
+	if err := json.Unmarshal(genRec.Body.Bytes(), &previewData); err != nil {
+		t.Fatalf("failed unmarshaling preview response: %v", err)
+	}
+
+	// Verify existing groups were enriched
+	if len(previewData.ExistingGroups) == 0 || previewData.ExistingGroups[0] != "Koszty stałe" {
+		t.Errorf("expected ExistingGroups to contain 'Koszty stałe', got: %v", previewData.ExistingGroups)
+	}
+
+	// Verify conflict detection marked Czynsz as existing
+	var foundCzynsz bool
+	for _, g := range previewData.Groups {
+		for _, b := range g.Buckets {
+			if strings.EqualFold(b.Name, "Czynsz") {
+				foundCzynsz = true
+				if !b.IsExisting {
+					t.Errorf("expected Czynsz bucket to have IsExisting=true")
+				}
+				if b.ExistingGroup != "Koszty stałe" {
+					t.Errorf("expected Czynsz ExistingGroup='Koszty stałe', got %q", b.ExistingGroup)
+				}
+			}
+		}
+	}
+	if !foundCzynsz {
+		t.Errorf("expected Czynsz in preview buckets")
+	}
+
+	// 3. Test ApplyStructure with customized priority, group, and conflict resolution
+	applyPayload := `{
+		"groups": [
+			{
+				"group_name": "Opłaty i Rachunki",
+				"buckets": [
+					{
+						"name": "Czynsz",
+						"conflict_resolution": "MERGE",
+						"targets": [
+							{
+								"name": "Opłata czynszowa",
+								"target_type": "EXPENSE",
+								"priority": 3,
+								"amount_minor": 250000,
+								"currency": "PLN",
+								"recurrence_cadence": "MONTHLY",
+								"non_spending_strategy": "RETURN_TO_POOL"
+							}
+						]
+					},
+					{
+						"name": "Jedzenie",
+						"conflict_resolution": "MERGE",
+						"targets": [
+							{
+								"name": "Supermarket",
+								"target_type": "EXPENSE",
+								"priority": 2,
+								"amount_minor": 120000,
+								"currency": "PLN",
+								"recurrence_cadence": "MONTHLY",
+								"non_spending_strategy": "RETURN_TO_POOL"
+							}
+						]
+					}
+				]
+			}
+		]
+	}`
+
+	applyReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/structure/apply", strings.NewReader(applyPayload))
+	applyReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	applyRec := httptest.NewRecorder()
+	applyCtx := e.NewContext(applyReq, applyRec)
+	applyCtx.SetParamNames("budgetId")
+	applyCtx.SetParamValues(budgetID)
+	applyCtx.Set(ContextBudgetDBKey, tenantDB)
+	applyCtx.Set(ContextUserIDKey, userID)
+	applyCtx.Set(ContextRoleKey, "OWNER")
+	applyCtx.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.ApplyStructure(applyCtx); err != nil {
+		t.Fatalf("ApplyStructure failed: %v", err)
+	}
+	if applyRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from apply structure, got %d: %s", applyRec.Code, applyRec.Body.String())
+	}
+
+	// Verify Czynsz bucket group was updated to "Opłaty i Rachunki"
+	var czynszGroup string
+	err = tenantDB.QueryRow(`SELECT group_name FROM buckets_projection WHERE name = 'Czynsz'`).Scan(&czynszGroup)
+	if err != nil || czynszGroup != "Opłaty i Rachunki" {
+		t.Errorf("expected Czynsz group to be updated to 'Opłaty i Rachunki', got %q (err: %v)", czynszGroup, err)
+	}
+
+	// Verify target was created with priority 3
+	var prio3 int
+	err = tenantDB.QueryRow(`SELECT priority FROM targets_projection WHERE name = 'Opłata czynszowa'`).Scan(&prio3)
+	if err != nil || prio3 != 3 {
+		t.Errorf("expected priority 3 for 'Opłata czynszowa', got %d (err: %v)", prio3, err)
 	}
 }
 

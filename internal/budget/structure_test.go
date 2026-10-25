@@ -187,3 +187,301 @@ func TestApplyBudgetStructure_AtomicityRollback(t *testing.T) {
 	}
 }
 
+func TestApplyBudgetStructure_ConflictResolution(t *testing.T) {
+	ctx := context.Background()
+	tenantDB := setupTestTenantDB(t)
+	defer tenantDB.Close()
+
+	agentID := domain.NewUUIDv7()
+	corrID := domain.NewUUIDv7()
+
+	// Initial setup: create buckets "Rent" and "Internet"
+	bRentID, err := CreateBucket(ctx, tenantDB, CreateBucketInput{
+		GroupName:     "Old Housing",
+		Name:          "Rent",
+		AgentID:       agentID,
+		CorrelationID: corrID,
+	})
+	if err != nil {
+		t.Fatalf("failed creating Rent bucket: %v", err)
+	}
+
+	_, err = CreateTarget(ctx, tenantDB, CreateTargetInput{
+		BucketID:            bRentID,
+		Name:                "Monthly Rent",
+		TargetType:          "EXPENSE",
+		Priority:            3,
+		AmountMinor:         200000,
+		Currency:            "PLN",
+		RecurrenceCadence:   "MONTHLY",
+		NonSpendingStrategy: "RETURN_TO_POOL",
+		AgentID:             agentID,
+		CorrelationID:       corrID,
+	})
+	if err != nil {
+		t.Fatalf("failed creating target for Rent: %v", err)
+	}
+
+	bNetID, err := CreateBucket(ctx, tenantDB, CreateBucketInput{
+		GroupName:     "Utilities",
+		Name:          "Internet",
+		AgentID:       agentID,
+		CorrelationID: corrID,
+	})
+	if err != nil {
+		t.Fatalf("failed creating Internet bucket: %v", err)
+	}
+
+	_, err = CreateTarget(ctx, tenantDB, CreateTargetInput{
+		BucketID:            bNetID,
+		Name:                "Old Fiber",
+		TargetType:          "EXPENSE",
+		Priority:            2,
+		AmountMinor:         8000,
+		Currency:            "PLN",
+		RecurrenceCadence:   "MONTHLY",
+		NonSpendingStrategy: "RETURN_TO_POOL",
+		AgentID:             agentID,
+		CorrelationID:       corrID,
+	})
+	if err != nil {
+		t.Fatalf("failed creating target for Internet: %v", err)
+	}
+
+	bSkipID, err := CreateBucket(ctx, tenantDB, CreateBucketInput{
+		GroupName:     "Lifestyle",
+		Name:          "Entertainment",
+		AgentID:       agentID,
+		CorrelationID: corrID,
+	})
+	if err != nil {
+		t.Fatalf("failed creating Entertainment bucket: %v", err)
+	}
+
+	t.Run("ConflictResolution MERGE and Group Update", func(t *testing.T) {
+		structure := &ai.BudgetStructure{
+			Groups: []ai.ProposedGroup{
+				{
+					GroupName: "New Housing Group", // group updated from "Old Housing"
+					Buckets: []ai.ProposedBucket{
+						{
+							Name:               "Rent",
+							ConflictResolution: "MERGE",
+							Targets: []ai.ProposedTarget{
+								{
+									Name:                "Monthly Rent", // duplicate, should be skipped
+									TargetType:          "EXPENSE",
+									Priority:            3,
+									AmountMinor:         200000,
+									Currency:            "PLN",
+									RecurrenceCadence:   "MONTHLY",
+									NonSpendingStrategy: "RETURN_TO_POOL",
+								},
+								{
+									Name:                "Water & Heating", // new target, should be added
+									TargetType:          "EXPENSE",
+									Priority:            2,
+									AmountMinor:         25000,
+									Currency:            "PLN",
+									RecurrenceCadence:   "MONTHLY",
+									NonSpendingStrategy: "RETURN_TO_POOL",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		bCount, tCount, err := ApplyBudgetStructure(ctx, tenantDB, structure, agentID, corrID)
+		if err != nil {
+			t.Fatalf("ApplyBudgetStructure failed on MERGE: %v", err)
+		}
+		if bCount != 0 {
+			t.Errorf("expected 0 new buckets created (reused existing), got %d", bCount)
+		}
+		if tCount != 1 {
+			t.Errorf("expected 1 new target created, got %d", tCount)
+		}
+
+		// Verify group name was updated
+		var updatedGroup string
+		err = tenantDB.QueryRowContext(ctx, `SELECT group_name FROM buckets_projection WHERE id = ?`, bRentID).Scan(&updatedGroup)
+		if err != nil || updatedGroup != "New Housing Group" {
+			t.Errorf("expected group to be updated to 'New Housing Group', got %q", updatedGroup)
+		}
+
+		// Verify target count for Rent is 2
+		var activeTargets int
+		err = tenantDB.QueryRowContext(ctx, `SELECT count(*) FROM targets_projection WHERE bucket_id = ? AND is_archived = 0`, bRentID).Scan(&activeTargets)
+		if err != nil || activeTargets != 2 {
+			t.Errorf("expected 2 active targets in Rent, got %d", activeTargets)
+		}
+	})
+
+	t.Run("ConflictResolution REPLACE", func(t *testing.T) {
+		structure := &ai.BudgetStructure{
+			Groups: []ai.ProposedGroup{
+				{
+					GroupName: "Utilities",
+					Buckets: []ai.ProposedBucket{
+						{
+							Name:               "Internet",
+							ConflictResolution: "REPLACE",
+							Targets: []ai.ProposedTarget{
+								{
+									Name:                "New Fiber 1Gbps",
+									TargetType:          "EXPENSE",
+									Priority:            3,
+									AmountMinor:         11000,
+									Currency:            "PLN",
+									RecurrenceCadence:   "MONTHLY",
+									NonSpendingStrategy: "RETURN_TO_POOL",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		bCount, tCount, err := ApplyBudgetStructure(ctx, tenantDB, structure, agentID, corrID)
+		if err != nil {
+			t.Fatalf("ApplyBudgetStructure failed on REPLACE: %v", err)
+		}
+		if bCount != 0 {
+			t.Errorf("expected 0 new buckets, got %d", bCount)
+		}
+		if tCount != 1 {
+			t.Errorf("expected 1 target created, got %d", tCount)
+		}
+
+		// Check old target is archived
+		var oldArchived int
+		err = tenantDB.QueryRowContext(ctx, `SELECT is_archived FROM targets_projection WHERE bucket_id = ? AND name = 'Old Fiber'`, bNetID).Scan(&oldArchived)
+		if err != nil || oldArchived != 1 {
+			t.Errorf("expected Old Fiber to be archived (1), got %d (err: %v)", oldArchived, err)
+		}
+
+		// Check new target is active
+		var newActive int
+		err = tenantDB.QueryRowContext(ctx, `SELECT count(*) FROM targets_projection WHERE bucket_id = ? AND name = 'New Fiber 1Gbps' AND is_archived = 0`, bNetID).Scan(&newActive)
+		if err != nil || newActive != 1 {
+			t.Errorf("expected New Fiber 1Gbps to be active, got %d", newActive)
+		}
+	})
+
+	t.Run("ConflictResolution SKIP", func(t *testing.T) {
+		structure := &ai.BudgetStructure{
+			Groups: []ai.ProposedGroup{
+				{
+					GroupName: "Lifestyle",
+					Buckets: []ai.ProposedBucket{
+						{
+							Name:               "Entertainment",
+							ConflictResolution: "SKIP",
+							Targets: []ai.ProposedTarget{
+								{
+									Name:                "Cinema & Theater",
+									TargetType:          "EXPENSE",
+									Priority:            1,
+									AmountMinor:         15000,
+									Currency:            "PLN",
+									RecurrenceCadence:   "MONTHLY",
+									NonSpendingStrategy: "RETURN_TO_POOL",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		bCount, tCount, err := ApplyBudgetStructure(ctx, tenantDB, structure, agentID, corrID)
+		if err != nil {
+			t.Fatalf("ApplyBudgetStructure failed on SKIP: %v", err)
+		}
+		if bCount != 0 || tCount != 0 {
+			t.Errorf("expected 0 buckets and 0 targets created for SKIP, got b=%d, t=%d", bCount, tCount)
+		}
+
+		var skipTargets int
+		err = tenantDB.QueryRowContext(ctx, `SELECT count(*) FROM targets_projection WHERE bucket_id = ? AND is_archived = 0`, bSkipID).Scan(&skipTargets)
+		if err != nil || skipTargets != 0 {
+			t.Errorf("expected 0 targets in Entertainment, got %d", skipTargets)
+		}
+	})
+}
+
+func TestDetectAndEnrichStructureConflicts(t *testing.T) {
+	ctx := context.Background()
+	tenantDB := setupTestTenantDB(t)
+	defer tenantDB.Close()
+
+	agentID := domain.NewUUIDv7()
+	corrID := domain.NewUUIDv7()
+
+	// Create buckets in different groups
+	_, err := CreateBucket(ctx, tenantDB, CreateBucketInput{
+		GroupName:     "Housing",
+		Name:          "Rent",
+		AgentID:       agentID,
+		CorrelationID: corrID,
+	})
+	if err != nil {
+		t.Fatalf("failed creating Rent bucket: %v", err)
+	}
+
+	_, err = CreateBucket(ctx, tenantDB, CreateBucketInput{
+		GroupName:     "Living",
+		Name:          "Groceries",
+		AgentID:       agentID,
+		CorrelationID: corrID,
+	})
+	if err != nil {
+		t.Fatalf("failed creating Groceries bucket: %v", err)
+	}
+
+	structure := &ai.BudgetStructure{
+		Groups: []ai.ProposedGroup{
+			{
+				GroupName: "Fixed",
+				Buckets: []ai.ProposedBucket{
+					{Name: "rent"}, // lowercase to test case-insensitivity
+					{Name: "Gym Pass"},
+				},
+			},
+			{
+				GroupName: "Variable",
+				Buckets: []ai.ProposedBucket{
+					{Name: " GROCERIES "}, // whitespace to test trimming
+				},
+			},
+		},
+	}
+
+	err = DetectAndEnrichStructureConflicts(ctx, tenantDB, structure)
+	if err != nil {
+		t.Fatalf("DetectAndEnrichStructureConflicts failed: %v", err)
+	}
+
+	if len(structure.ExistingGroups) != 2 {
+		t.Errorf("expected 2 existing groups, got: %v", structure.ExistingGroups)
+	}
+
+	bRent := structure.Groups[0].Buckets[0]
+	if !bRent.IsExisting || bRent.ExistingGroup != "Housing" {
+		t.Errorf("expected rent to be flagged as existing in 'Housing', got IsExisting=%v, Group=%s", bRent.IsExisting, bRent.ExistingGroup)
+	}
+
+	bGym := structure.Groups[0].Buckets[1]
+	if bGym.IsExisting {
+		t.Errorf("expected Gym Pass to not be existing, got IsExisting=true")
+	}
+
+	bGroc := structure.Groups[1].Buckets[0]
+	if !bGroc.IsExisting || bGroc.ExistingGroup != "Living" {
+		t.Errorf("expected GROCERIES to be flagged as existing in 'Living', got IsExisting=%v, Group=%s", bGroc.IsExisting, bGroc.ExistingGroup)
+	}
+}
+

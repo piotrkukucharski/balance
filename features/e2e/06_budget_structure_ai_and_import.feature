@@ -1,10 +1,10 @@
 @e2e
-Feature: Browser E2E Envelope Structure Generation with AI and Budget Import
+Feature: Browser E2E Bucket Structure Generation with AI and Budget Import
   As a budget user in a web browser
-  I want to generate envelopes and targets from natural language descriptions or import them from another budget
+  I want to generate buckets and targets from natural language descriptions or import them from another budget
   So that I can quickly set up my budget structure without manual configuration
 
-  Scenario: Generating envelopes and targets from natural language description with AI
+  Scenario: Generating buckets and targets from natural language description with AI
     Given an authenticated browser session for "jan.e2e@example.com" on budget "Startup Budget"
     When I navigate to the "Budget" workspace view in the browser
     Then the budget table should display the empty structure state card
@@ -27,3 +27,14 @@ Feature: Browser E2E Envelope Structure Generation with AI and Budget Import
     Then the structure preview should list proposed envelopes "Utilities" and "Groceries"
     When I click "Apply Selected Structure"
     Then the budget table should list buckets "Utilities" and "Groceries"
+
+  Scenario: Managing bucket structure preview with conflict resolution and priority adjustments
+    Given an authenticated browser session for "jan.e2e@example.com" on budget "Conflict Management Budget"
+    And bucket "Groceries" has target "Weekly Food" of "500.00 PLN"
+    When I navigate to the "Budget" workspace view in the browser
+    And I open the AI Structure generator modal
+    And I enter budget prompt "Groceries 1200 PLN, Transport 300 PLN" and click "Generate Preview"
+    Then the structure preview should detect existing bucket "Groceries"
+    When I set priority of target "Transport" to "P3" in the structure preview
+    And I click "Apply Selected Structure"
+    Then the budget table should list buckets "Groceries" and "Transport"
