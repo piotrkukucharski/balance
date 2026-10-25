@@ -11,6 +11,7 @@ import (
 
 	"github.com/balance/balance/internal/ai"
 	"github.com/balance/balance/internal/auth"
+	"github.com/balance/balance/internal/automation"
 	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
@@ -3037,5 +3038,180 @@ func (s *Server) ProviderCallback(ctx echo.Context, provider string, params Prov
 		IntegrationId: uuid.New(),
 		Provider:      provider,
 		Status:        "CONNECTED",
+	})
+}
+
+func toAPIAutomation(a automation.Automation) Automation {
+	idUUID, _ := uuid.Parse(a.ID)
+	comment := a.Comment
+	agentID := a.AgentID
+	return Automation{
+		Id:             idUUID,
+		Version:        a.Version,
+		Name:           a.Name,
+		JudgeScript:    a.JudgeScript,
+		ExecutorScript: a.ExecutorScript,
+		Comment:        &comment,
+		IsActive:       a.IsActive,
+		SortOrder:      a.SortOrder,
+		AgentId:        &agentID,
+		UpdatedAt:      a.UpdatedAt,
+	}
+}
+
+// ListAutomations (GET /budgets/{budgetId}/automations)
+func (s *Server) ListAutomations(ctx echo.Context, budgetId BudgetIdPathParam) error {
+	budgetID := budgetId.String()
+	tenantDB, _, err := s.verifyBudgetAccess(ctx, budgetID, "VIEWER")
+	if err != nil {
+		return err
+	}
+	list, err := automation.ListAutomations(ctx.Request().Context(), tenantDB)
+	if err != nil {
+		return sendError(ctx, http.StatusInternalServerError, "Failed listing automations", "INTERNAL_ERROR", nil)
+	}
+	resp := make([]Automation, 0, len(list))
+	for _, a := range list {
+		resp = append(resp, toAPIAutomation(a))
+	}
+	return ctx.JSON(http.StatusOK, resp)
+}
+
+// CreateAutomation (POST /budgets/{budgetId}/automations)
+func (s *Server) CreateAutomation(ctx echo.Context, budgetId BudgetIdPathParam) error {
+	budgetID := budgetId.String()
+	tenantDB, userID, err := s.verifyBudgetAccess(ctx, budgetID, "EDITOR")
+	if err != nil {
+		return err
+	}
+	var req CreateAutomationRequest
+	if err := ctx.Bind(&req); err != nil || strings.TrimSpace(req.Name) == "" {
+		return sendError(ctx, http.StatusBadRequest, "Invalid automation payload", "INVALID_INPUT", nil)
+	}
+	corrID := domain.NewUUIDv7()
+	comment := ""
+	if req.Comment != nil {
+		comment = *req.Comment
+	}
+	a, err := automation.CreateAutomation(ctx.Request().Context(), tenantDB, automation.CreateAutomationInput{
+		Name:           req.Name,
+		JudgeScript:    req.JudgeScript,
+		ExecutorScript: req.ExecutorScript,
+		Comment:        comment,
+		IsActive:       req.IsActive,
+		AgentID:        userID,
+		CorrelationID:  corrID,
+	})
+	if err != nil {
+		return sendError(ctx, http.StatusBadRequest, err.Error(), "VALIDATION_FAILED", nil)
+	}
+	return ctx.JSON(http.StatusCreated, toAPIAutomation(*a))
+}
+
+// GetAutomation (GET /budgets/{budgetId}/automations/{id})
+func (s *Server) GetAutomation(ctx echo.Context, budgetId BudgetIdPathParam, id IdPathParam) error {
+	budgetID := budgetId.String()
+	autoID := id.String()
+	tenantDB, _, err := s.verifyBudgetAccess(ctx, budgetID, "VIEWER")
+	if err != nil {
+		return err
+	}
+	a, err := automation.GetAutomation(ctx.Request().Context(), tenantDB, autoID)
+	if err != nil {
+		if errors.Is(err, automation.ErrAutomationNotFound) {
+			return sendError(ctx, http.StatusNotFound, "Automation not found", "NOT_FOUND", nil)
+		}
+		return sendError(ctx, http.StatusInternalServerError, err.Error(), "INTERNAL_ERROR", nil)
+	}
+	return ctx.JSON(http.StatusOK, toAPIAutomation(*a))
+}
+
+// UpdateAutomation (PUT /budgets/{budgetId}/automations/{id})
+func (s *Server) UpdateAutomation(ctx echo.Context, budgetId BudgetIdPathParam, id IdPathParam) error {
+	budgetID := budgetId.String()
+	autoID := id.String()
+	tenantDB, userID, err := s.verifyBudgetAccess(ctx, budgetID, "EDITOR")
+	if err != nil {
+		return err
+	}
+	var req UpdateAutomationRequest
+	if err := ctx.Bind(&req); err != nil || strings.TrimSpace(req.Name) == "" {
+		return sendError(ctx, http.StatusBadRequest, "Invalid automation payload", "INVALID_INPUT", nil)
+	}
+	squash := false
+	if req.Squash != nil {
+		squash = *req.Squash
+	}
+	comment := ""
+	if req.Comment != nil {
+		comment = *req.Comment
+	}
+	corrID := domain.NewUUIDv7()
+	a, err := automation.UpdateAutomation(ctx.Request().Context(), tenantDB, automation.UpdateAutomationInput{
+		ID:             autoID,
+		Name:           req.Name,
+		JudgeScript:    req.JudgeScript,
+		ExecutorScript: req.ExecutorScript,
+		Comment:        comment,
+		Squash:         squash,
+		AgentID:        userID,
+		CorrelationID:  corrID,
+	})
+	if err != nil {
+		if errors.Is(err, automation.ErrAutomationNotFound) {
+			return sendError(ctx, http.StatusNotFound, "Automation not found", "NOT_FOUND", nil)
+		}
+		return sendError(ctx, http.StatusBadRequest, err.Error(), "VALIDATION_FAILED", nil)
+	}
+	return ctx.JSON(http.StatusOK, toAPIAutomation(*a))
+}
+
+// DeleteAutomation (DELETE /budgets/{budgetId}/automations/{id})
+func (s *Server) DeleteAutomation(ctx echo.Context, budgetId BudgetIdPathParam, id IdPathParam) error {
+	budgetID := budgetId.String()
+	autoID := id.String()
+	tenantDB, userID, err := s.verifyBudgetAccess(ctx, budgetID, "EDITOR")
+	if err != nil {
+		return err
+	}
+	corrID := domain.NewUUIDv7()
+	if err := automation.DeleteAutomation(ctx.Request().Context(), tenantDB, autoID, userID, corrID); err != nil {
+		if errors.Is(err, automation.ErrAutomationNotFound) {
+			return sendError(ctx, http.StatusNotFound, "Automation not found", "NOT_FOUND", nil)
+		}
+		return sendError(ctx, http.StatusInternalServerError, err.Error(), "INTERNAL_ERROR", nil)
+	}
+	return ctx.NoContent(http.StatusNoContent)
+}
+
+// BatchRunAutomations (POST /budgets/{budgetId}/automations/batch-run)
+func (s *Server) BatchRunAutomations(ctx echo.Context, budgetId BudgetIdPathParam) error {
+	budgetID := budgetId.String()
+	tenantDB, userID, err := s.verifyBudgetAccess(ctx, budgetID, "EDITOR")
+	if err != nil {
+		return err
+	}
+	var req BatchRunAutomationsRequest
+	if err := ctx.Bind(&req); err != nil || len(req.TransactionIds) == 0 {
+		return sendError(ctx, http.StatusBadRequest, "Invalid payload or empty transaction_ids", "INVALID_INPUT", nil)
+	}
+	var txIDs []string
+	for _, id := range req.TransactionIds {
+		txIDs = append(txIDs, id.String())
+	}
+	dryRun := false
+	if req.DryRun != nil {
+		dryRun = *req.DryRun
+	}
+	corrID := domain.NewUUIDv7()
+	res, err := automation.RunAutomationsBatch(ctx.Request().Context(), tenantDB, txIDs, dryRun, userID, corrID)
+	if err != nil {
+		return sendError(ctx, http.StatusBadRequest, err.Error(), "EXECUTION_ERROR", nil)
+	}
+	return ctx.JSON(http.StatusOK, map[string]int{
+		"processed_count": res.ProcessedCount,
+		"modified_count":  res.ModifiedCount,
+		"deleted_count":   res.DeletedCount,
+		"split_count":     res.SplitCount,
 	})
 }

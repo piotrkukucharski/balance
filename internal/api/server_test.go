@@ -15,8 +15,10 @@ import (
 	openapi "github.com/balance/balance/internal/api"
 	"github.com/balance/balance/internal/clock"
 	"github.com/balance/balance/internal/db"
+	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/service"
 	"github.com/balance/balance/internal/web/handlers"
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
 
@@ -361,4 +363,133 @@ func TestAPI_RBAC_UnauthorizedAndForbidden(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 Forbidden for outsider cloning budget, got %d: %s", rec.Code, rec.Body.String())
 	}
+}
+
+func TestAPI_Automations(t *testing.T) {
+	e, mainDB, tenantMgr, _, _ := setupTestAPIServer(t)
+
+	// 1. Register and Login user
+	regBody, _ := json.Marshal(map[string]interface{}{
+		"email":        "auto_user@example.com",
+		"password":     "Password123!",
+		"display_name": "Automation Tester",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewReader(regBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	loginBody, _ := json.Marshal(map[string]interface{}{
+		"email":    "auto_user@example.com",
+		"password": "Password123!",
+	})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(loginBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	cookie := rec.Header().Get("Set-Cookie")
+
+	var uID, csrfToken string
+	mainDB.QueryRowContext(context.Background(), `SELECT id FROM users WHERE email = ?`, "auto_user@example.com").Scan(&uID)
+	mainDB.QueryRowContext(context.Background(), `SELECT csrf_token FROM sessions WHERE user_id = ?`, uID).Scan(&csrfToken)
+
+	// Create budget
+	bID := domain.NewUUIDv7()
+	bUUID, _ := uuid.Parse(bID)
+	tenantDB, err := tenantMgr.GetTenantDB(bID, true)
+	if err != nil {
+		t.Fatalf("failed to init tenant db: %v", err)
+	}
+	if _, err := mainDB.ExecContext(context.Background(), `INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at) VALUES (?, 'Auto Budget', 'PLN', 'Europe/Warsaw', ?, 1000, 1000)`, bID, uID); err != nil {
+		t.Fatalf("failed to insert budget: %v", err)
+	}
+	if _, err := mainDB.ExecContext(context.Background(), `INSERT INTO budget_members (budget_id, user_id, role, joined_at) VALUES (?, ?, 'OWNER', 1000)`, bID, uID); err != nil {
+		t.Fatalf("failed to insert budget member: %v", err)
+	}
+
+	// 2. Create Automation
+	createPayload, _ := json.Marshal(map[string]interface{}{
+		"name":            "Auto Uber Transport",
+		"judge_script":    `text.contains(tx.notes, "Uber")`,
+		"executor_script": `tx.set_bucket("Transport")`,
+		"comment":         "First rule",
+	})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/budgets/"+bID+"/automations", bytes.NewReader(createPayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set("X-CSRF-Token", csrfToken)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var createdAuto openapi.Automation
+	json.Unmarshal(rec.Body.Bytes(), &createdAuto)
+	if createdAuto.Name != "Auto Uber Transport" || createdAuto.Version != 1 {
+		t.Fatalf("unexpected created automation: %+v", createdAuto)
+	}
+
+	// 3. List Automations
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/budgets/"+bID+"/automations", nil)
+	req.Header.Set("Cookie", cookie)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var list []openapi.Automation
+	json.Unmarshal(rec.Body.Bytes(), &list)
+	if len(list) != 1 {
+		t.Fatalf("expected 1 automation, got %d", len(list))
+	}
+
+	// 4. Get Automation
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/budgets/"+bID+"/automations/"+createdAuto.Id.String(), nil)
+	req.Header.Set("Cookie", cookie)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 5. Update Automation with squash
+	updatePayload, _ := json.Marshal(map[string]interface{}{
+		"name":            "Auto Uber Transport Updated",
+		"judge_script":    `text.contains(tx.notes, "Uber") or tx.party == "Uber"`,
+		"executor_script": `tx.set_bucket("Transport")`,
+		"comment":         "Updated condition",
+		"squash":          false,
+	})
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/budgets/"+bID+"/automations/"+createdAuto.Id.String(), bytes.NewReader(updatePayload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set("X-CSRF-Token", csrfToken)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for update, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var updatedAuto openapi.Automation
+	json.Unmarshal(rec.Body.Bytes(), &updatedAuto)
+	if updatedAuto.Version != 2 {
+		t.Fatalf("expected version 2, got %d", updatedAuto.Version)
+	}
+
+	// 6. Delete Automation
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/budgets/"+bID+"/automations/"+createdAuto.Id.String(), nil)
+	req.Header.Set("Cookie", cookie)
+	req.Header.Set("X-CSRF-Token", csrfToken)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 NoContent, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	_ = bUUID
+	_ = tenantDB
 }

@@ -716,6 +716,140 @@ paths:
         '403':
           $ref: '#/components/responses/ForbiddenError'
 
+  /budgets/{budgetId}/automations:
+    get:
+      summary: List automations
+      operationId: listAutomations
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      responses:
+        '200':
+          description: List of active and configured automations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Automation'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+    post:
+      summary: Create an automation
+      operationId: createAutomation
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAutomationRequest'
+      responses:
+        '201':
+          description: Created automation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Automation'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /budgets/{budgetId}/automations/{id}:
+    get:
+      summary: Get automation by ID
+      operationId: getAutomation
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/IdPathParam'
+      responses:
+        '200':
+          description: Automation details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Automation'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+    put:
+      summary: Update automation
+      operationId: updateAutomation
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/IdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAutomationRequest'
+      responses:
+        '200':
+          description: Updated automation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Automation'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+    delete:
+      summary: Delete automation
+      operationId: deleteAutomation
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+        - $ref: '#/components/parameters/IdPathParam'
+      responses:
+        '204':
+          description: Automation deleted
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /budgets/{budgetId}/automations/batch-run:
+    post:
+      summary: Batch run automations on transactions
+      operationId: batchRunAutomations
+      parameters:
+        - $ref: '#/components/parameters/BudgetIdPathParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchRunAutomationsRequest'
+      responses:
+        '200':
+          description: Batch execution result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  processed_count:
+                    type: integer
+                  modified_count:
+                    type: integer
+                  deleted_count:
+                    type: integer
+                  split_count:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
   /budgets/{budgetId}/{entityType}/{id}/history:
     get:
       summary: Get entity version history (ADMIN+ required)
@@ -727,7 +861,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [parties, accounts, matching-rules, raw-transactions, budget-transactions, saved-reports]
+            enum: [parties, accounts, matching-rules, raw-transactions, budget-transactions, saved-reports, automations]
         - $ref: '#/components/parameters/IdPathParam'
       responses:
         '200':
@@ -756,7 +890,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [parties, accounts, matching-rules, raw-transactions, budget-transactions, saved-reports]
+            enum: [parties, accounts, matching-rules, raw-transactions, budget-transactions, saved-reports, automations]
         - $ref: '#/components/parameters/IdPathParam'
       requestBody:
         required: true
@@ -2088,6 +2222,93 @@ components:
         default_bucket_id:
           type: string
           format: uuid
+
+    Automation:
+      type: object
+      required:
+        - id
+        - version
+        - name
+        - judge_script
+        - executor_script
+        - is_active
+        - sort_order
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        name:
+          type: string
+        judge_script:
+          type: string
+        executor_script:
+          type: string
+        comment:
+          type: string
+        is_active:
+          type: boolean
+        sort_order:
+          type: integer
+        agent_id:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateAutomationRequest:
+      type: object
+      required:
+        - name
+        - judge_script
+        - executor_script
+      properties:
+        name:
+          type: string
+        judge_script:
+          type: string
+        executor_script:
+          type: string
+        comment:
+          type: string
+        is_active:
+          type: boolean
+          default: true
+
+    UpdateAutomationRequest:
+      type: object
+      required:
+        - name
+        - judge_script
+        - executor_script
+      properties:
+        name:
+          type: string
+        judge_script:
+          type: string
+        executor_script:
+          type: string
+        comment:
+          type: string
+        squash:
+          type: boolean
+          default: false
+
+    BatchRunAutomationsRequest:
+      type: object
+      required:
+        - transaction_ids
+      properties:
+        transaction_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        dry_run:
+          type: boolean
+          default: false
 
     EntityVersionItem:
       type: object

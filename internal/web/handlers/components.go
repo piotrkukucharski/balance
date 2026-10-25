@@ -99,12 +99,13 @@ func RenderSidebarNavigation(budgetID string, activeItem string) string {
                 <li><a href="/budgets/%s/budget"%s>📂 1. Budget (Buckets)</a></li>
                 <li><a href="/budgets/%s/accounts"%s>💳 2. Accounts</a></li>
                 <li><a href="/budgets/%s/transactions"%s>💸 3. Transactions</a></li>
-                <li><a href="/budgets/%s/reports"%s>📊 4. Reports</a></li>
-                <li><a href="/budgets/%s/parties"%s>🏢 5. External Parties</a></li>
+                <li><a href="/budgets/%s/automations"%s>⚡ 4. Automations</a></li>
+                <li><a href="/budgets/%s/reports"%s>📊 5. Reports</a></li>
+                <li><a href="/budgets/%s/parties"%s>🏢 6. External Parties</a></li>
                 <li>
                     <details%s>
                         <summary%s>
-                            <a href="/budgets/%s/settings" class="grow">⚙️ 6. Settings</a>
+                            <a href="/budgets/%s/settings" class="grow">⚙️ 7. Settings</a>
                         </summary>
                         <ul class="before:hidden">
                             <li><a href="/budgets/%s/settings"%s>General</a></li>
@@ -118,6 +119,7 @@ func RenderSidebarNavigation(budgetID string, activeItem string) string {
 		budgetID, itemClass("budget"),
 		budgetID, itemClass("accounts"),
 		budgetID, itemClass("transactions"),
+		budgetID, itemClass("automations"),
 		budgetID, itemClass("reports"),
 		budgetID, itemClass("parties"),
 		settingsOpen, settingsSummaryClass,
@@ -152,13 +154,13 @@ func RenderBottomDock(budgetID string, activeItem string) string {
             <span class="text-xl">💸</span>
             <span class="dock-label">Txns</span>
         </a>
+        <a href="/budgets/%s/automations"%s>
+            <span class="text-xl">⚡</span>
+            <span class="dock-label">Rules</span>
+        </a>
         <a href="/budgets/%s/reports"%s>
             <span class="text-xl">📊</span>
             <span class="dock-label">Reports</span>
-        </a>
-        <a href="/budgets/%s/parties"%s>
-            <span class="text-xl">🏢</span>
-            <span class="dock-label">Parties</span>
         </a>
         <a href="/budgets/%s/settings"%s>
             <span class="text-xl">⚙️</span>
@@ -168,8 +170,8 @@ func RenderBottomDock(budgetID string, activeItem string) string {
 		budgetID, dockClass("budget"),
 		budgetID, dockClass("accounts"),
 		budgetID, dockClass("transactions"),
+		budgetID, dockClass("automations"),
 		budgetID, dockClass("reports"),
-		budgetID, dockClass("parties"),
 		budgetID, dockClass("settings"),
 	)
 }

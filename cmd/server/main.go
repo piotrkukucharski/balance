@@ -88,6 +88,7 @@ func main() {
 	profileHandler := handlers.NewProfileHandler(mainDB)
 	accountsHandler := handlers.NewAccountsHandler(mainDB, tenantMgr)
 	accountsHandler.SetService(appService)
+	automationsHandler := handlers.NewAutomationsHandler(mainDB, tenantMgr)
 	historyHandler := handlers.NewHistoryHandler(mainDB, tenantMgr)
 
 	pwaHandler := handlers.NewPWAHandler()
@@ -146,6 +147,7 @@ func main() {
 	tenantViewer.GET("/reports/party-cashflow/data", reportsHandler.GetPartyCashflowData)
 	tenantViewer.GET("/parties", partiesHandler.PartiesView)
 	tenantViewer.GET("/parties/:partyId/rules", partiesHandler.PartyRulesView)
+	tenantViewer.GET("/automations", automationsHandler.AutomationsView)
 	tenantViewer.GET("/settings", workspaceHandler.SettingsView)
 	tenantViewer.GET("/settings/members", membersHandler.MembersView)
 	tenantViewer.GET("/settings/tokens", tokensHandler.TokensView)
@@ -196,6 +198,16 @@ func main() {
 	tenantEditor.POST("/structure/generate-ai-preview", workspaceHandler.GenerateStructurePreview)
 	tenantEditor.GET("/structure/preview-source", workspaceHandler.PreviewSourceStructure)
 	tenantEditor.POST("/structure/apply", workspaceHandler.ApplyStructure)
+	tenantEditor.POST("/automations", automationsHandler.CreateAutomation)
+	tenantEditor.POST("/automations/:id/update", automationsHandler.UpdateAutomation)
+	tenantEditor.POST("/automations/:id/delete", automationsHandler.DeleteAutomation)
+	tenantEditor.POST("/automations/:id/toggle", automationsHandler.ToggleAutomation)
+	tenantEditor.POST("/automations/:id/move", automationsHandler.MoveAutomation)
+	tenantEditor.POST("/automations/dry-run", automationsHandler.DryRun)
+	tenantEditor.POST("/automations/ai/generate", automationsHandler.AIGenerate)
+	tenantEditor.POST("/automations/ai/comment", automationsHandler.AIComment)
+	tenantEditor.POST("/automations/batch-dry-run", automationsHandler.BatchDryRun)
+	tenantEditor.POST("/automations/batch-run", automationsHandler.BatchRun)
 
 
 	tenantAdmin := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "ADMIN"))

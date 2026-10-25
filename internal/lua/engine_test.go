@@ -98,3 +98,121 @@ func TestSecurityHardeningBans(t *testing.T) {
 		t.Fatalf("expected error for string concatenation")
 	}
 }
+
+func TestEvaluateAutomationJudgeAndExecutor(t *testing.T) {
+	ctx := context.Background()
+	snap := &InMemoryBudgetSnapshot{
+		Buckets: map[string]*BucketMeta{
+			"groceries": {ID: "b-groc", Name: "Groceries", Currency: "PLN"},
+			"b-groc":    {ID: "b-groc", Name: "Groceries", Currency: "PLN"},
+			"transport": {ID: "b-trans", Name: "Transport", Currency: "PLN"},
+			"b-trans":   {ID: "b-trans", Name: "Transport", Currency: "PLN"},
+		},
+		Targets: map[string]*TargetMeta{
+			"metro pass": {ID: "t-metro", Name: "Metro Pass", BucketID: "b-trans"},
+			"t-metro":    {ID: "t-metro", Name: "Metro Pass", BucketID: "b-trans"},
+		},
+		Parties: map[string]*PartyMeta{
+			"uber": {ID: "p-uber", Name: "Uber", IsUserOwned: false},
+		},
+	}
+
+	notes := "Uber trip home from supermarket"
+	tx := AutomationTxContext{
+		ID:                "tx-123",
+		SourceAmountMinor: 4500,
+		SourceCurrency:    "PLN",
+		DestAmountMinor:   4500,
+		DestCurrency:      "PLN",
+		Notes:             &notes,
+		PartyName:         "Uber",
+		PartyID:           "p-uber",
+		IsUserOwnedSource: true,
+		IsUserOwnedDest:   false,
+	}
+
+	// 1. Judge test: matches
+	judgeScript := `text.contains(tx.notes, "Uber") and tx.is_outflow`
+	matched, err := EvaluateAutomationJudge(ctx, judgeScript, tx, snap)
+	if err != nil {
+		t.Fatalf("judge error: %v", err)
+	}
+	if !matched {
+		t.Fatalf("expected judge to match")
+	}
+
+	// 2. Judge test: does not match
+	judgeNoMatch := `text.contains(tx.notes, "Netflix")`
+	matched, err = EvaluateAutomationJudge(ctx, judgeNoMatch, tx, snap)
+	if err != nil {
+		t.Fatalf("judge error: %v", err)
+	}
+	if matched {
+		t.Fatalf("expected judge not to match")
+	}
+
+	// 3. Executor test: set_target (auto sets bucket), set_notes
+	execScript := `
+	tx.set_target("Metro Pass")
+	tx.set_notes("Subsidized ride")
+	`
+	outcome, err := EvaluateAutomationExecutor(ctx, execScript, tx, snap)
+	if err != nil {
+		t.Fatalf("executor error: %v", err)
+	}
+	if !outcome.Modified {
+		t.Fatalf("expected outcome to be modified")
+	}
+	if outcome.UpdatedTx.TargetID == nil || *outcome.UpdatedTx.TargetID != "t-metro" {
+		t.Fatalf("expected target t-metro, got %v", outcome.UpdatedTx.TargetID)
+	}
+	if outcome.UpdatedTx.BucketID == nil || *outcome.UpdatedTx.BucketID != "b-trans" {
+		t.Fatalf("expected bucket b-trans, got %v", outcome.UpdatedTx.BucketID)
+	}
+	if *outcome.UpdatedTx.Notes != "Subsidized ride" {
+		t.Fatalf("expected notes updated, got %s", *outcome.UpdatedTx.Notes)
+	}
+
+	// 4. Executor test: split
+	splitScript := `
+	tx.split({
+		{ amount = 2000, bucket = "Groceries", notes = "Snacks" },
+		{ amount = 2500, bucket = "Transport", notes = "Fare" }
+	})
+	`
+	outcome, err = EvaluateAutomationExecutor(ctx, splitScript, tx, snap)
+	if err != nil {
+		t.Fatalf("split error: %v", err)
+	}
+	if len(outcome.Splits) != 2 {
+		t.Fatalf("expected 2 splits, got %d", len(outcome.Splits))
+	}
+	if outcome.Splits[0].AmountMinor != 2000 || *outcome.Splits[0].BucketID != "b-groc" {
+		t.Fatalf("split 0 mismatch: %+v", outcome.Splits[0])
+	}
+	if outcome.Splits[1].AmountMinor != 2500 || *outcome.Splits[1].BucketID != "b-trans" {
+		t.Fatalf("split 1 mismatch: %+v", outcome.Splits[1])
+	}
+
+	// 5. Executor test: split sum mismatch
+	splitMismatchScript := `
+	tx.split({
+		{ amount = 2000, bucket = "Groceries" },
+		{ amount = 2000, bucket = "Transport" }
+	})
+	`
+	_, err = EvaluateAutomationExecutor(ctx, splitMismatchScript, tx, snap)
+	if err == nil {
+		t.Fatalf("expected error on split total mismatch")
+	}
+
+	// 6. Executor test: delete
+	delScript := `tx.delete()`
+	outcome, err = EvaluateAutomationExecutor(ctx, delScript, tx, snap)
+	if err != nil {
+		t.Fatalf("delete error: %v", err)
+	}
+	if !outcome.Deleted {
+		t.Fatalf("expected deleted = true")
+	}
+}

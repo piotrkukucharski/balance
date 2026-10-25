@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -61,14 +62,16 @@ type bddTestContext struct {
 	reportsHandler   *handlers.ReportsHandler
 	partiesHandler   *handlers.PartiesHandler
 	membersHandler   *handlers.MembersHandler
-	profileHandler   *handlers.ProfileHandler
-	historyHandler   *handlers.HistoryHandler
-	pwaHandler       *handlers.PWAHandler
+	profileHandler     *handlers.ProfileHandler
+	historyHandler     *handlers.HistoryHandler
+	pwaHandler         *handlers.PWAHandler
+	automationsHandler *handlers.AutomationsHandler
 
-	activeAcctID   string
-	activePartyID  string
-	activeTxID     string
-	activeBucketID string
+	activeAcctID       string
+	activePartyID      string
+	activeTxID         string
+	activeBucketID     string
+	activeAutomationID string
 
 	luaSnapshot            *lua.InMemoryBudgetSnapshot
 	luaScript              string
@@ -116,6 +119,7 @@ func (tc *bddTestContext) setup() error {
 	tc.profileHandler = handlers.NewProfileHandler(mainDB)
 	tc.historyHandler = handlers.NewHistoryHandler(mainDB, tenantMgr)
 	tc.pwaHandler = handlers.NewPWAHandler()
+	tc.automationsHandler = handlers.NewAutomationsHandler(mainDB, tenantMgr)
 
 	// Register REST API v1
 	appSvc := service.NewAppService(mainDB, tenantMgr, nil)
@@ -1398,8 +1402,12 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
-	ctx.Step(`^I create a manual transaction with amount "([^"]*)", date "([^"]*)", and note "([^"]*)"$`, func(amountStr, dateStr, note string) error {
-		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
+	ctx.Step(`^(?:I create|an existing) manual transaction with amount "([^"]*)", date "([^"]*)", and note "([^"]*)"$`, func(amountStr, dateStr, note string) error {
+		targetBudgetID := tc.activeBudgetID
+		if targetBudgetID == "" {
+			targetBudgetID = "01900000-0000-7000-8000-000000000001"
+		}
+		bDB, err := tc.tenantMgr.GetTenantDB(targetBudgetID, true)
 		if err != nil {
 			return err
 		}
@@ -1412,19 +1420,32 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		form.Set("transaction_date", dateStr)
 		form.Set("notes", note)
 
-		req := httptest.NewRequest(http.MethodPost, "/budgets/01900000-0000-7000-8000-000000000001/transactions", strings.NewReader(form.Encode()))
+		req := httptest.NewRequest(http.MethodPost, "/budgets/"+targetBudgetID+"/transactions", strings.NewReader(form.Encode()))
 		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
 		rec := httptest.NewRecorder()
 		c := tc.echoEngine.NewContext(req, rec)
 		c.SetParamNames("budgetId")
-		c.SetParamValues("01900000-0000-7000-8000-000000000001")
-		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.SetParamValues(targetBudgetID)
+		userID := tc.activeUserID
+		if userID == "" {
+			userID = "user_1"
+		}
+		c.Set(handlers.ContextUserIDKey, userID)
 		c.Set("correlationID", domain.NewUUIDv7())
 		c.Set(handlers.ContextBudgetDBKey, bDB)
 
 		err = tc.txHandler.AddManualTransaction(c)
 		tc.lastResponse = rec
-		return err
+		if err != nil {
+			return err
+		}
+
+		var txID string
+		if err := bDB.QueryRowContext(context.Background(), `SELECT id FROM budget_transactions_current WHERE notes = ? ORDER BY updated_at DESC LIMIT 1`, note).Scan(&txID); err != nil {
+			return fmt.Errorf("failed to find created transaction with note %q: %w", note, err)
+		}
+		tc.activeTxID = txID
+		return nil
 	})
 
 	ctx.Step(`^the transaction should appear in the budget transactions ledger with amount "([^"]*)"$`, func(amountStr string) error {
@@ -4990,6 +5011,416 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		if maxVer != 2 {
 			return fmt.Errorf("expected max version 2, got %d", maxVer)
+		}
+		return nil
+	})
+
+	// Automations steps
+	ctx.Step(`^an existing bucket "([^"]*)" in group "([^"]*)"$`, func(bucketName, groupName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		bID, err := budget.CreateBucket(context.Background(), bDB, budget.CreateBucketInput{
+			GroupName:     groupName,
+			Name:          bucketName,
+			AgentID:       tc.activeUserID,
+			CorrelationID: domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		tc.activeBucketID = bID
+		activeBucketID = bID
+		return nil
+	})
+
+	ctx.Step(`^(?:I create|an active) automation rule "([^"]*)" with priority (\d+):$`, func(name string, prio int, table *godog.Table) error {
+		var judge, executor, comment string
+		for _, row := range table.Rows {
+			if len(row.Cells) >= 2 {
+				k := strings.TrimSpace(row.Cells[0].Value)
+				v := strings.TrimSpace(row.Cells[1].Value)
+				switch k {
+				case "judge":
+					judge = v
+				case "executor":
+					executor = v
+				case "comment":
+					comment = v
+				}
+			}
+		}
+
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+
+		form := url.Values{}
+		form.Set("name", name)
+		form.Set("judge_script", judge)
+		form.Set("executor_script", executor)
+		form.Set("comment", comment)
+		form.Set("priority", strconv.Itoa(prio))
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/"+tc.activeBudgetID+"/automations", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		userID := tc.activeUserID
+		if userID == "" {
+			userID = "user_1"
+		}
+		c.Set(handlers.ContextUserIDKey, userID)
+		c.Set("correlationId", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.automationsHandler.CreateAutomation(c)
+		tc.lastResponse = rec
+		if err != nil {
+			return err
+		}
+
+		var autoID string
+		_ = bDB.QueryRowContext(context.Background(), `SELECT id FROM automations_current WHERE name = ?`, name).Scan(&autoID)
+		tc.activeAutomationID = autoID
+		return nil
+	})
+
+	ctx.Step(`^the automation rule "([^"]*)" should be active with version (\d+)$`, func(name string, expectedVer int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var isEnabled int
+		var ver int
+		err = bDB.QueryRowContext(context.Background(), `SELECT is_enabled, version FROM automations_current WHERE name = ?`, name).Scan(&isEnabled, &ver)
+		if err != nil {
+			return fmt.Errorf("automation %q not found in automations_current: %w", name, err)
+		}
+		if isEnabled != 1 {
+			return fmt.Errorf("expected automation %q to be active (isEnabled=1), got %d", name, isEnabled)
+		}
+		if ver != expectedVer {
+			return fmt.Errorf("expected automation %q version %d, got %d", name, expectedVer, ver)
+		}
+		return nil
+	})
+
+	ctx.Step(`^visiting the automations page should display "([^"]*)"$`, func(expectedText string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		req := httptest.NewRequest(http.MethodGet, "/budgets/"+tc.activeBudgetID+"/automations", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		userID := tc.activeUserID
+		if userID == "" {
+			userID = "user_1"
+		}
+		c.Set(handlers.ContextUserIDKey, userID)
+		c.Set(handlers.ContextRoleKey, "OWNER")
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+		c.Set("csrfToken", "dummy-csrf")
+
+		err = tc.automationsHandler.AutomationsView(c)
+		tc.lastResponse = rec
+		if err != nil {
+			return err
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, expectedText) {
+			return fmt.Errorf("expected automations page to contain %q, body length %d", expectedText, len(body))
+		}
+		return nil
+	})
+
+	ctx.Step(`^the recorded transaction should automatically have bucket "([^"]*)" assigned$`, func(bucketName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var assignedBucketName string
+		err = bDB.QueryRowContext(context.Background(), `
+			SELECT b.name
+			FROM budget_transactions_current bt
+			JOIN buckets_projection b ON bt.bucket_id = b.id
+			ORDER BY bt.updated_at DESC
+			LIMIT 1`).Scan(&assignedBucketName)
+		if err != nil {
+			return fmt.Errorf("failed querying assigned bucket: %w", err)
+		}
+		if assignedBucketName != bucketName {
+			return fmt.Errorf("expected bucket %q, got %q", bucketName, assignedBucketName)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I test a dry run with judge '([^']*)' and executor '([^']*)' on that transaction$`, func(judge, executor string) error {
+		if tc.activeTxID == "" {
+			return fmt.Errorf("activeTxID is empty before dry-run")
+		}
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		form := url.Values{}
+		form.Set("judge_script", judge)
+		form.Set("executor_script", executor)
+		form.Set("tx_id", tc.activeTxID)
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/"+tc.activeBudgetID+"/automations/dry-run", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		userID := tc.activeUserID
+		if userID == "" {
+			userID = "user_1"
+		}
+		c.Set(handlers.ContextUserIDKey, userID)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.automationsHandler.DryRun(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the dry-run outcome should indicate matched true with bucket "([^"]*)"$`, func(expectedBucket string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "Judge Match") || !strings.Contains(body, expectedBucket) {
+			return fmt.Errorf("expected dry-run to show match and bucket %q, got: %s", expectedBucket, body)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I execute batch automations across all transactions$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		rows, err := bDB.QueryContext(context.Background(), `SELECT id FROM budget_transactions_current`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err == nil {
+				ids = append(ids, id)
+			}
+		}
+
+		form := url.Values{}
+		form.Set("tx_ids", strings.Join(ids, ","))
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/"+tc.activeBudgetID+"/automations/batch-run", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		userID := tc.activeUserID
+		if userID == "" {
+			userID = "user_1"
+		}
+		c.Set(handlers.ContextUserIDKey, userID)
+		c.Set("correlationId", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.automationsHandler.BatchRun(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^all Uber transactions should have bucket "([^"]*)" assigned$`, func(bucketName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		rows, err := bDB.QueryContext(context.Background(), `
+			SELECT bt.notes, COALESCE(b.name, '')
+			FROM budget_transactions_current bt
+			LEFT JOIN buckets_projection b ON bt.bucket_id = b.id
+			WHERE bt.notes LIKE '%Uber%'`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		count := 0
+		for rows.Next() {
+			var note, bName string
+			if err := rows.Scan(&note, &bName); err != nil {
+				return err
+			}
+			if bName != bucketName {
+				return fmt.Errorf("transaction %q has bucket %q, expected %q", note, bName, bucketName)
+			}
+			count++
+		}
+		if count == 0 {
+			return fmt.Errorf("no Uber transactions found")
+		}
+		return nil
+	})
+
+	ctx.Step(`^I update the automation rule "([^"]*)" with comment "([^"]*)":$`, func(name, comment string, table *godog.Table) error {
+		var judge, executor string
+		for _, row := range table.Rows {
+			if len(row.Cells) >= 2 {
+				k := strings.TrimSpace(row.Cells[0].Value)
+				v := strings.TrimSpace(row.Cells[1].Value)
+				switch k {
+				case "judge":
+					judge = v
+				case "executor":
+					executor = v
+				}
+			}
+		}
+
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+
+		var autoID string
+		_ = bDB.QueryRowContext(context.Background(), `SELECT id FROM automations_current WHERE name = ?`, name).Scan(&autoID)
+
+		form := url.Values{}
+		form.Set("name", name)
+		form.Set("judge_script", judge)
+		form.Set("executor_script", executor)
+		form.Set("comment", comment)
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/"+tc.activeBudgetID+"/automations/"+autoID+"/update", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "id")
+		c.SetParamValues(tc.activeBudgetID, autoID)
+		userID := tc.activeUserID
+		if userID == "" {
+			userID = "user_1"
+		}
+		c.Set(handlers.ContextUserIDKey, userID)
+		c.Set("correlationId", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.automationsHandler.UpdateAutomation(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the automation rule "([^"]*)" should be at version (\d+)$`, func(name string, expectedVer int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var ver int
+		err = bDB.QueryRowContext(context.Background(), `SELECT version FROM automations_current WHERE name = ?`, name).Scan(&ver)
+		if err != nil {
+			return err
+		}
+		if ver != expectedVer {
+			return fmt.Errorf("expected version %d, got %d", expectedVer, ver)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I update the automation rule "([^"]*)" with squash enabled and comment "([^"]*)":$`, func(name, comment string, table *godog.Table) error {
+		var judge, executor string
+		for _, row := range table.Rows {
+			if len(row.Cells) >= 2 {
+				k := strings.TrimSpace(row.Cells[0].Value)
+				v := strings.TrimSpace(row.Cells[1].Value)
+				switch k {
+				case "judge":
+					judge = v
+				case "executor":
+					executor = v
+				}
+			}
+		}
+
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+
+		var autoID string
+		_ = bDB.QueryRowContext(context.Background(), `SELECT id FROM automations_current WHERE name = ?`, name).Scan(&autoID)
+
+		form := url.Values{}
+		form.Set("name", name)
+		form.Set("judge_script", judge)
+		form.Set("executor_script", executor)
+		form.Set("comment", comment)
+		form.Set("squash", "true")
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/"+tc.activeBudgetID+"/automations/"+autoID+"/update", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "id")
+		c.SetParamValues(tc.activeBudgetID, autoID)
+		userID := tc.activeUserID
+		if userID == "" {
+			userID = "user_1"
+		}
+		c.Set(handlers.ContextUserIDKey, userID)
+		c.Set("correlationId", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.automationsHandler.UpdateAutomation(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the automation rule "([^"]*)" should have exactly (\d+) version(?:s)? in audit history$`, func(name string, expectedCount int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var autoID string
+		_ = bDB.QueryRowContext(context.Background(), `SELECT id FROM automations_current WHERE name = ?`, name).Scan(&autoID)
+
+		var count int
+		err = bDB.QueryRowContext(context.Background(), `SELECT count(*) FROM automations WHERE id = ?`, autoID).Scan(&count)
+		if err != nil {
+			return err
+		}
+		if count != expectedCount {
+			return fmt.Errorf("expected %d versions in automations table, got %d", expectedCount, count)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the latest version should have comment "([^"]*)"$`, func(expectedComment string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var comment string
+		err = bDB.QueryRowContext(context.Background(), `
+			SELECT comment FROM automations
+			ORDER BY version DESC, created_at DESC
+			LIMIT 1`).Scan(&comment)
+		if err != nil {
+			return err
+		}
+		if comment != expectedComment {
+			return fmt.Errorf("expected comment %q, got %q", expectedComment, comment)
 		}
 		return nil
 	})

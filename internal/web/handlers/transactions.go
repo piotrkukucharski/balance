@@ -748,6 +748,10 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
         <div id="ledger-fab-total-display" class="font-mono font-bold text-sm text-base-content">Total: 0.00 PLN</div>
         <div class="divider divider-horizontal my-0"></div>
         <div class="flex items-center gap-2">
+            <button type="button" class="btn btn-secondary btn-sm gap-1.5 font-bold shadow-xs" onclick="openBatchAutomationsModal()">
+                <span>⚡</span>
+                <span>Run Automations</span>
+            </button>
             <button type="button" class="btn btn-error btn-sm gap-1.5 font-bold shadow-xs" onclick="openBatchDeleteConfirmModal()">
                 <span>🗑️</span>
                 <span>Delete Selected</span>
@@ -778,6 +782,33 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
                     <button type="submit" class="btn btn-error font-bold shadow-md">Yes, Delete Transactions</button>
                 </div>
             </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- BATCH AUTOMATIONS DRY-RUN MODAL -->
+    <dialog id="batch_automations_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6 max-w-xl">
+            <div class="flex justify-between items-center mb-3">
+                <h3 class="font-extrabold text-xl tracking-tight flex items-center gap-2 text-primary">
+                    <span>⚡</span>
+                    <span>Run Automations on Selected</span>
+                </h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <p class="text-xs text-base-content/70 mb-4">
+                Execute all active Lua rules sequentially on <span id="batch_auto_count" class="font-bold text-base-content">0</span> selected transaction(s).
+                Review the dry-run preview below before applying permanent changes.
+            </p>
+            <div id="batch_auto_preview_area" class="mb-4">
+                <div class="text-xs text-base-content/60 italic text-center py-4">Loading preview...</div>
+            </div>
+            <div class="modal-action flex justify-between items-center">
+                <button type="button" class="btn btn-ghost btn-sm" onclick="batch_automations_modal.close()">Cancel</button>
+                <button type="button" id="batch_auto_apply_btn" class="btn btn-primary btn-sm gap-2" onclick="applyBatchAutomations()">
+                    <span>⚡</span> Apply Changes
+                </button>
+            </div>
         </div>
         <form method="dialog" class="modal-backdrop"><button>close</button></form>
     </dialog>
@@ -1256,6 +1287,65 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
             });
 
             batch_delete_modal.showModal();
+        }
+
+        function openBatchAutomationsModal() {
+            const checkedBoxes = Array.from(document.querySelectorAll('.budget-tx-select-cb:checked'));
+            if (checkedBoxes.length === 0) return;
+
+            document.getElementById('batch_auto_count').innerText = checkedBoxes.length;
+            document.getElementById('batch_auto_preview_area').innerHTML = '<div class="flex justify-center p-4"><span class="loading loading-spinner loading-sm"></span></div>';
+            batch_automations_modal.showModal();
+
+            const csrf = document.querySelector('input[name="csrf_token"]')?.value || '';
+            const txIDs = checkedBoxes.map(cb => cb.value).join(',');
+            const formData = new FormData();
+            formData.append('tx_ids', txIDs);
+
+            fetch('/budgets/' + ACTIVE_BUDGET_ID + '/automations/batch-dry-run', {
+                method: 'POST',
+                headers: { 'X-CSRF-Token': csrf },
+                body: formData
+            })
+            .then(r => r.text())
+            .then(html => {
+                document.getElementById('batch_auto_preview_area').innerHTML = html;
+            })
+            .catch(err => {
+                document.getElementById('batch_auto_preview_area').innerHTML = '<div class="alert alert-error text-xs">Failed loading preview: ' + err + '</div>';
+            });
+        }
+
+        function applyBatchAutomations() {
+            const checkedBoxes = Array.from(document.querySelectorAll('.budget-tx-select-cb:checked'));
+            if (checkedBoxes.length === 0) return;
+
+            const btn = document.getElementById('batch_auto_apply_btn');
+            btn.disabled = true;
+            btn.innerText = 'Applying...';
+
+            const csrf = document.querySelector('input[name="csrf_token"]')?.value || '';
+            const txIDs = checkedBoxes.map(cb => cb.value).join(',');
+            const formData = new FormData();
+            formData.append('tx_ids', txIDs);
+
+            fetch('/budgets/' + ACTIVE_BUDGET_ID + '/automations/batch-run', {
+                method: 'POST',
+                headers: { 'X-CSRF-Token': csrf },
+                body: formData
+            })
+            .then(r => {
+                if (r.ok) {
+                    window.location.reload();
+                } else {
+                    return r.text().then(t => alert('Error: ' + t));
+                }
+            })
+            .catch(err => alert('Failed: ' + err))
+            .finally(() => {
+                btn.disabled = false;
+                btn.innerText = '⚡ Apply Changes';
+            });
         }
 
         function openMergeModal() {

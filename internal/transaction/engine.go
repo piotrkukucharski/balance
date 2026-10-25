@@ -20,6 +20,12 @@ const (
 	OpComposite  = "COMPOSITE"
 )
 
+// InTxAutomationHook defines a callback executed inside ExecuteResolution transaction before commit.
+type InTxAutomationHook func(ctx context.Context, tx *sql.Tx, createdTxIDs []string, agentID, correlationID string) error
+
+// GlobalAutomationHook is the registered automation hook.
+var GlobalAutomationHook InTxAutomationHook
+
 // ComputeCanonicalDedupHash computes SHA256 over length-prefixed fields.
 // SHA256(len_prefixed(account_id, external_tx_id_or_seq, booking_date, amount_minor, currency, clean_payee, clean_reference))
 func ComputeCanonicalDedupHash(accountID, extTxIDOrSeq string, bookingDate, amountMinor int64, currency, payee, ref string) string {
@@ -254,6 +260,13 @@ func ExecuteResolution(ctx context.Context, tenantDB *sql.DB, input ResolveResol
 			if err != nil {
 				return "", fmt.Errorf("failed writing transaction_links: %w", err)
 			}
+		}
+	}
+
+	// 4. Run in-transaction automation pipeline hook if registered
+	if GlobalAutomationHook != nil && len(createdBudgetIDs) > 0 {
+		if err := GlobalAutomationHook(ctx, tx, createdBudgetIDs, input.AgentID, input.CorrelationID); err != nil {
+			return "", fmt.Errorf("automation pipeline error: %w", err)
 		}
 	}
 
