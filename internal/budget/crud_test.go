@@ -423,6 +423,57 @@ func TestAssignFundsReverseWaterfallAndMoveFunds(t *testing.T) {
 	if mFunded != 0 || dFunded != 50000 {
 		t.Fatalf("expected source target=0, dest target=50000, got src=%d dst=%d", mFunded, dFunded)
 	}
+
+	// 5. Test MoveTargetFunds within bucket b2 (Target to Target and Target to Buffer)
+	tDest2, _ := CreateTarget(ctx, tenantDB, CreateTargetInput{
+		BucketID:          b2,
+		Name:              "Secondary Buffer",
+		Priority:          2,
+		AmountMinor:       20000,
+		Currency:          "PLN",
+		RecurrenceCadence: CadenceMonthly,
+		AgentID:           agentID,
+		CorrelationID:     correlationID,
+	})
+
+	// Move 150.00 PLN from tDest to tDest2
+	err = MoveTargetFunds(ctx, tenantDB, MoveTargetFundsInput{
+		BucketID:       b2,
+		SourceTargetID: &tDest,
+		DestTargetID:   &tDest2,
+		Currency:       "PLN",
+		AmountMinor:    15000,
+		AgentID:        agentID,
+		CorrelationID:  correlationID,
+	})
+	if err != nil {
+		t.Fatalf("failed moving target funds: %v", err)
+	}
+
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, tDest).Scan(&dFunded)
+	var d2Funded int64
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, tDest2).Scan(&d2Funded)
+	if dFunded != 35000 || d2Funded != 15000 {
+		t.Fatalf("expected tDest=35000, tDest2=15000, got tDest=%d tDest2=%d", dFunded, d2Funded)
+	}
+
+	// Move 50.00 PLN from tDest2 to bucket buffer (nil DestTargetID)
+	err = MoveTargetFunds(ctx, tenantDB, MoveTargetFundsInput{
+		BucketID:       b2,
+		SourceTargetID: &tDest2,
+		DestTargetID:   nil,
+		Currency:       "PLN",
+		AmountMinor:    5000,
+		AgentID:        agentID,
+		CorrelationID:  correlationID,
+	})
+	if err != nil {
+		t.Fatalf("failed moving target funds to buffer: %v", err)
+	}
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, tDest2).Scan(&d2Funded)
+	if d2Funded != 10000 {
+		t.Fatalf("expected tDest2=10000 after moving to buffer, got %d", d2Funded)
+	}
 }
 
 func TestGetAvailableCurrencies(t *testing.T) {

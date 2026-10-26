@@ -166,6 +166,140 @@ func TestExecuteResolutionMerge(t *testing.T) {
 	}
 }
 
+func TestTransactionTargetFundedLifecycle(t *testing.T) {
+	logger.BindTestLogger(t)
+
+	tmpDir, err := os.MkdirTemp("", "balance_tx_target_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "tenant.db")
+	tenantDB, err := db.OpenDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantDB.Close()
+
+	if err := db.ApplyMigrations(tenantDB, "migrations/tenant"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	now := time.Now().UTC().UnixMicro()
+	agentID := domain.NewUUIDv7()
+	correlationID := domain.NewUUIDv7()
+
+	userPartyID := domain.NewUUIDv7()
+	restPartyID := domain.NewUUIDv7()
+	_, _ = tenantDB.Exec(`
+		INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+		VALUES (?, 1, 'Me', 'INDIVIDUAL', 1, ?, ?),
+		       (?, 1, 'Scooter Co', 'ORGANIZATION', 0, ?, ?)`,
+		userPartyID, agentID, now, restPartyID, agentID, now,
+	)
+
+	userAcctID := domain.NewUUIDv7()
+	restAcctID := domain.NewUUIDv7()
+	_, _ = tenantDB.Exec(`
+		INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+		VALUES (?, 1, ?, 'Checking Account', 'CHECKING', 'PLN', 0, ?, ?),
+		       (?, 1, ?, 'Scooter Vendor', 'EXTERNAL', 'PLN', 0, ?, ?)`,
+		userAcctID, userPartyID, agentID, now, restAcctID, restPartyID, agentID, now,
+	)
+
+	bucketID := domain.NewUUIDv7()
+	_, _ = tenantDB.Exec(`
+		INSERT INTO buckets_projection (id, group_name, name, is_archived, version, updated_at)
+		VALUES (?, 'Living', 'Transport', 0, 1, ?)`,
+		bucketID, now,
+	)
+	_, _ = tenantDB.Exec(`
+		INSERT INTO bucket_currency_balances (bucket_id, currency, balance_minor)
+		VALUES (?, 'PLN', 10000)`, bucketID,
+	)
+
+	targetID := domain.NewUUIDv7()
+	_, _ = tenantDB.Exec(`
+		INSERT INTO targets_projection (
+			id, bucket_id, name, target_type, priority, sort_order, amount_minor, currency,
+			recurrence_cadence, non_spending_strategy, current_funded_minor, is_archived, version, updated_at
+		) VALUES (?, ?, 'Hulajnogi', 'EXPENSE', 1, 0, 10000, 'PLN', 'MONTHLY', 'ROLL_OVER', 10000, 0, 1, ?)`,
+		targetID, bucketID, now,
+	)
+
+	notes := "Dott scooter ride"
+	opID, err := ExecuteResolution(ctx, tenantDB, ResolveResolutionInput{
+		OperationType: OpDirectMove,
+		BudgetTransactions: []BudgetTxInput{
+			{
+				SourceAccountID:      userAcctID,
+				DestinationAccountID: restAcctID,
+				SourceAmountMinor:    2500, // 25.00 PLN
+				SourceCurrency:       "PLN",
+				DestAmountMinor:      2500,
+				DestCurrency:         "PLN",
+				BucketID:             &bucketID,
+				TargetID:             &targetID,
+				Notes:                &notes,
+			},
+		},
+		AgentID:       agentID,
+		CorrelationID: correlationID,
+	})
+	if err != nil {
+		t.Fatalf("execute resolution failed: %v", err)
+	}
+	_ = opID
+
+	var funded int64
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, targetID).Scan(&funded)
+	if funded != 7500 {
+		t.Fatalf("expected target funded 7500 (100 - 25), got %d", funded)
+	}
+
+	// Fetch created budget transaction ID
+	var createdTxID string
+	_ = tenantDB.QueryRow(`SELECT id FROM budget_transactions_current WHERE target_id = ?`, targetID).Scan(&createdTxID)
+
+	// Update transaction to 10.00 PLN
+	updateNotes := "Dott ride (corrected)"
+	err = UpdateBudgetTransaction(ctx, tenantDB, UpdateBudgetTxInput{
+		ID:                   createdTxID,
+		SourceAccountID:      userAcctID,
+		DestinationAccountID: restAcctID,
+		SourceAmountMinor:    1000, // 10.00 PLN
+		SourceCurrency:       "PLN",
+		DestAmountMinor:      1000,
+		DestCurrency:         "PLN",
+		BucketID:             &bucketID,
+		TargetID:             &targetID,
+		Notes:                &updateNotes,
+		AgentID:              agentID,
+		CorrelationID:        correlationID,
+	})
+	if err != nil {
+		t.Fatalf("update budget tx failed: %v", err)
+	}
+
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, targetID).Scan(&funded)
+	if funded != 9000 {
+		t.Fatalf("expected target funded 9000 (100 - 10), got %d", funded)
+	}
+
+	// Delete transaction
+	err = DeleteBudgetTransaction(ctx, tenantDB, createdTxID, agentID, correlationID)
+	if err != nil {
+		t.Fatalf("delete budget tx failed: %v", err)
+	}
+
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, targetID).Scan(&funded)
+	if funded != 10000 {
+		t.Fatalf("expected target funded restored to 10000 after deletion, got %d", funded)
+	}
+}
+
 func TestDeleteRawTransactions(t *testing.T) {
 	logger.BindTestLogger(t)
 

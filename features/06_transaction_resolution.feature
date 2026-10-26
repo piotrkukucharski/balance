@@ -41,6 +41,17 @@ Feature: Two-Tier Transaction Resolution (Move, Merge, Split) and Deduplication
     When I delete the transaction
     Then the transaction should no longer appear in the budget transactions ledger
 
+  Scenario: Creating and editing manual transaction attributed to a target updates target funding
+    Given an open budget "Family Home" with "5,000.00 PLN" in checking account
+    When I create a bucket "Transport" in group "Needs"
+    And I add a target "Scooter" with priority 2, cadence "MONTHLY", amount "100.00 PLN"
+    And I assign "100.00 PLN" from ready to assign to bucket "Transport"
+    Then target "Scooter" in bucket "Transport" should have funded amount "100.00 PLN"
+    When I create a manual transaction with amount "25.00 PLN", date "2026-10-24", note "Scooter ride", bucket "Transport", and target "Scooter"
+    Then target "Scooter" in bucket "Transport" should have funded amount "75.00 PLN"
+    And the bucket "Transport" should have unassigned buffer "0.00 PLN"
+    And the bucket "Transport" should have health status "Underfunded"
+
   Scenario: Batch deletion of multiple budget transactions from ledger
     Given an active checking account in "Family Home" with starting balance of "500.00 PLN"
     And an active bucket "Office Supplies" with available balance of "500.00 PLN"

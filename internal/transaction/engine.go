@@ -243,6 +243,11 @@ func ExecuteResolution(ctx context.Context, tenantDB *sql.DB, input ResolveResol
 			if err := adjustBucketBalance(ctx, tx, *btx.BucketID, btx.SourceCurrency, -btx.SourceAmountMinor); err != nil {
 				return "", err
 			}
+			if btx.TargetID != nil && *btx.TargetID != "" {
+				if err := adjustTargetFunded(ctx, tx, *btx.TargetID, -btx.SourceAmountMinor, now); err != nil {
+					return "", err
+				}
+			}
 		}
 	}
 
@@ -307,6 +312,17 @@ func adjustAccountBalance(ctx context.Context, tx *sql.Tx, accountID, currency s
 
 func adjustBucketBalance(ctx context.Context, tx *sql.Tx, bucketID, currency string, deltaMinor int64) error {
 	return AdjustBucketBalance(ctx, tx, bucketID, currency, deltaMinor)
+}
+
+func adjustTargetFunded(ctx context.Context, tx *sql.Tx, targetID string, deltaMinor, now int64) error {
+	if deltaMinor == 0 || targetID == "" {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `
+		UPDATE targets_projection
+		SET current_funded_minor = max(0, current_funded_minor + ?), updated_at = ?
+		WHERE id = ?`, deltaMinor, now, targetID)
+	return err
 }
 
 // UpdateBudgetTxInput payload for editing an existing budget transaction.
@@ -386,6 +402,11 @@ func UpdateBudgetTransaction(ctx context.Context, tenantDB *sql.DB, input Update
 		if err := adjustBucketBalance(ctx, tx, oldBucketID.String, oldSrcCurrency, oldSrcAmountMinor); err != nil {
 			return err
 		}
+		if oldTargetID.Valid && oldTargetID.String != "" {
+			if err := adjustTargetFunded(ctx, tx, oldTargetID.String, oldSrcAmountMinor, now); err != nil {
+				return err
+			}
+		}
 	}
 
 	// Check new accounts ownership
@@ -412,6 +433,11 @@ func UpdateBudgetTransaction(ctx context.Context, tenantDB *sql.DB, input Update
 	if input.BucketID != nil && *input.BucketID != "" && newSrcUserOwned == 1 && newDstUserOwned == 0 {
 		if err := adjustBucketBalance(ctx, tx, *input.BucketID, input.SourceCurrency, -input.SourceAmountMinor); err != nil {
 			return err
+		}
+		if input.TargetID != nil && *input.TargetID != "" {
+			if err := adjustTargetFunded(ctx, tx, *input.TargetID, -input.SourceAmountMinor, now); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -511,6 +537,11 @@ func BatchDeleteBudgetTransactions(ctx context.Context, tenantDB *sql.DB, txIDs 
 		if bucketID.Valid && bucketID.String != "" && srcUserOwned == 1 && dstUserOwned == 0 {
 			if err := adjustBucketBalance(ctx, tx, bucketID.String, srcCurrency, srcAmountMinor); err != nil {
 				return err
+			}
+			if targetID.Valid && targetID.String != "" {
+				if err := adjustTargetFunded(ctx, tx, targetID.String, srcAmountMinor, now); err != nil {
+					return err
+				}
 			}
 		}
 

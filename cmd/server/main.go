@@ -204,6 +204,7 @@ func main() {
 	tenantEditor.POST("/buckets/:id/archive", workspaceHandler.ArchiveBucket)
 	tenantEditor.POST("/buckets/:id/assign", workspaceHandler.AssignFunds)
 	tenantEditor.POST("/buckets/move", workspaceHandler.MoveFunds)
+	tenantEditor.POST("/targets/move", workspaceHandler.MoveTargetFunds)
 	tenantEditor.POST("/buckets/auto-assign", workspaceHandler.AutoAssign)
 	tenantEditor.POST("/budget/auto-assign", workspaceHandler.AutoAssign)
 	tenantEditor.POST("/targets", workspaceHandler.CreateTarget)

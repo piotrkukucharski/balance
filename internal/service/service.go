@@ -499,6 +499,7 @@ type AddTransactionInput struct {
 	DestAmountMinor     int64
 	DestCurrency        string
 	BucketID            *string
+	TargetID            *string
 	Notes               string
 	TransactionDate     time.Time
 }
@@ -599,6 +600,7 @@ func (s *AppService) AddTransaction(ctx context.Context, input AddTransactionInp
 				DestAmountMinor:      destAmountMinor,
 				DestCurrency:         dstCurr,
 				BucketID:             input.BucketID,
+				TargetID:             input.TargetID,
 				Notes:                &notes,
 				TransactionDate:      txDateMicros,
 			},

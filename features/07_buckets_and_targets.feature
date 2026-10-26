@@ -120,6 +120,23 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     And the bucket "Dest Envelope" balance should be "500.00 PLN"
     And target "Dest Target" in bucket "Dest Envelope" should have funded amount "500.00 PLN"
 
+  Scenario: Reallocating funds between targets within an envelope (YNAB style)
+    Given an open budget "Family Home" with "5,000.00 PLN" in checking account
+    When I create a bucket "Transport" in group "Needs"
+    And I add a target "Scooter" with priority 2, cadence "MONTHLY", amount "100.00 PLN"
+    And I add a target "Taxi" with priority 2, cadence "MONTHLY", amount "100.00 PLN"
+    And I assign "200.00 PLN" from ready to assign to bucket "Transport"
+    Then target "Scooter" in bucket "Transport" should have funded amount "100.00 PLN"
+    And target "Taxi" in bucket "Transport" should have funded amount "100.00 PLN"
+    When I move "30.00 PLN" from target "Scooter" to target "Taxi" in bucket "Transport"
+    Then target "Scooter" in bucket "Transport" should have funded amount "70.00 PLN"
+    And target "Taxi" in bucket "Transport" should have funded amount "130.00 PLN"
+    And the bucket "Transport" should have unassigned buffer "0.00 PLN"
+    When I move "20.00 PLN" from target "Taxi" to buffer in bucket "Transport"
+    Then target "Taxi" in bucket "Transport" should have funded amount "110.00 PLN"
+    And the bucket "Transport" should have unassigned buffer "20.00 PLN"
+
+
   Scenario: Evaluating bucket unassigned buffer and health status with over-allocation
     Given an open budget "Family Home" with "5,000.00 PLN" in checking account
     When I create a bucket "Car Maintenance" in group "Needs"

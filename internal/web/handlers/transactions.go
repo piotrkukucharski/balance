@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -79,7 +80,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 	filterAcctID := c.QueryParam("account_id")
 	filterPartyID := c.QueryParam("party_id")
 
-	// 1. Fetch buckets for dropdowns
+	// 1. Fetch buckets and targets for dropdowns
 	bucketRows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT id, name FROM buckets_projection 
 		WHERE is_archived = 0 
@@ -101,6 +102,31 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 			qaBucketOptions.WriteString(opt)
 		}
 	}
+
+	// Fetch targets map grouped by bucket for client-side selection
+	type clientTarget struct {
+		ID       string `json:"id"`
+		BucketID string `json:"bucket_id"`
+		Name     string `json:"name"`
+		Currency string `json:"currency"`
+	}
+	targetsList := make([]clientTarget, 0)
+	targetRows, tErr := tenantDB.QueryContext(c.Request().Context(), `
+		SELECT id, bucket_id, COALESCE(name, 'Priority ' || priority), currency
+		FROM targets_projection
+		WHERE is_archived = 0
+		ORDER BY priority DESC, sort_order ASC`)
+	if tErr == nil {
+		defer targetRows.Close()
+		for targetRows.Next() {
+			var ct clientTarget
+			if err := targetRows.Scan(&ct.ID, &ct.BucketID, &ct.Name, &ct.Currency); err == nil {
+				targetsList = append(targetsList, ct)
+			}
+		}
+	}
+	targetsJSONBytes, _ := json.Marshal(targetsList)
+	targetsJSON := string(targetsJSONBytes)
 
 	// 2. Fetch user checking/cash accounts with balances for pills & dropdowns
 	acctRows, err := tenantDB.QueryContext(c.Request().Context(), `
@@ -237,10 +263,12 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 	query := `
 		SELECT bt.id, bt.source_amount_minor, bt.source_currency, bt.transaction_date,
 		       COALESCE(bt.notes, ''), COALESCE(bp.name, 'Unassigned'), COALESCE(bt.bucket_id, ''),
+		       COALESCE(bt.target_id, ''), COALESCE(tp.name, ''),
 		       bt.source_account_id, bt.destination_account_id,
 		       sa.name, da.name, sp.is_user_owned, dp.is_user_owned
 		FROM budget_transactions_current bt
 		LEFT JOIN buckets_projection bp ON bt.bucket_id = bp.id
+		LEFT JOIN targets_projection tp ON bt.target_id = tp.id
 		JOIN accounts_current sa ON bt.source_account_id = sa.id
 		JOIN accounts_current da ON bt.destination_account_id = da.id
 		JOIN parties_current sp ON sa.party_id = sp.id
@@ -272,10 +300,11 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 
 	for rows.Next() {
 		hasTxs = true
-		var id, curr, notes, bucketName, bucketIDVal, srcAcctID, dstAcctID, srcAcctName, dstAcctName string
+		var id, curr, notes, bucketName, bucketIDVal, targetIDVal, targetName, srcAcctID, dstAcctID, srcAcctName, dstAcctName string
 		var amountMinor, txDate int64
 		var srcUserOwned, dstUserOwned int
 		rows.Scan(&id, &amountMinor, &curr, &txDate, &notes, &bucketName, &bucketIDVal,
+			&targetIDVal, &targetName,
 			&srcAcctID, &dstAcctID, &srcAcctName, &dstAcctName, &srcUserOwned, &dstUserOwned)
 
 		dateStr := time.UnixMicro(txDate).Format("2006-01-02")
@@ -303,7 +332,9 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		}
 
 		bucketBadge := fmt.Sprintf(`<span class="badge badge-soft badge-primary font-semibold text-xs">%s</span>`, bucketName)
-		if bucketName == "Unassigned" {
+		if targetName != "" {
+			bucketBadge = fmt.Sprintf(`<div class="flex flex-col gap-0.5"><span class="badge badge-soft badge-primary font-semibold text-xs">%s</span><span class="text-[10px] text-base-content/60 font-medium">🎯 %s</span></div>`, bucketName, html.EscapeString(targetName))
+		} else if bucketName == "Unassigned" {
 			bucketBadge = `<span class="badge badge-soft badge-ghost text-xs">Unassigned</span>`
 		}
 
@@ -314,7 +345,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 			},
 			{
 				Label:   "✏️ Edit",
-				OnClick: fmt.Sprintf("openEditTxModal('%s', '%.2f', '%s', '%s', '%s', '%s')", id, amountMajor, dateStr, escapedNotes, bucketIDVal, srcAcctID),
+				OnClick: fmt.Sprintf("openEditTxModal('%s', '%.2f', '%s', '%s', '%s', '%s', '%s')", id, amountMajor, dateStr, escapedNotes, bucketIDVal, targetIDVal, srcAcctID),
 			},
 			{
 				Label:      "🗑️ Delete",
@@ -721,15 +752,18 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
                                                         %s
                                                     </select>
                                                 </div>
-                                                <div class="sm:col-span-3">
+                                                <div class="sm:col-span-2">
                                                     <input type="text" id="qa_payee" name="notes" placeholder="Payee / Merchant (e.g. Żabka)" list="party_suggestions" class="input input-sm input-bordered w-full text-xs focus:input-primary" />
                                                     <select id="qa_dest_account_id" name="dest_account_id" class="select select-sm select-bordered w-full text-xs focus:select-primary hidden">
                                                         %s
                                                     </select>
                                                 </div>
-                                                <div class="sm:col-span-2" id="qa_bucket_wrapper">
-                                                    <select id="qa_bucket_id" name="bucket_id" class="select select-sm select-bordered w-full text-xs focus:select-primary">
+                                                <div class="sm:col-span-3 flex gap-1.5" id="qa_bucket_wrapper">
+                                                    <select id="qa_bucket_id" name="bucket_id" class="select select-sm select-bordered w-1/2 text-xs focus:select-primary" onchange="syncQaTargets()">
                                                         %s
+                                                    </select>
+                                                    <select id="qa_target_id" name="target_id" class="select select-sm select-bordered w-1/2 text-xs focus:select-primary">
+                                                        <option value="">🎯 Target (opt)</option>
                                                     </select>
                                                 </div>
                                                 <div class="sm:col-span-2">
@@ -1074,11 +1108,17 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
                     </fieldset>
                     <fieldset class="fieldset">
                         <legend class="fieldset-legend">Envelope (Bucket)</legend>
-                        <select id="edit_tx_bucket" name="bucket_id" class="select select-bordered w-full select-md focus:select-primary">
+                        <select id="edit_tx_bucket" name="bucket_id" class="select select-bordered w-full select-md focus:select-primary" onchange="syncEditTxTargets()">
                             %s
                         </select>
                     </fieldset>
                 </div>
+                <fieldset class="fieldset">
+                    <legend class="fieldset-legend">Target (Optional)</legend>
+                    <select id="edit_tx_target" name="target_id" class="select select-bordered w-full select-md focus:select-primary">
+                        <option value="">🎯 Unassigned to specific target</option>
+                    </select>
+                </fieldset>
                 <fieldset class="fieldset">
                     <legend class="fieldset-legend">Description / Notes</legend>
                     <input id="edit_tx_notes" type="text" name="notes" placeholder="e.g. Lunch with team or Groceries" class="input input-bordered w-full input-md focus:input-primary" />
@@ -1116,8 +1156,15 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 
                 <fieldset class="fieldset">
                     <legend class="fieldset-legend">Assign to Envelope (Bucket)</legend>
-                    <select id="resolve_bucket" name="bucket_id" class="select select-bordered w-full select-md focus:select-primary">
+                    <select id="resolve_bucket" name="bucket_id" class="select select-bordered w-full select-md focus:select-primary" onchange="syncResolveTargets()">
                         %s
+                    </select>
+                </fieldset>
+
+                <fieldset class="fieldset">
+                    <legend class="fieldset-legend">Target (Optional)</legend>
+                    <select id="resolve_target" name="target_id" class="select select-bordered w-full select-md focus:select-primary">
+                        <option value="">🎯 Unassigned to specific target</option>
                     </select>
                 </fieldset>
 
@@ -1516,7 +1563,42 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
             }
         }
 
-        function openEditTxModal(id, amount, dateStr, notes, bucketId, accountId) {
+        const ALL_TARGETS = %s;
+
+        function populateTargetSelect(bucketId, selectEl, selectedTargetId) {
+            selectEl.innerHTML = '<option value="">🎯 Unassigned to specific target</option>';
+            if (!bucketId) return;
+            const filtered = ALL_TARGETS.filter(t => t.bucket_id === bucketId);
+            filtered.forEach(t => {
+                const opt = document.createElement('option');
+                opt.value = t.id;
+                opt.innerText = '🎯 ' + t.name + ' (' + t.currency + ')';
+                if (selectedTargetId && t.id === selectedTargetId) {
+                    opt.selected = true;
+                }
+                selectEl.appendChild(opt);
+            });
+        }
+
+        function syncQaTargets() {
+            const bId = document.getElementById('qa_bucket_id').value;
+            const targetSelect = document.getElementById('qa_target_id');
+            populateTargetSelect(bId, targetSelect, '');
+        }
+
+        function syncEditTxTargets() {
+            const bId = document.getElementById('edit_tx_bucket').value;
+            const targetSelect = document.getElementById('edit_tx_target');
+            populateTargetSelect(bId, targetSelect, '');
+        }
+
+        function syncResolveTargets() {
+            const bId = document.getElementById('resolve_bucket').value;
+            const targetSelect = document.getElementById('resolve_target');
+            populateTargetSelect(bId, targetSelect, '');
+        }
+
+        function openEditTxModal(id, amount, dateStr, notes, bucketId, targetId, accountId) {
             document.getElementById('edit_tx_amount').value = amount;
             document.getElementById('edit_tx_date').value = dateStr;
             document.getElementById('edit_tx_notes').value = notes;
@@ -1525,6 +1607,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
             } else {
                 document.getElementById('edit_tx_bucket').value = '';
             }
+            populateTargetSelect(bucketId, document.getElementById('edit_tx_target'), targetId);
             if (accountId) {
                 document.getElementById('edit_tx_account').value = accountId;
             }
@@ -1543,6 +1626,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
             } else {
                 document.getElementById('resolve_bucket').value = '';
             }
+            syncResolveTargets();
             document.getElementById('resolve_raw_form').action = '/budgets/' + ACTIVE_BUDGET_ID + '/transactions/raw/' + rawId + '/resolve';
             resolve_raw_modal.showModal();
         }
@@ -1639,6 +1723,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		csrfToken, editAcctOptions.String(), editBucketOptions.String(),
 		csrfToken, bucketOptions.String(),
 		bucketOptions.String(), budgetID,
+		targetsJSON,
 		DateTimeFormatterScript())
 
 	_ = role
@@ -2411,6 +2496,12 @@ func (h *TransactionsHandler) AddManualTransaction(c echo.Context) error {
 			bIDPtr = &bVal
 		}
 
+		var tIDPtr *string
+		tVal := c.FormValue("target_id")
+		if tVal != "" && bIDPtr != nil {
+			tIDPtr = &tVal
+		}
+
 		var dMinor int64
 		if dAmt := c.FormValue("dest_amount"); dAmt != "" {
 			if parsedDAmt, err := parseFlexibleAmount(dAmt); err == nil && parsedDAmt > 0 {
@@ -2428,6 +2519,7 @@ func (h *TransactionsHandler) AddManualTransaction(c echo.Context) error {
 			AmountMinor:       amountMinor,
 			DestAmountMinor:   dMinor,
 			BucketID:          bIDPtr,
+			TargetID:          tIDPtr,
 			Notes:             strings.TrimSpace(c.FormValue("notes")),
 			TransactionDate:   time.UnixMicro(txDate),
 		})
@@ -2466,6 +2558,12 @@ func (h *TransactionsHandler) AddManualTransaction(c echo.Context) error {
 	bucketIDVal := c.FormValue("bucket_id")
 	if bucketIDVal != "" {
 		bucketIDPtr = &bucketIDVal
+	}
+
+	var targetIDPtr *string
+	targetIDVal := c.FormValue("target_id")
+	if targetIDVal != "" && bucketIDPtr != nil {
+		targetIDPtr = &targetIDVal
 	}
 
 	var srcAcct, dstAcct string
@@ -2531,6 +2629,7 @@ func (h *TransactionsHandler) AddManualTransaction(c echo.Context) error {
 				DestAmountMinor:      destAmountMinor,
 				DestCurrency:         dstCurr,
 				BucketID:             bucketIDPtr,
+				TargetID:             targetIDPtr,
 				Notes:                &notes,
 				TransactionDate:      txDate,
 			},
@@ -2605,6 +2704,12 @@ func (h *TransactionsHandler) UpdateTransaction(c echo.Context) error {
 		bucketIDPtr = &bucketIDVal
 	}
 
+	var targetIDPtr *string
+	targetIDVal := c.FormValue("target_id")
+	if targetIDVal != "" && bucketIDPtr != nil {
+		targetIDPtr = &targetIDVal
+	}
+
 	err = transaction.UpdateBudgetTransaction(c.Request().Context(), tenantDB, transaction.UpdateBudgetTxInput{
 		ID:                   txID,
 		SourceAccountID:      newSrcAcctID,
@@ -2614,6 +2719,7 @@ func (h *TransactionsHandler) UpdateTransaction(c echo.Context) error {
 		DestAmountMinor:      amountMinor,
 		DestCurrency:         curDstCurr,
 		BucketID:             bucketIDPtr,
+		TargetID:             targetIDPtr,
 		TransactionDate:      txDate,
 		Notes:                &notes,
 		AgentID:              userID,
@@ -2739,6 +2845,12 @@ func (h *TransactionsHandler) ResolveRawTransaction(c echo.Context) error {
 		bucketIDPtr = &bucketIDVal
 	}
 
+	var targetIDPtr *string
+	targetIDVal := c.FormValue("target_id")
+	if targetIDVal != "" && bucketIDPtr != nil {
+		targetIDPtr = &targetIDVal
+	}
+
 	notes := strings.TrimSpace(c.FormValue("notes"))
 	if notes == "" {
 		notes = rawPayee
@@ -2776,6 +2888,7 @@ func (h *TransactionsHandler) ResolveRawTransaction(c echo.Context) error {
 				DestAmountMinor:      absAmountMinor,
 				DestCurrency:         currency,
 				BucketID:             bucketIDPtr,
+				TargetID:             targetIDPtr,
 				Notes:                &notes,
 				TransactionDate:      txDate,
 			},

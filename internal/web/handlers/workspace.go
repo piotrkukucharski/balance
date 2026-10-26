@@ -3034,7 +3034,10 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             <!-- Target Management Section -->
             <div class="flex justify-between items-center mb-3">
                 <h4 class="font-bold text-sm uppercase tracking-wider text-base-content/70">Targets in this Bucket</h4>
-                <button type="button" class="btn btn-sm sm:btn-xs btn-primary gap-1 font-semibold touch-manipulation" onclick="openNewTargetModal()">+ Add Target</button>
+                <div class="flex items-center gap-2">
+                    <button type="button" class="btn btn-sm sm:btn-xs btn-outline btn-secondary gap-1 font-semibold touch-manipulation" onclick="openMoveTargetFundsModal()">⇄ Move Between Targets</button>
+                    <button type="button" class="btn btn-sm sm:btn-xs btn-primary gap-1 font-semibold touch-manipulation" onclick="openNewTargetModal()">+ Add Target</button>
+                </div>
             </div>
 
             <div id="drawer_targets_container" class="space-y-3 mb-6">
@@ -3044,6 +3047,55 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             <div class="modal-action">
                 <button type="button" class="btn btn-ghost btn-sm" onclick="bucket_drawer.close()">Close</button>
             </div>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Move Funds Between Targets Modal (YNAB style inside bucket) -->
+    <dialog id="move_target_funds_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Reallocate Target Funds</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form method="POST" action="/budgets/%s/targets/move" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="%s" />
+                <input type="hidden" name="horizon" value="%s" />
+                <input type="hidden" name="filter" value="%s" />
+                <input type="hidden" id="move_target_bucket_id" name="bucket_id" value="" />
+                <input type="hidden" id="move_target_currency" name="currency" value="" />
+
+                <div class="text-xs text-base-content/70">
+                    Transfer funded amounts directly between targets or envelope buffer in <span id="move_target_bucket_name" class="font-bold text-primary"></span>.
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">From (Source)</span></label>
+                        <select id="move_source_target_id" name="source_target_id" required class="select select-bordered w-full select-md focus:select-primary" onchange="updateMoveTargetOptions()">
+                        </select>
+                    </div>
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">To (Destination)</span></label>
+                        <select id="move_dest_target_id" name="dest_target_id" required class="select select-bordered w-full select-md focus:select-primary">
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Amount to Move</span></label>
+                    <div class="join w-full">
+                        <input type="number" step="0.01" min="0.01" inputmode="decimal" id="move_target_amount" name="amount" required autofocus placeholder="25.00" class="input input-bordered join-item w-full input-md focus:input-primary font-mono font-bold" />
+                        <span id="move_target_curr_label" class="btn join-item btn-neutral no-animation">PLN</span>
+                    </div>
+                </div>
+
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="move_target_funds_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Reallocate Funds</button>
+                </div>
+            </form>
         </div>
         <form method="dialog" class="modal-backdrop"><button>close</button></form>
     </dialog>
@@ -3714,6 +3766,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                         '<div class="flex justify-between items-center text-xs mt-1">' +
                             '<span class="font-mono">Funded: ' + (t.CurrentFundedMinor/100).toFixed(2) + ' / Required: ' + (t.RequiredMinor/100).toFixed(2) + ' ' + t.Currency + '</span>' +
                             '<div class="flex items-center gap-1">' +
+                                '<button type="button" class="btn btn-ghost btn-sm sm:btn-xs text-secondary font-semibold touch-manipulation" onclick="openMoveTargetFundsModal(\'' + t.ID + '\')">⇄ Move</button>' +
                                 '<button type="button" class="btn btn-ghost btn-sm sm:btn-xs text-primary font-semibold target-edit-btn touch-manipulation" onclick="openEditTargetModal(\'' + t.ID + '\')">Edit</button>' +
                                 '<form method="POST" action="/budgets/' + currentBudgetID + '/targets/' + t.ID + '/delete" onsubmit="return confirm(\'Delete this target?\')">' +
                                     '<input type="hidden" name="csrf_token" value="' + csrfTokenVal + '" />' +
@@ -3792,6 +3845,67 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             switchAmountMode(mode);
 
             target_modal.showModal();
+        }
+
+        function openMoveTargetFundsModal(preselectedSrcID, preselectedDstID) {
+            const b = bucketsData.find(x => x.ID === activeDrawerBucketID);
+            if (!b) return;
+
+            document.getElementById('move_target_bucket_id').value = b.ID;
+            document.getElementById('move_target_bucket_name').innerText = b.Name;
+            document.getElementById('move_target_currency').value = b.Currency;
+            document.getElementById('move_target_curr_label').innerText = b.Currency;
+
+            const srcSelect = document.getElementById('move_source_target_id');
+            const dstSelect = document.getElementById('move_dest_target_id');
+
+            srcSelect.innerHTML = '';
+            dstSelect.innerHTML = '';
+
+            // Add unassigned buffer option
+            const bufferOpt = document.createElement('option');
+            bufferOpt.value = 'BUFFER';
+            bufferOpt.innerText = '📂 Envelope Buffer (' + (b.UnassignedBufferMinor / 100).toFixed(2) + ' ' + b.Currency + ')';
+            srcSelect.appendChild(bufferOpt);
+
+            const dstBufferOpt = document.createElement('option');
+            dstBufferOpt.value = 'BUFFER';
+            dstBufferOpt.innerText = '📂 Envelope Buffer';
+            dstSelect.appendChild(dstBufferOpt);
+
+            if (b.Targets) {
+                b.Targets.forEach(t => {
+                    const opt1 = document.createElement('option');
+                    opt1.value = t.ID;
+                    opt1.innerText = (t.Name || 'Priority ' + t.Priority) + ' (Funded: ' + (t.CurrentFundedMinor / 100).toFixed(2) + ' ' + t.Currency + ')';
+                    srcSelect.appendChild(opt1);
+
+                    const opt2 = document.createElement('option');
+                    opt2.value = t.ID;
+                    opt2.innerText = (t.Name || 'Priority ' + t.Priority) + ' (Needs: ' + (t.NeededMinor / 100).toFixed(2) + ' ' + t.Currency + ')';
+                    dstSelect.appendChild(opt2);
+                });
+            }
+
+            if (preselectedSrcID) {
+                srcSelect.value = preselectedSrcID;
+            } else if (b.Targets && b.Targets.length > 0) {
+                srcSelect.value = b.Targets[0].ID;
+            }
+
+            if (preselectedDstID) {
+                dstSelect.value = preselectedDstID;
+            } else if (b.Targets && b.Targets.length > 1) {
+                dstSelect.value = b.Targets[1].ID;
+            } else {
+                dstSelect.value = 'BUFFER';
+            }
+
+            move_target_funds_modal.showModal();
+        }
+
+        function updateMoveTargetOptions() {
+            // Optional sync logic between selects
         }
 
         function openNewTargetModal() {
@@ -4470,6 +4584,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		csrfToken, horizonParam, filterParam,
 		csrfToken, horizonParam, filterParam, defaultCurr, defaultCurr,
 		budgetID, csrfToken, horizonParam, filterParam, defaultCurr, bucketSelectOptions.String(), defaultCurr,
+		budgetID, csrfToken, horizonParam, filterParam,
 		budgetID, csrfToken, horizonParam, filterParam, targetCurrencyOptions.String(),
 		budgetID, csrfToken, defaultCurr, horizonParam, filterParam, toJSONString(allBuckets))
 
@@ -4700,6 +4815,49 @@ func (h *WorkspaceHandler) MoveFunds(c echo.Context) error {
 	}
 
 	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "moved", dstID))
+}
+
+// MoveTargetFunds moves funds between targets or buffer within a bucket.
+func (h *WorkspaceHandler) MoveTargetFunds(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	bucketID := c.FormValue("bucket_id")
+	srcTargetID := c.FormValue("source_target_id")
+	dstTargetID := c.FormValue("dest_target_id")
+	currency := c.FormValue("currency")
+	if currency == "" {
+		currency = "PLN"
+	}
+	amtStr := c.FormValue("amount")
+	var amtFloat float64
+	fmt.Sscanf(amtStr, "%f", &amtFloat)
+	amtMinor := int64(amtFloat * 100)
+
+	var srcPtr, dstPtr *string
+	if srcTargetID != "" && srcTargetID != "BUFFER" {
+		srcPtr = &srcTargetID
+	}
+	if dstTargetID != "" && dstTargetID != "BUFFER" {
+		dstPtr = &dstTargetID
+	}
+
+	err := budget.MoveTargetFunds(c.Request().Context(), tenantDB, budget.MoveTargetFundsInput{
+		BucketID:       bucketID,
+		SourceTargetID: srcPtr,
+		DestTargetID:   dstPtr,
+		Currency:       currency,
+		AmountMinor:    amtMinor,
+		AgentID:        userID,
+		CorrelationID:  corrID,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "target_moved", bucketID))
 }
 
 // AutoAssign triggers priority waterfall auto-assign from available pool.

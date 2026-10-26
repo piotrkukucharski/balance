@@ -22,9 +22,10 @@ const (
 	EventTypeFundsAssigned  = "FUNDS_ASSIGNED"
 	EventTypeFundsMoved     = "FUNDS_MOVED"
 
-	EventTypeTargetCreated  = "TARGET_CREATED"
-	EventTypeTargetUpdated  = "TARGET_UPDATED"
-	EventTypeTargetArchived = "TARGET_ARCHIVED"
+	EventTypeTargetCreated       = "TARGET_CREATED"
+	EventTypeTargetUpdated       = "TARGET_UPDATED"
+	EventTypeTargetArchived      = "TARGET_ARCHIVED"
+	EventTypeTargetFundsMoved    = "TARGET_FUNDS_MOVED"
 )
 
 // CreateBucketInput payload
@@ -97,6 +98,17 @@ type AssignFundsInput struct {
 type MoveFundsInput struct {
 	SourceBucketID string
 	DestBucketID   string
+	Currency       string
+	AmountMinor    int64 // strictly positive
+	AgentID        string
+	CorrelationID  string
+}
+
+// MoveTargetFundsInput payload for moving funds between targets or buffer within a bucket
+type MoveTargetFundsInput struct {
+	BucketID       string
+	SourceTargetID *string // nil means source is bucket's unassigned buffer
+	DestTargetID   *string // nil means destination is bucket's unassigned buffer
 	Currency       string
 	AmountMinor    int64 // strictly positive
 	AgentID        string
@@ -968,6 +980,147 @@ func MoveFunds(ctx context.Context, tenantDB *sql.DB, input MoveFundsInput) erro
 	var dstVer int
 	_ = tx.QueryRowContext(ctx, `SELECT version FROM buckets_projection WHERE id = ?`, input.DestBucketID).Scan(&dstVer)
 	_, _ = tx.ExecContext(ctx, `UPDATE buckets_projection SET version = ?, updated_at = ? WHERE id = ?`, dstVer+1, now, input.DestBucketID)
+
+	return tx.Commit()
+}
+
+// MoveTargetFunds transfers funds directly between targets or between target and buffer within the same bucket.
+func MoveTargetFunds(ctx context.Context, tenantDB *sql.DB, input MoveTargetFundsInput) error {
+	if input.BucketID == "" {
+		return errors.New("bucket ID is required")
+	}
+	if input.SourceTargetID == nil && input.DestTargetID == nil {
+		return errors.New("at least one of source or destination target ID must be specified")
+	}
+	if input.SourceTargetID != nil && input.DestTargetID != nil && *input.SourceTargetID == *input.DestTargetID {
+		return errors.New("cannot move funds to the same target")
+	}
+	if input.AmountMinor <= 0 {
+		return errors.New("amount must be strictly positive")
+	}
+	if input.Currency == "" {
+		input.Currency = "PLN"
+	}
+
+	tx, err := tenantDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC().UnixMicro()
+
+	// Verify bucket balance
+	var bucketBal int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT COALESCE(balance_minor, 0)
+		FROM bucket_currency_balances
+		WHERE bucket_id = ? AND currency = ?`, input.BucketID, input.Currency).Scan(&bucketBal)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	// Calculate total funded across targets in bucket
+	var totalFunded int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(current_funded_minor), 0)
+		FROM targets_projection
+		WHERE bucket_id = ? AND currency = ? AND is_archived = 0`, input.BucketID, input.Currency).Scan(&totalFunded)
+	if err != nil {
+		return err
+	}
+
+	// 1. If moving from a target, verify and deduct
+	if input.SourceTargetID != nil {
+		var srcFunded int64
+		var srcBucketID string
+		err = tx.QueryRowContext(ctx, `
+			SELECT current_funded_minor, bucket_id
+			FROM targets_projection
+			WHERE id = ? AND is_archived = 0`, *input.SourceTargetID).Scan(&srcFunded, &srcBucketID)
+		if err != nil {
+			return fmt.Errorf("source target not found: %w", err)
+		}
+		if srcBucketID != input.BucketID {
+			return errors.New("source target does not belong to the specified bucket")
+		}
+		if srcFunded < input.AmountMinor {
+			return fmt.Errorf("insufficient funds in source target (has %d, needs %d)", srcFunded, input.AmountMinor)
+		}
+
+		_, err = tx.ExecContext(ctx, `
+			UPDATE targets_projection
+			SET current_funded_minor = current_funded_minor - ?, updated_at = ?
+			WHERE id = ?`, input.AmountMinor, now, *input.SourceTargetID)
+		if err != nil {
+			return fmt.Errorf("failed deducting source target: %w", err)
+		}
+	} else {
+		// Moving from bucket unassigned buffer: verify buffer has sufficient funds
+		unassignedBuffer := bucketBal - totalFunded
+		if unassignedBuffer < input.AmountMinor {
+			return fmt.Errorf("insufficient unassigned buffer in bucket (has %d, needs %d)", unassignedBuffer, input.AmountMinor)
+		}
+	}
+
+	// 2. If moving to a target, increment
+	if input.DestTargetID != nil {
+		var dstBucketID string
+		err = tx.QueryRowContext(ctx, `
+			SELECT bucket_id
+			FROM targets_projection
+			WHERE id = ? AND is_archived = 0`, *input.DestTargetID).Scan(&dstBucketID)
+		if err != nil {
+			return fmt.Errorf("destination target not found: %w", err)
+		}
+		if dstBucketID != input.BucketID {
+			return errors.New("destination target does not belong to the specified bucket")
+		}
+
+		_, err = tx.ExecContext(ctx, `
+			UPDATE targets_projection
+			SET current_funded_minor = current_funded_minor + ?, updated_at = ?
+			WHERE id = ?`, input.AmountMinor, now, *input.DestTargetID)
+		if err != nil {
+			return fmt.Errorf("failed crediting destination target: %w", err)
+		}
+	}
+
+	// Record audit event
+	payload, _ := json.Marshal(map[string]any{
+		"bucket_id":        input.BucketID,
+		"source_target_id": input.SourceTargetID,
+		"dest_target_id":   input.DestTargetID,
+		"currency":         input.Currency,
+		"amount_minor":     input.AmountMinor,
+	})
+
+	var targetAggregateID string
+	if input.DestTargetID != nil {
+		targetAggregateID = *input.DestTargetID
+	} else if input.SourceTargetID != nil {
+		targetAggregateID = *input.SourceTargetID
+	}
+
+	var curVer int
+	if targetAggregateID != "" {
+		_ = tx.QueryRowContext(ctx, `SELECT version FROM targets_projection WHERE id = ?`, targetAggregateID).Scan(&curVer)
+		curVer++
+		_, _ = tx.ExecContext(ctx, `UPDATE targets_projection SET version = ? WHERE id = ?`, curVer, targetAggregateID)
+	} else {
+		targetAggregateID = input.BucketID
+		curVer = 1
+	}
+
+	eventID := domain.NewUUIDv7()
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO target_events (event_id, aggregate_id, bucket_id, version, event_type, payload, agent_id, correlation_id, occurred_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		eventID, targetAggregateID, input.BucketID, curVer, EventTypeTargetFundsMoved, string(payload), input.AgentID, input.CorrelationID, now,
+	)
+	if err != nil {
+		return fmt.Errorf("failed recording target funds moved event: %w", err)
+	}
 
 	return tx.Commit()
 }

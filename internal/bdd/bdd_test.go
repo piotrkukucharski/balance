@@ -1910,6 +1910,67 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	ctx.Step(`^I create a manual transaction with amount "([^"]*)", date "([^"]*)", note "([^"]*)", bucket "([^"]*)", and target "([^"]*)"$`, func(amountStr, dateStr, note, bucketName, targetName string) error {
+		targetBudgetID := tc.activeBudgetID
+		if targetBudgetID == "" {
+			targetBudgetID = "01900000-0000-7000-8000-000000000001"
+		}
+		bDB, err := tc.tenantMgr.GetTenantDB(targetBudgetID, true)
+		if err != nil {
+			return err
+		}
+
+		parts := strings.Split(amountStr, " ")
+		amt := parts[0]
+
+		var bucketID string
+		if bucketName != "" {
+			_ = bDB.QueryRowContext(context.Background(), `SELECT id FROM buckets_projection WHERE name = ? AND is_archived = 0`, bucketName).Scan(&bucketID)
+		}
+		var targetID string
+		if targetName != "" {
+			_ = bDB.QueryRowContext(context.Background(), `SELECT id FROM targets_projection WHERE name = ? AND is_archived = 0`, targetName).Scan(&targetID)
+		}
+
+		form := url.Values{}
+		form.Set("amount", amt)
+		form.Set("transaction_date", dateStr)
+		form.Set("notes", note)
+		if bucketID != "" {
+			form.Set("bucket_id", bucketID)
+		}
+		if targetID != "" {
+			form.Set("target_id", targetID)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/budgets/"+targetBudgetID+"/transactions", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(targetBudgetID)
+		userID := tc.activeUserID
+		if userID == "" {
+			userID = "user_1"
+		}
+		c.Set(handlers.ContextUserIDKey, userID)
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.AddManualTransaction(c)
+		tc.lastResponse = rec
+		if err != nil {
+			return err
+		}
+
+		var txID string
+		if err := bDB.QueryRowContext(context.Background(), `SELECT id FROM budget_transactions_current WHERE notes = ? ORDER BY updated_at DESC LIMIT 1`, note).Scan(&txID); err != nil {
+			return fmt.Errorf("failed to find created transaction with note %q: %w", note, err)
+		}
+		tc.activeTxID = txID
+		return nil
+	})
+
 	ctx.Step(`^the transaction should appear in the budget transactions ledger with amount "([^"]*)"$`, func(amountStr string) error {
 		bDB, err := tc.tenantMgr.GetTenantDB("01900000-0000-7000-8000-000000000001", true)
 		if err != nil {
@@ -3734,6 +3795,34 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return err
 	})
 
+	ctx.Step(`^I add a target "([^"]*)" with priority (\d+), cadence "([^"]*)", amount "([^"]*)"$`, func(name string, prio int, cadence, amt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var defaultCurr string
+		_ = tc.mainDB.QueryRow(`SELECT default_currency FROM budgets WHERE id = ?`, tc.activeBudgetID).Scan(&defaultCurr)
+		if defaultCurr == "" {
+			defaultCurr = "PLN"
+		}
+		tID, err := budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:          activeBucketID,
+			Name:              name,
+			TargetType:        "EXPENSE",
+			Priority:          prio,
+			AmountMinor:       parseAmountStr(amt),
+			Currency:          defaultCurr,
+			RecurrenceCadence: cadence,
+			AgentID:           tc.activeUserID,
+			CorrelationID:     domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		activeTargetID = tID
+		return nil
+	})
+
 	ctx.Step(`^I add a target "([^"]*)" with priority (\d+), cadence "([^"]*)", amount "([^"]*)" in currency "([^"]*)"$`, func(name string, prio int, cadence, amt, curr string) error {
 		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
 		if err != nil {
@@ -4125,6 +4214,81 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 			AgentID:        tc.activeUserID,
 			CorrelationID:  domain.NewUUIDv7(),
 		})
+	})
+
+	ctx.Step(`^I move "([^"]*)" from target "([^"]*)" to target "([^"]*)" in bucket "([^"]*)"$`, func(amtStr, srcTargetName, dstTargetName, bucketName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		amt := parseAmountStr(amtStr)
+		var bID string
+		if err := bDB.QueryRow(`SELECT id FROM buckets_projection WHERE name = ? AND is_archived = 0`, bucketName).Scan(&bID); err != nil {
+			return fmt.Errorf("bucket %s not found: %w", bucketName, err)
+		}
+		var srcTargetID, dstTargetID string
+		if err := bDB.QueryRow(`SELECT id FROM targets_projection WHERE bucket_id = ? AND name = ? AND is_archived = 0`, bID, srcTargetName).Scan(&srcTargetID); err != nil {
+			return fmt.Errorf("source target %s not found: %w", srcTargetName, err)
+		}
+		if err := bDB.QueryRow(`SELECT id FROM targets_projection WHERE bucket_id = ? AND name = ? AND is_archived = 0`, bID, dstTargetName).Scan(&dstTargetID); err != nil {
+			return fmt.Errorf("dest target %s not found: %w", dstTargetName, err)
+		}
+
+		form := url.Values{}
+		form.Set("bucket_id", bID)
+		form.Set("source_target_id", srcTargetID)
+		form.Set("dest_target_id", dstTargetID)
+		form.Set("currency", "PLN")
+		form.Set("amount", fmt.Sprintf("%.2f", float64(amt)/100.0))
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/targets/move", tc.activeBudgetID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextRoleKey, "OWNER")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		return tc.workspaceHandler.MoveTargetFunds(c)
+	})
+
+	ctx.Step(`^I move "([^"]*)" from target "([^"]*)" to buffer in bucket "([^"]*)"$`, func(amtStr, srcTargetName, bucketName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		amt := parseAmountStr(amtStr)
+		var bID string
+		if err := bDB.QueryRow(`SELECT id FROM buckets_projection WHERE name = ? AND is_archived = 0`, bucketName).Scan(&bID); err != nil {
+			return fmt.Errorf("bucket %s not found: %w", bucketName, err)
+		}
+		var srcTargetID string
+		if err := bDB.QueryRow(`SELECT id FROM targets_projection WHERE bucket_id = ? AND name = ? AND is_archived = 0`, bID, srcTargetName).Scan(&srcTargetID); err != nil {
+			return fmt.Errorf("source target %s not found: %w", srcTargetName, err)
+		}
+
+		form := url.Values{}
+		form.Set("bucket_id", bID)
+		form.Set("source_target_id", srcTargetID)
+		form.Set("dest_target_id", "")
+		form.Set("currency", "PLN")
+		form.Set("amount", fmt.Sprintf("%.2f", float64(amt)/100.0))
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/targets/move", tc.activeBudgetID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextRoleKey, "OWNER")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		return tc.workspaceHandler.MoveTargetFunds(c)
 	})
 
 	ctx.Step(`^target "([^"]*)" in bucket "([^"]*)" should have funded amount "([^"]*)"$`, func(targetName, bucketName, expectedAmt string) error {
