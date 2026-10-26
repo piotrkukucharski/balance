@@ -13,6 +13,7 @@ import (
 	"github.com/balance/balance/internal/automation"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/history"
+	"github.com/balance/balance/internal/lua"
 	"github.com/labstack/echo/v4"
 	"strconv"
 )
@@ -38,15 +39,21 @@ type RecentTxOption struct {
 	AmountMinor int64
 	Currency    string
 	Notes       string
+	PartyName   string
 	BucketName  string
 }
 
 func fetchRecentTransactionsForPicker(ctx echo.Context, tenantDB *sql.DB, limit int) []RecentTxOption {
 	rows, err := tenantDB.QueryContext(ctx.Request().Context(), `
 		SELECT bt.id, bt.source_amount_minor, bt.source_currency, bt.transaction_date,
-		       COALESCE(bt.notes, ''), COALESCE(b.name, '')
+		       COALESCE(bt.notes, ''), COALESCE(b.name, ''),
+		       COALESCE(p_src.name, COALESCE(p_dst.name, ''))
 		FROM budget_transactions_current bt
 		LEFT JOIN buckets_projection b ON bt.bucket_id = b.id
+		LEFT JOIN accounts_current a_src ON bt.source_account_id = a_src.id
+		LEFT JOIN parties_current p_src ON a_src.party_id = p_src.id AND p_src.is_user_owned = 0
+		LEFT JOIN accounts_current a_dst ON bt.destination_account_id = a_dst.id
+		LEFT JOIN parties_current p_dst ON a_dst.party_id = p_dst.id AND p_dst.is_user_owned = 0
 		ORDER BY bt.transaction_date DESC, bt.updated_at DESC
 		LIMIT ?`, limit,
 	)
@@ -59,7 +66,7 @@ func fetchRecentTransactionsForPicker(ctx echo.Context, tenantDB *sql.DB, limit 
 	for rows.Next() {
 		var o RecentTxOption
 		var dateMicro int64
-		if err := rows.Scan(&o.ID, &o.AmountMinor, &o.Currency, &dateMicro, &o.Notes, &o.BucketName); err == nil {
+		if err := rows.Scan(&o.ID, &o.AmountMinor, &o.Currency, &dateMicro, &o.Notes, &o.BucketName, &o.PartyName); err == nil {
 			o.DateStr = time.UnixMicro(dateMicro).UTC().Format("2006-01-02")
 			list = append(list, o)
 		}
@@ -228,84 +235,178 @@ func (h *AutomationsHandler) DryRun(c echo.Context) error {
 
 	judgeScript := strings.TrimSpace(c.FormValue("judge_script"))
 	executorScript := strings.TrimSpace(c.FormValue("executor_script"))
-	txID := strings.TrimSpace(c.FormValue("target_tx_id"))
-	if txID == "" {
-		txID = strings.TrimSpace(c.FormValue("tx_id"))
+
+	// Collect target transaction IDs (multi-transaction support)
+	var txIDs []string
+	if c.Request().Form == nil {
+		_ = c.Request().ParseForm()
+	}
+	if ids, ok := c.Request().Form["target_tx_ids"]; ok {
+		for _, id := range ids {
+			for _, part := range strings.Split(id, ",") {
+				p := strings.TrimSpace(part)
+				if p != "" {
+					txIDs = append(txIDs, p)
+				}
+			}
+		}
+	}
+	if len(txIDs) == 0 {
+		single := strings.TrimSpace(c.FormValue("target_tx_id"))
+		if single == "" {
+			single = strings.TrimSpace(c.FormValue("tx_id"))
+		}
+		if single != "" {
+			for _, p := range strings.Split(single, ",") {
+				part := strings.TrimSpace(p)
+				if part != "" {
+					txIDs = append(txIDs, part)
+				}
+			}
+		}
 	}
 
-	if txID == "" {
-		return c.HTML(http.StatusOK, `<div class="alert alert-warning py-2 text-xs">⚠️ Please select a transaction to test against.</div>`)
+	if len(txIDs) == 0 {
+		return c.HTML(http.StatusOK, `<div class="alert alert-warning py-2 text-xs">⚠️ Please select at least one transaction to test against.</div>`)
 	}
 
-	matched, outcome, txCtx, err := automation.DryRunAutomation(c.Request().Context(), tenantDB, judgeScript, executorScript, txID)
-	if err != nil {
-		return c.HTML(http.StatusOK, fmt.Sprintf(`<div class="alert alert-error py-2 text-xs">❌ Execution Error: %s</div>`, html.EscapeString(err.Error())))
+	type dryRunResultItem struct {
+		txID        string
+		matched     bool
+		outcome     *lua.AutomationOutcome
+		txCtx       *lua.AutomationTxContext
+		err         error
+		testedNotes string
 	}
 
-	testedNotes := "No notes"
-	if txCtx.Notes != nil && *txCtx.Notes != "" {
-		testedNotes = *txCtx.Notes
+	var results []dryRunResultItem
+	matchCount := 0
+	nonMatchCount := 0
+
+	for _, id := range txIDs {
+		matched, outcome, txCtx, err := automation.DryRunAutomation(c.Request().Context(), tenantDB, judgeScript, executorScript, id)
+		testedNotes := "No notes"
+		if txCtx != nil && txCtx.Notes != nil && *txCtx.Notes != "" {
+			testedNotes = *txCtx.Notes
+		}
+		if err == nil {
+			if matched {
+				matchCount++
+			} else {
+				nonMatchCount++
+			}
+		}
+		results = append(results, dryRunResultItem{
+			txID:        id,
+			matched:     matched,
+			outcome:     outcome,
+			txCtx:       txCtx,
+			err:         err,
+			testedNotes: testedNotes,
+		})
 	}
-	if !matched {
-		return c.HTML(http.StatusOK, fmt.Sprintf(`
-			<div class="alert alert-neutral py-2 text-xs flex justify-between items-center">
-				<span>🔍 <strong>Judge Result:</strong> Did NOT match this transaction.</span>
-				<span class="badge badge-sm badge-neutral">No Action</span>
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf(`
+		<div class="mb-3">
+			<div class="stats stats-horizontal shadow-xs border border-base-300 w-full mb-3 text-center">
+				<div class="stat p-2">
+					<div class="stat-title text-[10px]">Tested</div>
+					<div class="stat-value text-base text-base-content">%d</div>
+				</div>
+				<div class="stat p-2">
+					<div class="stat-title text-[10px]">Matched</div>
+					<div class="stat-value text-base text-success">%d</div>
+				</div>
+				<div class="stat p-2">
+					<div class="stat-title text-[10px]">No Match</div>
+					<div class="stat-value text-base text-base-content/60">%d</div>
+				</div>
 			</div>
-			<div class="text-[11px] text-base-content/60 mt-1">Transaction tested: %s (%s, %.2f %s)</div>`,
-			html.EscapeString(testedNotes),
-			txCtx.SourceCurrency, float64(txCtx.SourceAmountMinor)/100.0, txCtx.SourceCurrency,
-		))
+		</div>
+		<div class="space-y-2 max-h-60 overflow-y-auto pr-1">`, len(txIDs), matchCount, nonMatchCount))
+
+	for i, res := range results {
+		if res.err != nil {
+			b.WriteString(fmt.Sprintf(`
+				<div class="alert alert-error py-1.5 px-3 text-xs">
+					<span class="font-mono text-[10px]">#%d</span> ❌ Execution Error: %s
+				</div>`, i+1, html.EscapeString(res.err.Error())))
+			continue
+		}
+
+		if !res.matched {
+			txInfo := ""
+			if res.txCtx != nil {
+				txInfo = fmt.Sprintf(" — %s (%.2f %s)", html.EscapeString(res.testedNotes), float64(res.txCtx.SourceAmountMinor)/100.0, res.txCtx.SourceCurrency)
+			}
+			b.WriteString(fmt.Sprintf(`
+				<div class="card bg-base-200/40 border border-base-300 p-2 text-xs flex flex-row items-center justify-between gap-2">
+					<div class="truncate">
+						<span class="font-mono text-[10px] text-base-content/50">#%d</span>
+						<span class="text-base-content/70">%s</span>
+					</div>
+					<span class="badge badge-xs badge-neutral shrink-0">No Match</span>
+				</div>`, i+1, txInfo))
+			continue
+		}
+
+		// Matched
+		var changesDesc strings.Builder
+		if res.outcome.Deleted {
+			changesDesc.WriteString(`<span class="badge badge-xs badge-error">🗑️ Delete</span>`)
+		} else if len(res.outcome.Splits) > 0 {
+			changesDesc.WriteString(fmt.Sprintf(`<span class="badge badge-xs badge-info">✂️ Split into %d parts</span>`, len(res.outcome.Splits)))
+		} else if res.outcome.Modified {
+			var mods []string
+			if res.txCtx.BucketName != res.outcome.UpdatedTx.BucketName {
+				mods = append(mods, fmt.Sprintf(`Bucket: %s → <strong class="text-primary">%s</strong>`, html.EscapeString(res.txCtx.BucketName), html.EscapeString(res.outcome.UpdatedTx.BucketName)))
+			}
+			if res.txCtx.TargetName != res.outcome.UpdatedTx.TargetName {
+				mods = append(mods, fmt.Sprintf(`Target: %s → <strong class="text-primary">%s</strong>`, html.EscapeString(res.txCtx.TargetName), html.EscapeString(res.outcome.UpdatedTx.TargetName)))
+			}
+			origNotes := ""
+			if res.txCtx.Notes != nil {
+				origNotes = *res.txCtx.Notes
+			}
+			newNotes := ""
+			if res.outcome.UpdatedTx.Notes != nil {
+				newNotes = *res.outcome.UpdatedTx.Notes
+			}
+			if origNotes != newNotes {
+				mods = append(mods, fmt.Sprintf(`Notes: <del class="opacity-60">%s</del> → <strong class="text-primary">%s</strong>`, html.EscapeString(origNotes), html.EscapeString(newNotes)))
+			}
+			if len(mods) > 0 {
+				changesDesc.WriteString(strings.Join(mods, ", "))
+			} else {
+				changesDesc.WriteString(`<span class="text-success">Matched (no fields modified)</span>`)
+			}
+		} else {
+			changesDesc.WriteString(`<span class="text-success">Matched</span>`)
+		}
+
+		txInfo := ""
+		if res.txCtx != nil {
+			txInfo = fmt.Sprintf("%s (%.2f %s)", html.EscapeString(res.testedNotes), float64(res.txCtx.SourceAmountMinor)/100.0, res.txCtx.SourceCurrency)
+		}
+
+		b.WriteString(fmt.Sprintf(`
+			<div class="card bg-success/5 border border-success/30 p-2 text-xs">
+				<div class="flex items-center justify-between gap-2 mb-1">
+					<div class="font-semibold truncate">
+						<span class="font-mono text-[10px] text-base-content/50">#%d</span>
+						<span>%s</span>
+					</div>
+					<span class="badge badge-xs badge-success shrink-0">Judge Match</span>
+				</div>
+				<div class="text-[11px] text-base-content/80 pl-4 border-l-2 border-success/40">
+					%s
+				</div>
+			</div>`, i+1, txInfo, changesDesc.String()))
 	}
 
-	var changesHTML strings.Builder
-	changesHTML.WriteString(`<div class="alert alert-success py-2 text-xs mb-2">✅ <strong>Judge Match!</strong> Script condition matched.</div>`)
-
-	if outcome.Deleted {
-		changesHTML.WriteString(`<div class="badge badge-error gap-1 text-xs">🗑️ Transaction would be DELETED</div>`)
-	} else if len(outcome.Splits) > 0 {
-		changesHTML.WriteString(fmt.Sprintf(`<div class="font-bold text-xs mb-1 text-info">✂️ Split into %d parts:</div><ul class="text-xs list-disc pl-4 space-y-1">`, len(outcome.Splits)))
-		for i, sp := range outcome.Splits {
-			bName := "No bucket"
-			if sp.BucketID != nil {
-				bName = *sp.BucketID
-			}
-			noteStr := ""
-			if sp.Notes != nil {
-				noteStr = fmt.Sprintf(" - %q", *sp.Notes)
-			}
-			changesHTML.WriteString(fmt.Sprintf(`<li>Part %d: <strong>%.2f</strong> to bucket <em>%s</em>%s</li>`, i+1, float64(sp.AmountMinor)/100.0, html.EscapeString(bName), html.EscapeString(noteStr)))
-		}
-		changesHTML.WriteString(`</ul>`)
-	} else if outcome.Modified {
-		changesHTML.WriteString(`<div class="font-bold text-xs mb-1 text-success">📝 Proposed modifications:</div><ul class="text-xs list-disc pl-4 space-y-1">`)
-		origBucket := txCtx.BucketName
-		newBucket := outcome.UpdatedTx.BucketName
-		if origBucket != newBucket {
-			changesHTML.WriteString(fmt.Sprintf(`<li>Bucket: <del class="opacity-60">%s</del> → <strong class="text-primary">%s</strong></li>`, html.EscapeString(origBucket), html.EscapeString(newBucket)))
-		}
-		origTarget := txCtx.TargetName
-		newTarget := outcome.UpdatedTx.TargetName
-		if origTarget != newTarget {
-			changesHTML.WriteString(fmt.Sprintf(`<li>Target: <del class="opacity-60">%s</del> → <strong class="text-primary">%s</strong></li>`, html.EscapeString(origTarget), html.EscapeString(newTarget)))
-		}
-		origNotes := ""
-		if txCtx.Notes != nil {
-			origNotes = *txCtx.Notes
-		}
-		newNotes := ""
-		if outcome.UpdatedTx.Notes != nil {
-			newNotes = *outcome.UpdatedTx.Notes
-		}
-		if origNotes != newNotes {
-			changesHTML.WriteString(fmt.Sprintf(`<li>Notes: <del class="opacity-60">%s</del> → <strong class="text-primary">%s</strong></li>`, html.EscapeString(origNotes), html.EscapeString(newNotes)))
-		}
-		changesHTML.WriteString(`</ul>`)
-	} else {
-		changesHTML.WriteString(`<div class="text-xs text-base-content/70">Executor ran without modifying transaction fields.</div>`)
-	}
-
-	return c.HTML(http.StatusOK, changesHTML.String())
+	b.WriteString(`</div>`)
+	return c.HTML(http.StatusOK, b.String())
 }
 
 // AIGenerate handles POST /budgets/:budgetId/automations/ai/generate.
@@ -313,6 +414,9 @@ func (h *AutomationsHandler) AIGenerate(c echo.Context) error {
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	mode := c.FormValue("mode") // "judge", "executor", "pair"
 	prompt := strings.TrimSpace(c.FormValue("prompt"))
+	existingJudge := strings.TrimSpace(c.FormValue("existing_judge"))
+	existingExecutor := strings.TrimSpace(c.FormValue("existing_executor"))
+	testResults := strings.TrimSpace(c.FormValue("test_results"))
 
 	if prompt == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "Prompt is required")
@@ -320,21 +424,66 @@ func (h *AutomationsHandler) AIGenerate(c echo.Context) error {
 
 	snap, _ := automation.LoadSnapshot(c.Request().Context(), tenantDB)
 
+	// Collect example transactions if provided (e.g. from selected dry-run checkboxes)
+	var exampleTxs []ai.TxContextExample
+	rawExampleTxs := c.FormValue("example_txs")
+	if rawExampleTxs != "" {
+		_ = json.Unmarshal([]byte(rawExampleTxs), &exampleTxs)
+	}
+
+	// Also support tx_ids list passed to fetch example details automatically if example_txs not in body
+	if len(exampleTxs) == 0 {
+		rawTxIDs := c.FormValue("tx_ids")
+		if rawTxIDs != "" {
+			ids := strings.Split(rawTxIDs, ",")
+			for _, id := range ids {
+				id = strings.TrimSpace(id)
+				if id == "" {
+					continue
+				}
+				txCtx, err := automation.ConvertBudgetTxToContext(id, tenantDB, snap)
+				if err == nil && txCtx != nil {
+					notes := ""
+					if txCtx.Notes != nil {
+						notes = *txCtx.Notes
+					}
+					exampleTxs = append(exampleTxs, ai.TxContextExample{
+						ID:        txCtx.ID,
+						Date:      time.UnixMicro(txCtx.TransactionDate).UTC().Format("2006-01-02"),
+						Amount:    fmt.Sprintf("%.2f %s", float64(txCtx.SourceAmountMinor)/100.0, txCtx.SourceCurrency),
+						Notes:     notes,
+						Party:     txCtx.PartyName,
+						Bucket:    txCtx.BucketName,
+						IsOutflow: txCtx.IsUserOwnedSource && !txCtx.IsUserOwnedDest,
+					})
+				}
+			}
+		}
+	}
+
+	genCtx := ai.GenerateContext{
+		Prompt:           prompt,
+		ExistingJudge:    existingJudge,
+		ExistingExecutor: existingExecutor,
+		TestResults:      testResults,
+		ExampleTxs:       exampleTxs,
+	}
+
 	switch mode {
 	case "judge":
-		script, err := h.aiProvider.GenerateJudge(c.Request().Context(), prompt, snap)
+		script, err := h.aiProvider.GenerateJudge(c.Request().Context(), genCtx, snap)
 		if err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "AI generation failed: "+err.Error())
 		}
 		return c.String(http.StatusOK, script)
 	case "executor":
-		script, err := h.aiProvider.GenerateExecutor(c.Request().Context(), prompt, snap)
+		script, err := h.aiProvider.GenerateExecutor(c.Request().Context(), genCtx, snap)
 		if err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "AI generation failed: "+err.Error())
 		}
 		return c.String(http.StatusOK, script)
 	case "pair":
-		pair, err := h.aiProvider.GeneratePair(c.Request().Context(), prompt, snap)
+		pair, err := h.aiProvider.GeneratePair(c.Request().Context(), genCtx, snap)
 		if err != nil {
 			return echo.NewHTTPError(http.StatusInternalServerError, "AI generation failed: "+err.Error())
 		}
@@ -666,6 +815,10 @@ func renderAutomationsListMarkup(budgetID string, automations []automation.Autom
 						✏️ Edit
 					</button>
 
+					<button class="btn btn-ghost btn-sm text-secondary" onclick='duplicateAutomation(%s)' title="Duplicate automation">
+						📋 Duplicate
+					</button>
+
 					<button class="btn btn-ghost btn-sm text-info"
 					        hx-get="/budgets/%s/automations/%s/history"
 					        hx-target="body" hx-swap="beforeend">
@@ -688,6 +841,7 @@ func renderAutomationsListMarkup(budgetID string, automations []automation.Autom
 			html.EscapeString(a.JudgeScript),
 			activeChecked,
 			budgetID, a.ID, csrfToken,
+			escapeJSONForAttr(a),
 			escapeJSONForAttr(a),
 			budgetID, a.ID,
 			a.ID, html.EscapeString(a.Name),
@@ -719,10 +873,22 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
 		if bName == "" {
 			bName = "No bucket"
 		}
+		partyStr := ""
+		if tx.PartyName != "" {
+			partyStr = fmt.Sprintf(" | %s", html.EscapeString(tx.PartyName))
+		}
 		txPickerOptions.WriteString(fmt.Sprintf(
-			`<option value="%s">%s — %s (%.2f %s) [%s]</option>`,
+			`<label class="label cursor-pointer justify-start gap-2 py-1 px-2 hover:bg-base-300/40 rounded border border-transparent hover:border-base-300">
+				<input type="checkbox" name="target_tx_ids" value="%s" class="checkbox checkbox-xs checkbox-primary dry-run-tx-cb" />
+				<span class="label-text text-xs flex-1 truncate">
+					<span class="font-mono text-[10px] text-base-content/60 mr-1">%s</span>
+					<strong class="font-medium text-base-content">%s</strong>
+					<span class="text-base-content/60">(%.2f %s)</span>
+					<span class="badge badge-xs badge-neutral">%s</span>%s
+				</span>
+			</label>`,
 			tx.ID, tx.DateStr, html.EscapeString(noteStr), float64(tx.AmountMinor)/100.0, tx.Currency,
-			html.EscapeString(bName),
+			html.EscapeString(bName), partyStr,
 		))
 	}
 
@@ -796,12 +962,16 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
                     <span class="text-xs font-bold text-primary flex items-center gap-1.5">
                         <span>✨</span> AI Assistant: Generate Full Rule
                     </span>
+                    <span class="text-[10px] text-base-content/60">Selected test transactions & existing code are sent as context</span>
                 </div>
-                <div class="flex gap-2">
-                    <input type="text" id="ai_pair_prompt" placeholder="e.g. When transaction notes mention Uber, assign to Transport bucket" class="input input-sm input-bordered flex-1 text-xs" />
-                    <button type="button" class="btn btn-primary btn-sm text-xs gap-1" onclick="generatePairWithAI()">
-                        <span>🤖</span> Generate
-                    </button>
+                <div class="flex flex-col gap-2">
+                    <textarea id="ai_pair_prompt" rows="3" placeholder="Describe rule logic, e.g.:&#10;When notes mention Uber or Taxi, assign to Transport bucket. If amount is greater than 100, set note to 'High fare taxi'." class="textarea textarea-bordered textarea-sm w-full text-xs"></textarea>
+                    <div class="flex justify-between items-center">
+                        <span id="ai_few_shot_badge" class="text-[10px] text-info hidden"></span>
+                        <button type="button" id="ai_generate_btn" class="btn btn-primary btn-sm text-xs gap-1 ml-auto" onclick="generatePairWithAI()">
+                            <span>🤖</span> Generate Rule
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -842,20 +1012,24 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
                 <!-- DRY RUN VALIDATION & PREVIEW SECTION -->
                 <div class="card bg-base-200/50 border border-base-300 p-3 rounded-xl mb-4">
                     <div class="text-xs font-bold mb-2 flex items-center justify-between">
-                        <span>🧪 Validate & Test (Dry-Run Preview)</span>
-                        <span class="text-[10px] text-base-content/60">No database writes</span>
+                        <span>🧪 Multi-transaction Dry-Run & Few-Shot Examples</span>
+                        <div class="flex items-center gap-2">
+                            <button type="button" class="btn btn-ghost btn-xs text-[10px]" onclick="toggleSelectAllDryRun(true)">All</button>
+                            <button type="button" class="btn btn-ghost btn-xs text-[10px]" onclick="toggleSelectAllDryRun(false)">None</button>
+                            <span class="text-[10px] text-base-content/60">No database writes</span>
+                        </div>
                     </div>
-                    <div class="flex gap-2 mb-2">
-                        <select id="dry_run_tx_picker" class="select select-sm select-bordered flex-1 text-xs">
-                            <option value="">-- Choose transaction to test --</option>
-                            %s
-                        </select>
+                    <div class="border border-base-300 bg-base-100 rounded-lg max-h-40 overflow-y-auto p-1 mb-2">
+                        %s
+                    </div>
+                    <div class="flex justify-between items-center mb-2">
+                        <span id="dry_run_selected_count" class="text-[11px] text-base-content/60">0 transactions selected</span>
                         <button type="button" class="btn btn-neutral btn-sm text-xs gap-1" onclick="runDryRunTest()">
-                            <span>▶️</span> Test
+                            <span>▶️</span> Run Dry-Run on Selected
                         </button>
                     </div>
                     <div id="dry_run_results" class="text-xs">
-                        <div class="text-[11px] text-base-content/50 italic">Select a transaction and click Test to preview Judge and Executor results.</div>
+                        <div class="text-[11px] text-base-content/50 italic">Select one or more transactions and click Run Dry-Run to test Judge & Executor.</div>
                     </div>
                 </div>
 
@@ -912,6 +1086,56 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
         const budgetID = "%s";
         const csrfToken = "%s";
 
+        function getSelectedDryRunTxIDs() {
+            const checked = document.querySelectorAll('.dry-run-tx-cb:checked');
+            return Array.from(checked).map(cb => cb.value);
+        }
+
+        function updateDryRunSelectedCount() {
+            const count = getSelectedDryRunTxIDs().length;
+            const el = document.getElementById("dry_run_selected_count");
+            if (el) el.innerText = count + " transaction" + (count === 1 ? "" : "s") + " selected";
+            const badge = document.getElementById("ai_few_shot_badge");
+            if (badge) {
+                if (count > 0) {
+                    badge.innerText = "ℹ️ " + count + " transaction(s) will be included as Few-Shot AI context";
+                    badge.classList.remove("hidden");
+                } else {
+                    badge.classList.add("hidden");
+                }
+            }
+        }
+
+        function toggleSelectAllDryRun(select) {
+            document.querySelectorAll('.dry-run-tx-cb').forEach(cb => cb.checked = select);
+            updateDryRunSelectedCount();
+        }
+
+        document.addEventListener('change', function(e) {
+            if (e.target && e.target.classList.contains('dry-run-tx-cb')) {
+                updateDryRunSelectedCount();
+            }
+        });
+
+        function duplicateAutomation(auto) {
+            document.getElementById("modal_title").innerHTML = "<span>⚡</span> <span>New Automation (Copy)</span>";
+            document.getElementById("form_auto_id").value = "";
+            document.getElementById("form_name").value = "Kopia " + (auto.name || "");
+            document.getElementById("form_judge_script").value = auto.judge_script || "";
+            document.getElementById("form_executor_script").value = auto.executor_script || "";
+            document.getElementById("form_comment").value = "Cloned from " + (auto.name || "existing rule");
+            document.getElementById("squash_container").classList.add("hidden");
+            document.getElementById("form_squash").checked = false;
+            document.getElementById("modal_history_btn").classList.add("hidden");
+            document.getElementById("dry_run_results").innerHTML = '<div class="text-[11px] text-base-content/50 italic">Select one or more transactions and click Run Dry-Run to test Judge & Executor.</div>';
+
+            const form = document.getElementById("automation_form");
+            form.setAttribute("hx-post", "/budgets/" + budgetID + "/automations");
+            htmx.process(form);
+
+            document.getElementById("automation_modal").showModal();
+        }
+
         function openNewAutomationModal() {
             document.getElementById("modal_title").innerHTML = "<span>⚡</span> <span>New Automation</span>";
             document.getElementById("form_auto_id").value = "";
@@ -919,10 +1143,12 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
             document.getElementById("form_judge_script").value = "";
             document.getElementById("form_executor_script").value = "";
             document.getElementById("form_comment").value = "";
+            document.getElementById("ai_pair_prompt").value = "";
             document.getElementById("squash_container").classList.add("hidden");
             document.getElementById("form_squash").checked = false;
             document.getElementById("modal_history_btn").classList.add("hidden");
-            document.getElementById("dry_run_results").innerHTML = '<div class="text-[11px] text-base-content/50 italic">Select a transaction and click Test to preview Judge and Executor results.</div>';
+            document.getElementById("dry_run_results").innerHTML = '<div class="text-[11px] text-base-content/50 italic">Select one or more transactions and click Run Dry-Run to test Judge & Executor.</div>';
+            toggleSelectAllDryRun(false);
 
             const form = document.getElementById("automation_form");
             form.setAttribute("hx-post", "/budgets/" + budgetID + "/automations");
@@ -938,8 +1164,10 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
             document.getElementById("form_judge_script").value = auto.judge_script;
             document.getElementById("form_executor_script").value = auto.executor_script;
             document.getElementById("form_comment").value = "";
+            document.getElementById("ai_pair_prompt").value = "";
             document.getElementById("modal_history_btn").classList.remove("hidden");
-            document.getElementById("dry_run_results").innerHTML = '<div class="text-[11px] text-base-content/50 italic">Select a transaction and click Test to preview Judge and Executor results.</div>';
+            document.getElementById("dry_run_results").innerHTML = '<div class="text-[11px] text-base-content/50 italic">Select one or more transactions and click Run Dry-Run to test Judge & Executor.</div>';
+            toggleSelectAllDryRun(false);
 
             // Squash is enabled only for versions > 1 (per /grill-me decision)
             if (auto.version > 1) {
@@ -1010,9 +1238,31 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
         async function generatePairWithAI() {
             const prompt = document.getElementById("ai_pair_prompt").value.trim();
             if (!prompt) return;
+
+            const btn = document.getElementById("ai_generate_btn");
+            if (btn) btn.classList.add("loading");
+
             const formData = new FormData();
             formData.append("mode", "pair");
             formData.append("prompt", prompt);
+
+            // Pass existing scripts if present
+            const existingJudge = document.getElementById("form_judge_script").value.trim();
+            const existingExecutor = document.getElementById("form_executor_script").value.trim();
+            if (existingJudge) formData.append("existing_judge", existingJudge);
+            if (existingExecutor) formData.append("existing_executor", existingExecutor);
+
+            // Pass selected transactions as context
+            const selectedTxIDs = getSelectedDryRunTxIDs();
+            if (selectedTxIDs.length > 0) {
+                formData.append("tx_ids", selectedTxIDs.join(","));
+            }
+
+            // Pass dry-run test results if available
+            const resultsEl = document.getElementById("dry_run_results");
+            if (resultsEl && resultsEl.innerText.trim() && !resultsEl.innerText.includes("Select one or more transactions")) {
+                formData.append("test_results", resultsEl.innerText.trim());
+            }
 
             try {
                 const res = await fetch("/budgets/" + budgetID + "/automations/ai/generate", {
@@ -1025,11 +1275,17 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
                     if (data.judge_script) document.getElementById("form_judge_script").value = data.judge_script;
                     if (data.executor_script) document.getElementById("form_executor_script").value = data.executor_script;
                     if (!document.getElementById("form_name").value) {
-                        document.getElementById("form_name").value = prompt;
+                        document.getElementById("form_name").value = prompt.length > 50 ? prompt.substring(0, 47) + "..." : prompt;
                     }
+                } else {
+                    const errText = await res.text();
+                    alert("AI Generation failed: " + errText);
                 }
             } catch (e) {
                 console.error("AI Pair error:", e);
+                alert("AI Pair error: " + e.message);
+            } finally {
+                if (btn) btn.classList.remove("loading");
             }
         }
 
@@ -1039,6 +1295,14 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
             const formData = new FormData();
             formData.append("mode", "judge");
             formData.append("prompt", prompt);
+
+            const existingJudge = document.getElementById("form_judge_script").value.trim();
+            if (existingJudge) formData.append("existing_judge", existingJudge);
+
+            const selectedTxIDs = getSelectedDryRunTxIDs();
+            if (selectedTxIDs.length > 0) {
+                formData.append("tx_ids", selectedTxIDs.join(","));
+            }
 
             const res = await fetch("/budgets/" + budgetID + "/automations/ai/generate", {
                 method: "POST",
@@ -1056,6 +1320,14 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
             const formData = new FormData();
             formData.append("mode", "executor");
             formData.append("prompt", prompt);
+
+            const existingExecutor = document.getElementById("form_executor_script").value.trim();
+            if (existingExecutor) formData.append("existing_executor", existingExecutor);
+
+            const selectedTxIDs = getSelectedDryRunTxIDs();
+            if (selectedTxIDs.length > 0) {
+                formData.append("tx_ids", selectedTxIDs.join(","));
+            }
 
             const res = await fetch("/budgets/" + budgetID + "/automations/ai/generate", {
                 method: "POST",
@@ -1088,18 +1360,20 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
         }
 
         function runDryRunTest() {
-            const txID = document.getElementById("dry_run_tx_picker").value;
+            const txIDs = getSelectedDryRunTxIDs();
             const judgeScript = document.getElementById("form_judge_script").value;
             const executorScript = document.getElementById("form_executor_script").value;
-            if (!txID) {
-                alert("Please select a transaction to test against.");
+            if (txIDs.length === 0) {
+                alert("Please select at least one transaction from the list above to test against.");
                 return;
             }
 
             const formData = new FormData();
-            formData.append("target_tx_id", txID);
+            txIDs.forEach(id => formData.append("target_tx_ids", id));
             formData.append("judge_script", judgeScript);
             formData.append("executor_script", executorScript);
+
+            document.getElementById("dry_run_results").innerHTML = '<div class="text-[11px] text-base-content/60 flex items-center gap-1"><span class="loading loading-spinner loading-xs"></span> Evaluating rules against selected transactions...</div>';
 
             fetch("/budgets/" + budgetID + "/automations/dry-run", {
                 method: "POST",
@@ -1109,6 +1383,9 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
             .then(res => res.text())
             .then(html => {
                 document.getElementById("dry_run_results").innerHTML = html;
+            })
+            .catch(err => {
+                document.getElementById("dry_run_results").innerHTML = '<div class="alert alert-error py-1.5 px-3 text-xs">Error running dry run: ' + err.message + '</div>';
             });
         }
     </script>

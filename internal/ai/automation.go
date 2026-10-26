@@ -47,11 +47,31 @@ type MultiVersionCommentRequest struct {
 	Versions       []AutomationVersionSummary `json:"versions"`
 }
 
+// TxContextExample represents a transaction example used for few-shot prompting.
+type TxContextExample struct {
+	ID        string `json:"id,omitempty"`
+	Date      string `json:"date,omitempty"`
+	Amount    string `json:"amount,omitempty"`
+	Notes     string `json:"notes,omitempty"`
+	Party     string `json:"party,omitempty"`
+	Bucket    string `json:"bucket,omitempty"`
+	IsOutflow bool   `json:"is_outflow,omitempty"`
+}
+
+// GenerateContext carries prompt plus optional few-shot transaction examples and existing code/test context.
+type GenerateContext struct {
+	Prompt            string             `json:"prompt"`
+	ExistingJudge     string             `json:"existing_judge,omitempty"`
+	ExistingExecutor  string             `json:"existing_executor,omitempty"`
+	TestResults       string             `json:"test_results,omitempty"`
+	ExampleTxs        []TxContextExample `json:"example_txs,omitempty"`
+}
+
 // AutomationAIProvider generates scripts and version comments.
 type AutomationAIProvider interface {
-	GenerateJudge(ctx context.Context, prompt string, snap *lua.InMemoryBudgetSnapshot) (string, error)
-	GenerateExecutor(ctx context.Context, prompt string, snap *lua.InMemoryBudgetSnapshot) (string, error)
-	GeneratePair(ctx context.Context, prompt string, snap *lua.InMemoryBudgetSnapshot) (*AutomationAIPairResult, error)
+	GenerateJudge(ctx context.Context, genCtx GenerateContext, snap *lua.InMemoryBudgetSnapshot) (string, error)
+	GenerateExecutor(ctx context.Context, genCtx GenerateContext, snap *lua.InMemoryBudgetSnapshot) (string, error)
+	GeneratePair(ctx context.Context, genCtx GenerateContext, snap *lua.InMemoryBudgetSnapshot) (*AutomationAIPairResult, error)
 	GenerateComment(ctx context.Context, req VersionCommentRequest) (string, error)
 	GenerateMultiVersionComment(ctx context.Context, req MultiVersionCommentRequest) (string, error)
 }
@@ -76,8 +96,18 @@ func NewMockAutomationAIProvider() *MockAutomationAIProvider {
 	return &MockAutomationAIProvider{}
 }
 
-func (m *MockAutomationAIProvider) GenerateJudge(ctx context.Context, prompt string, snap *lua.InMemoryBudgetSnapshot) (string, error) {
-	lower := strings.ToLower(prompt)
+func (m *MockAutomationAIProvider) GenerateJudge(ctx context.Context, genCtx GenerateContext, snap *lua.InMemoryBudgetSnapshot) (string, error) {
+	lower := strings.ToLower(genCtx.Prompt)
+	for _, ex := range genCtx.ExampleTxs {
+		lower += " " + strings.ToLower(ex.Notes) + " " + strings.ToLower(ex.Party)
+	}
+	if genCtx.ExistingJudge != "" {
+		lower += " " + strings.ToLower(genCtx.ExistingJudge)
+	}
+
+	if (strings.Contains(lower, "uber") || strings.Contains(lower, "transport")) && strings.Contains(lower, "bolt") {
+		return `text.contains(tx.notes, "Uber") or text.contains(tx.notes, "Bolt")`, nil
+	}
 	if strings.Contains(lower, "uber") || strings.Contains(lower, "transport") || strings.Contains(lower, "bolt") {
 		return `text.contains(tx.notes, "Uber") or tx.party == "Uber"`, nil
 	}
@@ -87,11 +117,14 @@ func (m *MockAutomationAIProvider) GenerateJudge(ctx context.Context, prompt str
 	if strings.Contains(lower, "netflix") || strings.Contains(lower, "spotify") || strings.Contains(lower, "subscription") {
 		return `text.contains(tx.notes, "Netflix") or text.contains(tx.notes, "Spotify")`, nil
 	}
-	return `text.contains(tx.notes, "` + strings.TrimSpace(prompt) + `")`, nil
+	return `text.contains(tx.notes, "` + strings.TrimSpace(genCtx.Prompt) + `")`, nil
 }
 
-func (m *MockAutomationAIProvider) GenerateExecutor(ctx context.Context, prompt string, snap *lua.InMemoryBudgetSnapshot) (string, error) {
-	lower := strings.ToLower(prompt)
+func (m *MockAutomationAIProvider) GenerateExecutor(ctx context.Context, genCtx GenerateContext, snap *lua.InMemoryBudgetSnapshot) (string, error) {
+	lower := strings.ToLower(genCtx.Prompt)
+	if genCtx.ExistingExecutor != "" {
+		lower += " " + strings.ToLower(genCtx.ExistingExecutor)
+	}
 	if strings.Contains(lower, "split") {
 		return `tx.split({
     { amount = money(50), bucket = "Groceries" },
@@ -101,7 +134,7 @@ func (m *MockAutomationAIProvider) GenerateExecutor(ctx context.Context, prompt 
 	if strings.Contains(lower, "delete") || strings.Contains(lower, "usuń") {
 		return `tx.delete()`, nil
 	}
-	if strings.Contains(lower, "uber") || strings.Contains(lower, "transport") {
+	if strings.Contains(lower, "uber") || strings.Contains(lower, "transport") || strings.Contains(lower, "bolt") {
 		return `tx.set_bucket("Transport")`, nil
 	}
 	if strings.Contains(lower, "groceries") || strings.Contains(lower, "jedzenie") {
@@ -110,13 +143,13 @@ func (m *MockAutomationAIProvider) GenerateExecutor(ctx context.Context, prompt 
 	return `tx.set_notes("Processed by automation")`, nil
 }
 
-func (m *MockAutomationAIProvider) GeneratePair(ctx context.Context, prompt string, snap *lua.InMemoryBudgetSnapshot) (*AutomationAIPairResult, error) {
-	j, _ := m.GenerateJudge(ctx, prompt, snap)
-	e, _ := m.GenerateExecutor(ctx, prompt, snap)
+func (m *MockAutomationAIProvider) GeneratePair(ctx context.Context, genCtx GenerateContext, snap *lua.InMemoryBudgetSnapshot) (*AutomationAIPairResult, error) {
+	j, _ := m.GenerateJudge(ctx, genCtx, snap)
+	e, _ := m.GenerateExecutor(ctx, genCtx, snap)
 	return &AutomationAIPairResult{
 		JudgeScript:    j,
 		ExecutorScript: e,
-		Explanation:    fmt.Sprintf("Automatically generated rule for prompt: %q", prompt),
+		Explanation:    fmt.Sprintf("Automatically generated rule for prompt: %q", genCtx.Prompt),
 	}, nil
 }
 
@@ -163,7 +196,46 @@ func NewGeminiAutomationProvider(apiKey, model string, timeout time.Duration) *G
 	}
 }
 
-func (g *GeminiAutomationProvider) GenerateJudge(ctx context.Context, prompt string, snap *lua.InMemoryBudgetSnapshot) (string, error) {
+func buildUserPromptWithContext(genCtx GenerateContext) string {
+	var sb strings.Builder
+	sb.WriteString("User Rule Request:\n")
+	sb.WriteString(genCtx.Prompt)
+	sb.WriteString("\n\n")
+
+	if genCtx.ExistingJudge != "" || genCtx.ExistingExecutor != "" {
+		sb.WriteString("Existing Code Context:\n")
+		if genCtx.ExistingJudge != "" {
+			sb.WriteString("- Existing Judge Script:\n```lua\n")
+			sb.WriteString(genCtx.ExistingJudge)
+			sb.WriteString("\n```\n")
+		}
+		if genCtx.ExistingExecutor != "" {
+			sb.WriteString("- Existing Executor Script:\n```lua\n")
+			sb.WriteString(genCtx.ExistingExecutor)
+			sb.WriteString("\n```\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	if genCtx.TestResults != "" {
+		sb.WriteString("Recent Test/Dry-Run Results:\n")
+		sb.WriteString(genCtx.TestResults)
+		sb.WriteString("\n\n")
+	}
+
+	if len(genCtx.ExampleTxs) > 0 {
+		sb.WriteString("Few-Shot Example Transactions from User Budget:\n")
+		for i, tx := range genCtx.ExampleTxs {
+			sb.WriteString(fmt.Sprintf("%d. Date: %s | Amount: %s | Notes: %q | Party: %q | Bucket: %q\n",
+				i+1, tx.Date, tx.Amount, tx.Notes, tx.Party, tx.Bucket))
+		}
+		sb.WriteString("\n")
+	}
+
+	return strings.TrimSpace(sb.String())
+}
+
+func (g *GeminiAutomationProvider) GenerateJudge(ctx context.Context, genCtx GenerateContext, snap *lua.InMemoryBudgetSnapshot) (string, error) {
 	sysPrompt := `You are a Lua script assistant for Balance financial automation.
 Your task is to write ONLY a Lua conditional expression or snippet (Judge script).
 The script MUST evaluate to a boolean (return true or return false, or a boolean expression).
@@ -177,23 +249,28 @@ Available variables:
 - tx.dest_account (string)
 - tx.bucket (string)
 - tx.is_outflow, tx.is_inflow, tx.is_transfer (booleans)
-- text.contains(str, substr), text.starts_with(str, prefix), text.regex_match(pattern, str)
+- text.contains(str, substr) -- checks if str contains substr (case-sensitive)
+- text.starts_with(str, prefix) -- checks if str starts with prefix
+- text.ends_with(str, suffix) -- checks if str ends with suffix
+- text.regex_match(pattern, str) -- NOTE SIGNATURE: pattern first, str second! e.g. text.regex_match(".*(bolt|uber|freenow|taxi).*", text.lower(tx.notes))
+- text.lower(str), text.upper(str), text.trim(str)
 - date.year(tx.date), date.month(tx.date), date.day(tx.date), date.weekday(tx.date)
 Strict restrictions: NO loops (while, for), NO function declarations, NO '..' concat operator.
 Output ONLY raw Lua code, without markdown formatting or code blocks.`
 
-	raw, err := g.callGemini(ctx, sysPrompt, prompt)
+	userPrompt := buildUserPromptWithContext(genCtx)
+	raw, err := g.callGemini(ctx, sysPrompt, userPrompt)
 	if err != nil {
-		return NewMockAutomationAIProvider().GenerateJudge(ctx, prompt, snap)
+		return NewMockAutomationAIProvider().GenerateJudge(ctx, genCtx, snap)
 	}
 	clean := sanitizeLuaOutput(raw)
 	if err := lua.ValidateJudgeScript(clean); err != nil {
-		return NewMockAutomationAIProvider().GenerateJudge(ctx, prompt, snap)
+		return NewMockAutomationAIProvider().GenerateJudge(ctx, genCtx, snap)
 	}
 	return clean, nil
 }
 
-func (g *GeminiAutomationProvider) GenerateExecutor(ctx context.Context, prompt string, snap *lua.InMemoryBudgetSnapshot) (string, error) {
+func (g *GeminiAutomationProvider) GenerateExecutor(ctx context.Context, genCtx GenerateContext, snap *lua.InMemoryBudgetSnapshot) (string, error) {
 	sysPrompt := `You are a Lua script assistant for Balance financial automation.
 Your task is to write ONLY a Lua script (Executor script) executed when the Judge returns true.
 Available mutators:
@@ -207,18 +284,19 @@ Available mutators:
 Strict restrictions: NO loops (while, for), NO function declarations, NO '..' concat operator.
 Output ONLY raw Lua code, without markdown formatting or code blocks.`
 
-	raw, err := g.callGemini(ctx, sysPrompt, prompt)
+	userPrompt := buildUserPromptWithContext(genCtx)
+	raw, err := g.callGemini(ctx, sysPrompt, userPrompt)
 	if err != nil {
-		return NewMockAutomationAIProvider().GenerateExecutor(ctx, prompt, snap)
+		return NewMockAutomationAIProvider().GenerateExecutor(ctx, genCtx, snap)
 	}
 	clean := sanitizeLuaOutput(raw)
 	if err := lua.ValidateLuaScript(clean); err != nil {
-		return NewMockAutomationAIProvider().GenerateExecutor(ctx, prompt, snap)
+		return NewMockAutomationAIProvider().GenerateExecutor(ctx, genCtx, snap)
 	}
 	return clean, nil
 }
 
-func (g *GeminiAutomationProvider) GeneratePair(ctx context.Context, prompt string, snap *lua.InMemoryBudgetSnapshot) (*AutomationAIPairResult, error) {
+func (g *GeminiAutomationProvider) GeneratePair(ctx context.Context, genCtx GenerateContext, snap *lua.InMemoryBudgetSnapshot) (*AutomationAIPairResult, error) {
 	sysPrompt := `You are a Lua script assistant for Balance financial automation.
 From the user's rule description, return a JSON object with:
 {
@@ -226,24 +304,31 @@ From the user's rule description, return a JSON object with:
   "executor_script": "valid lua executor code",
   "explanation": "concise explanation"
 }
-Available: tx.notes, tx.amount, tx.party, tx.bucket, tx.is_outflow, text.contains, text.regex_match, date.*, tx.set_bucket, tx.set_target, tx.set_notes, tx.split, tx.delete.
+Available: tx.notes, tx.amount, tx.party, tx.bucket, tx.is_outflow, date.*, tx.set_bucket, tx.set_target, tx.set_notes, tx.split, tx.delete.
+String helper functions in text module:
+- text.contains(str, substr)
+- text.starts_with(str, prefix)
+- text.ends_with(str, suffix)
+- text.regex_match(pattern, str) -- NOTE SIGNATURE: pattern first, str second! e.g. text.regex_match(".*(bolt|uber|freenow|taxi).*", text.lower(tx.notes))
+- text.lower(str), text.upper(str), text.trim(str)
 Strict restrictions: NO loops, NO function declarations, NO '..' concat operator.
 Return ONLY valid JSON.`
 
-	raw, err := g.callGemini(ctx, sysPrompt, prompt)
+	userPrompt := buildUserPromptWithContext(genCtx)
+	raw, err := g.callGemini(ctx, sysPrompt, userPrompt)
 	if err != nil {
-		return NewMockAutomationAIProvider().GeneratePair(ctx, prompt, snap)
+		return NewMockAutomationAIProvider().GeneratePair(ctx, genCtx, snap)
 	}
 	clean := sanitizeJSONOutput(raw)
 	var res AutomationAIPairResult
 	if err := json.Unmarshal([]byte(clean), &res); err != nil {
-		return NewMockAutomationAIProvider().GeneratePair(ctx, prompt, snap)
+		return NewMockAutomationAIProvider().GeneratePair(ctx, genCtx, snap)
 	}
 	if err := lua.ValidateJudgeScript(res.JudgeScript); err != nil {
-		return NewMockAutomationAIProvider().GeneratePair(ctx, prompt, snap)
+		return NewMockAutomationAIProvider().GeneratePair(ctx, genCtx, snap)
 	}
 	if err := lua.ValidateLuaScript(res.ExecutorScript); err != nil {
-		return NewMockAutomationAIProvider().GeneratePair(ctx, prompt, snap)
+		return NewMockAutomationAIProvider().GeneratePair(ctx, genCtx, snap)
 	}
 	return &res, nil
 }

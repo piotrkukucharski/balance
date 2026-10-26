@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/balance/balance/internal/lua"
@@ -12,7 +13,7 @@ func TestMockAutomationAIProvider(t *testing.T) {
 	p := NewMockAutomationAIProvider()
 
 	// 1. Judge generation
-	j, err := p.GenerateJudge(ctx, "Categorize Uber trips", nil)
+	j, err := p.GenerateJudge(ctx, GenerateContext{Prompt: "Categorize Uber trips"}, nil)
 	if err != nil {
 		t.Fatalf("GenerateJudge failed: %v", err)
 	}
@@ -21,7 +22,7 @@ func TestMockAutomationAIProvider(t *testing.T) {
 	}
 
 	// 2. Executor generation
-	e, err := p.GenerateExecutor(ctx, "Set bucket to Transport", nil)
+	e, err := p.GenerateExecutor(ctx, GenerateContext{Prompt: "Set bucket to Transport"}, nil)
 	if err != nil {
 		t.Fatalf("GenerateExecutor failed: %v", err)
 	}
@@ -30,7 +31,7 @@ func TestMockAutomationAIProvider(t *testing.T) {
 	}
 
 	// 3. Pair generation
-	pair, err := p.GeneratePair(ctx, "When grocery shopping at Biedronka set bucket to Groceries", nil)
+	pair, err := p.GeneratePair(ctx, GenerateContext{Prompt: "When grocery shopping at Biedronka set bucket to Groceries"}, nil)
 	if err != nil {
 		t.Fatalf("GeneratePair failed: %v", err)
 	}
@@ -39,6 +40,21 @@ func TestMockAutomationAIProvider(t *testing.T) {
 	}
 	if err := lua.ValidateLuaScript(pair.ExecutorScript); err != nil {
 		t.Fatalf("pair executor invalid: %v", err)
+	}
+
+	// 3b. Pair generation with few-shot context and existing judge
+	pairWithContext, err := p.GeneratePair(ctx, GenerateContext{
+		Prompt:        "Support Bolt rides too",
+		ExistingJudge: `text.contains(tx.notes, "Uber")`,
+		ExampleTxs: []TxContextExample{
+			{Notes: "Bolt ride to town", Party: "Bolt", Bucket: "Transport"},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("GeneratePair with context failed: %v", err)
+	}
+	if !strings.Contains(pairWithContext.JudgeScript, "Bolt") {
+		t.Fatalf("expected judge script to contain Bolt, got: %s", pairWithContext.JudgeScript)
 	}
 
 	// 4. Comment generation

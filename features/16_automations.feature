@@ -29,6 +29,22 @@ Feature: Lua Transaction Automations Engine with Judge, Executor, AI Assistant, 
     When I test a dry run with judge 'text.contains(tx.notes, "Uber")' and executor 'tx.set_bucket("Transport")' on that transaction
     Then the dry-run outcome should indicate matched true with bucket "Transport"
 
+  Scenario: Multi-transaction dry-run evaluation with matches and non-matches
+    Given an open budget "Family Home"
+    And an existing bucket "Transport" in group "Fixed"
+    And an existing manual transaction with amount "30.00 PLN", date "2026-10-25", and note "Uber ride home"
+    And an existing manual transaction with amount "50.00 PLN", date "2026-10-25", and note "Groceries at Biedronka"
+    When I test a multi-dry run with judge 'text.contains(tx.notes, "Uber")' and executor 'tx.set_bucket("Transport")' on all recent transactions
+    Then the multi-dry-run outcome should report 2 transactions tested with 1 match and 1 non-match
+
+  Scenario: AI assistant generates automation using selected transactions and existing script context
+    Given an open budget "Family Home"
+    And an existing bucket "Transport" in group "Fixed"
+    And an existing manual transaction with amount "28.00 PLN", date "2026-10-25", and note "Bolt ride to office"
+    When I request AI pair generation with prompt "Support Bolt rides too", existing judge 'text.contains(tx.notes, "Uber")', and recent transaction context
+    Then the generated judge script should contain "Bolt"
+
+
   Scenario: Batch execution of active automations across transactions
     Given an open budget "Family Home"
     And an existing bucket "Transport" in group "Fixed"
