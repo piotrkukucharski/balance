@@ -604,7 +604,7 @@ func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
         </aside>
 
         <!-- Main Content -->
-        <main class="flex-1 p-6 md:p-8 overflow-y-auto max-w-4xl">
+        <main class="flex-1 p-4 sm:p-6 md:p-8 pb-24 md:pb-8 overflow-y-auto max-w-4xl">
             <div class="mb-6">
                 <h1 class="text-2xl font-black tracking-tight">Budget Settings</h1>
                 <p class="text-xs text-base-content/60 mt-1">Configure workspace preferences, default timezones, and ledger parameters.</p>
@@ -1117,50 +1117,75 @@ func renderBudgetControlsToolbar(budgetID, horizonParam, filterParam, defaultCur
 	d90Active := "btn-ghost"
 	annualActive := "btn-ghost"
 	d365Active := "btn-ghost"
+
+	monthlySel := ""
+	d30Sel := ""
+	d90Sel := ""
+	annualSel := ""
+	d365Sel := ""
+
 	switch horizonParam {
 	case "30d":
 		d30Active = "btn-primary"
+		d30Sel = " selected"
 	case "90d":
 		d90Active = "btn-primary"
+		d90Sel = " selected"
 	case "annual":
 		annualActive = "btn-primary"
+		annualSel = " selected"
 	case "365d":
 		d365Active = "btn-primary"
+		d365Sel = " selected"
 	default:
 		monthlyActive = "btn-primary"
+		monthlySel = " selected"
 	}
 
 	return fmt.Sprintf(`
-		<div class="card card-border bg-base-100 border-base-300 shadow-xs mb-4 px-4 py-3 flex flex-wrap justify-between items-center gap-3">
-			<div class="flex flex-wrap items-center gap-2.5">
-				<div class="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-base-content/70">
+		<div class="card card-border bg-base-100 border-base-300 shadow-xs mb-4 px-3 py-2.5 sm:px-4 sm:py-3 flex flex-row flex-wrap justify-between items-center gap-2 sm:gap-3">
+			<div class="flex items-center gap-2 sm:gap-2.5">
+				<label for="mobile_horizon_select" class="flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-base-content/70 shrink-0">
 					<span>⏱️</span>
-					<span>Horizon:</span>
-				</div>
-				<div class="join">
+					<span class="hidden xs:inline sm:inline">Horizon:</span>
+				</label>
+				<select id="mobile_horizon_select" aria-label="Select Horizon" class="select select-bordered select-sm sm:hidden font-semibold text-xs min-h-8 h-8 w-auto pr-7" onchange="if(this.value) window.location.href=this.value">
+					<option value="/budgets/%s/budget?horizon=monthly&filter=%s"%s>Monthly (%dd)</option>
+					<option value="/budgets/%s/budget?horizon=30d&filter=%s"%s>30d</option>
+					<option value="/budgets/%s/budget?horizon=90d&filter=%s"%s>90d</option>
+					<option value="/budgets/%s/budget?horizon=annual&filter=%s"%s>Annual</option>
+					<option value="/budgets/%s/budget?horizon=365d&filter=%s"%s>365d</option>
+				</select>
+				<div class="hidden sm:inline-flex join">
 					<a href="/budgets/%s/budget?horizon=monthly&filter=%s" class="btn btn-xs join-item %s">Monthly</a>
 					<a href="/budgets/%s/budget?horizon=30d&filter=%s" class="btn btn-xs join-item %s">30d</a>
 					<a href="/budgets/%s/budget?horizon=90d&filter=%s" class="btn btn-xs join-item %s">90d</a>
 					<a href="/budgets/%s/budget?horizon=annual&filter=%s" class="btn btn-xs join-item %s">Annual</a>
 					<a href="/budgets/%s/budget?horizon=365d&filter=%s" class="btn btn-xs join-item %s">365d</a>
 				</div>
-				<span class="text-[11px] text-base-content/50 font-medium hidden sm:inline">(%d days requirement window)</span>
+				<span class="text-[11px] text-base-content/50 font-medium hidden md:inline">(%d days requirement window)</span>
 			</div>
 
-			<div class="flex items-center gap-2">
+			<div class="flex items-center gap-2 shrink-0">
 				<form method="POST" action="/budgets/%s/budget/auto-assign" class="inline">
 					<input type="hidden" name="csrf_token" value="%s" />
 					<input type="hidden" name="currency" value="%s" />
 					<input type="hidden" name="horizon" value="%s" />
 					<input type="hidden" name="filter" value="%s" />
-					<button type="submit" class="btn btn-xs btn-outline btn-primary font-semibold shadow-xs gap-1.5">
+					<button type="submit" class="btn btn-sm sm:btn-xs btn-outline btn-primary font-semibold shadow-xs gap-1 sm:gap-1.5 min-h-8 touch-manipulation">
 						<span>⚡</span>
-						<span>Auto-Assign by Priority</span>
+						<span class="sm:hidden">Auto-Assign</span>
+						<span class="hidden sm:inline">Auto-Assign by Priority</span>
 					</button>
 				</form>
 			</div>
 		</div>
 	`,
+		budgetID, filterParam, monthlySel, windowDays,
+		budgetID, filterParam, d30Sel,
+		budgetID, filterParam, d90Sel,
+		budgetID, filterParam, annualSel,
+		budgetID, filterParam, d365Sel,
 		budgetID, filterParam, monthlyActive,
 		budgetID, filterParam, d30Active,
 		budgetID, filterParam, d90Active,
@@ -1189,40 +1214,42 @@ func renderBudgetFilterToolbar(budgetID, horizonParam, filterParam string, count
 	}
 
 	return fmt.Sprintf(`
-		<div class="flex flex-wrap justify-between items-center gap-3 mb-4">
-			<div class="flex flex-wrap items-center gap-3">
-				<div class="join">
-					<a href="/budgets/%s/budget?horizon=%s&filter=all" class="btn btn-sm join-item %s">
-						All <span class="badge badge-sm font-mono">%d</span>
+		<div class="flex flex-col lg:flex-row lg:justify-between lg:items-center gap-2.5 sm:gap-3 mb-4">
+			<div class="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2 sm:gap-3 w-full lg:w-auto">
+				<div class="grid grid-cols-2 sm:inline-flex sm:join gap-1.5 sm:gap-0 w-full sm:w-auto">
+					<a href="/budgets/%s/budget?horizon=%s&filter=all" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation %s">
+						<span>All</span> <span class="badge badge-xs sm:badge-sm font-mono">%d</span>
 					</a>
-					<a href="/budgets/%s/budget?horizon=%s&filter=attention" class="btn btn-sm join-item %s">
-						Needs attention <span class="badge badge-sm font-mono badge-warning">%d</span>
+					<a href="/budgets/%s/budget?horizon=%s&filter=attention" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation %s">
+						<span class="truncate">Needs attention</span> <span class="badge badge-xs sm:badge-sm font-mono badge-warning">%d</span>
 					</a>
-					<a href="/budgets/%s/budget?horizon=%s&filter=overspent" class="btn btn-sm join-item %s">
-						Overspent <span class="badge badge-sm font-mono badge-error">%d</span>
+					<a href="/budgets/%s/budget?horizon=%s&filter=overspent" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation %s">
+						<span>Overspent</span> <span class="badge badge-xs sm:badge-sm font-mono badge-error">%d</span>
 					</a>
-					<a href="/budgets/%s/budget?horizon=%s&filter=buffer" class="btn btn-sm join-item %s">
-						Has buffer <span class="badge badge-sm font-mono badge-info">%d</span>
+					<a href="/budgets/%s/budget?horizon=%s&filter=buffer" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation %s">
+						<span>Has buffer</span> <span class="badge badge-xs sm:badge-sm font-mono badge-info">%d</span>
 					</a>
 				</div>
-				<div class="join">
-					<button type="button" class="btn btn-sm btn-ghost border border-base-300 join-item text-xs" onclick="expandAllEnvelopes()">Expand all</button>
-					<button type="button" class="btn btn-sm btn-ghost border border-base-300 join-item text-xs" onclick="collapseAllEnvelopes()">Collapse all</button>
+				<div class="join grid grid-cols-2 sm:inline-flex w-full sm:w-auto">
+					<button type="button" class="btn btn-sm btn-ghost border border-base-300 join-item text-xs touch-manipulation" onclick="expandAllEnvelopes()">Expand all</button>
+					<button type="button" class="btn btn-sm btn-ghost border border-base-300 join-item text-xs touch-manipulation" onclick="collapseAllEnvelopes()">Collapse all</button>
 				</div>
 			</div>
-			<div class="flex items-center gap-2">
-				<div class="relative">
-					<input type="text" id="envelope_search_input" placeholder="Search envelopes..." class="input input-bordered input-sm w-44 text-xs pl-8" oninput="filterEnvelopeSearch(this.value)" />
+			<div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full lg:w-auto">
+				<div class="relative w-full sm:w-48">
+					<input type="text" id="envelope_search_input" placeholder="Search envelopes..." class="input input-bordered input-sm w-full text-xs pl-8" oninput="filterEnvelopeSearch(this.value)" />
 					<span class="absolute left-2.5 top-2 text-xs opacity-50 select-none">🔍</span>
 				</div>
-				<button type="button" class="btn btn-outline btn-primary btn-sm gap-1.5 shadow-xs font-semibold" onclick="openStructureModal('ai')">
-					<span>✨</span>
-					<span>AI / Import</span>
-				</button>
-				<button type="button" class="btn btn-primary btn-sm gap-1.5 shadow font-semibold" onclick="new_bucket_modal.showModal()">
-					<span>+</span>
-					<span>New Bucket</span>
-				</button>
+				<div class="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
+					<button type="button" class="btn btn-outline btn-primary btn-sm gap-1.5 shadow-xs font-semibold w-full sm:w-auto touch-manipulation" onclick="openStructureModal('ai')">
+						<span>✨</span>
+						<span>AI / Import</span>
+					</button>
+					<button type="button" class="btn btn-primary btn-sm gap-1.5 shadow font-semibold w-full sm:w-auto touch-manipulation" onclick="openNewBucketModal()">
+						<span>+</span>
+						<span>New Bucket</span>
+					</button>
+				</div>
 			</div>
 		</div>
 	`,
@@ -1599,7 +1626,7 @@ func renderBucketRowsDesktop(allBucketsCount int, bucketGroups []bucketGroupView
 	return sb.String()
 }
 
-func renderBucketCardsMobile(allBucketsCount int, displayBuckets []bucketViewData, defaultCurr, horizonParam, filterParam, csrfToken, budgetID string) string {
+func renderBucketCardsMobile(allBucketsCount int, bucketGroups []bucketGroupViewData, displayBuckets []bucketViewData, defaultCurr, horizonParam, filterParam, csrfToken, budgetID string) string {
 	if len(displayBuckets) == 0 {
 		return fmt.Sprintf(`
 			<div class="card card-border bg-base-100 border-base-300 p-6 text-center text-xs text-base-content/60">
@@ -1610,199 +1637,320 @@ func renderBucketCardsMobile(allBucketsCount int, displayBuckets []bucketViewDat
 	}
 
 	var sb strings.Builder
-	for _, b := range displayBuckets {
-		statusDot := "bg-success"
-		switch b.HealthStatus {
-		case "Overspent":
-			statusDot = "bg-error"
-		case "Over-allocated":
-			statusDot = "bg-warning"
-		case "Underfunded":
-			statusDot = "bg-warning"
-		case "Optional remaining":
-			statusDot = "bg-base-300"
+	for _, bg := range bucketGroups {
+		if len(bg.Buckets) == 0 {
+			continue
 		}
 
-		p3RiskBadge := ""
-		if b.HasP3AtRisk {
-			p3RiskBadge = `<span class="badge badge-error badge-outline badge-xs font-bold gap-1" title="Mandatory commitments are at risk"><span>⚠</span><span>P3 at risk</span></span>`
+		grpProgClass := "progress-warning"
+		if bg.ProgressPercent >= 100 {
+			grpProgClass = "progress-success"
 		}
-
-		formulaErrorBadge := ""
-		if b.HasFormulaError {
-			formulaErrorBadge = fmt.Sprintf(`<span class="badge badge-error badge-outline badge-xs font-bold gap-1 cursor-pointer formula-error-badge" title="%s"><span>⚠</span><span>Formula Error</span></span>`, html.EscapeString(b.FormulaErrorMessage))
-		}
-
-		bufferStr := fmt.Sprintf("Buffer: +%.2f %s", float64(b.UnassignedBufferMinor)/100.0, b.Currency)
-		if b.UnassignedBufferMinor < 0 {
-			bufferStr = fmt.Sprintf("⚠ Over-allocated: %.2f %s", float64(b.UnassignedBufferMinor)/100.0, b.Currency)
-		} else if b.UnassignedBufferMinor == 0 {
-			bufferStr = fmt.Sprintf("Buffer: 0.00 %s", b.Currency)
-		}
-
-		bProgClass := "progress-warning"
-		if b.HealthStatus == "Overspent" || b.HealthStatus == "Over-allocated" {
-			bProgClass = "progress-error"
-		} else if b.ProgressPercent >= 100 {
-			bProgClass = "progress-success"
-		}
-
-		availColor := "text-base-content"
-		if b.BalanceMinor < 0 {
-			availColor = "text-error"
-		}
-
-		neededColor := "text-base-content/60"
-		if b.TotalNeededMinor > 0 {
-			neededColor = "text-warning"
-		}
-
-		var searchTokens []string
-		searchTokens = append(searchTokens, b.Name, b.GroupName, b.HealthStatus)
-		for _, t := range b.Targets {
-			searchTokens = append(searchTokens, t.Name)
-		}
-		searchAttr := html.EscapeString(strings.ToLower(strings.Join(searchTokens, " ")))
-
-		toggleIcon := "▶"
-		sublistHidden := "hidden"
-		if b.DefaultExpanded {
-			toggleIcon = "▼"
-			sublistHidden = ""
-		}
-
-		var mobileTargets strings.Builder
-		if len(b.Targets) > 0 {
-			for _, t := range b.Targets {
-				priorityText := "Optional"
-				prioBadgeClass := "badge-ghost"
-				if t.Priority == 3 {
-					priorityText = "Mandatory"
-					prioBadgeClass = "badge-error"
-				} else if t.Priority == 2 {
-					priorityText = "Recommended"
-					prioBadgeClass = "badge-primary"
-				}
-
-				tProgClass := "progress-warning"
-				if t.CurrentFundedMinor < 0 {
-					tProgClass = "progress-error"
-				} else if t.ProgressPercent >= 100 {
-					tProgClass = "progress-success"
-				}
-
-				mobileTargets.WriteString(fmt.Sprintf(`
-					<div class="flex items-center justify-between text-xs py-1 border-b border-base-200/50 last:border-0">
-						<div class="flex items-center gap-1.5 min-w-0">
-							<span class="font-medium truncate">%s</span>
-							<span class="badge %s badge-xs">%s</span>
-						</div>
-						<div class="flex items-center gap-2 shrink-0">
-							<progress class="progress %s h-1.5 w-12" value="%d" max="100"></progress>
-							<span class="font-mono text-[10px] text-base-content/70">%.2f / %.2f %s</span>
-						</div>
-					</div>
-				`,
-					html.EscapeString(t.Name), prioBadgeClass, priorityText,
-					tProgClass, t.ProgressPercent,
-					float64(t.CurrentFundedMinor)/100.0, float64(t.RequiredMinor)/100.0, t.Currency,
-				))
-			}
-		} else {
-			mobileTargets.WriteString(`<div class="text-xs text-base-content/40 italic">No targets defined in this envelope.</div>`)
-		}
-
-		actionMenu := RenderPopoverActionMenu("bucket_mob", b.ID, []TableActionItem{
-			{
-				Label:   "✏️ Edit Bucket",
-				OnClick: fmt.Sprintf("openEditBucketModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), strings.ReplaceAll(b.GroupName, "'", "\\'")),
-			},
-			{
-				Label:   "💵 Assign Funds",
-				OnClick: fmt.Sprintf("openAssignModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
-			},
-			{
-				Label:   "↔️ Move Money",
-				OnClick: fmt.Sprintf("openMoveModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
-			},
-			{
-				Label:      "📁 Archive Bucket",
-				FormAction: fmt.Sprintf("/budgets/%s/buckets/%s/archive", budgetID, b.ID),
-				CSRFToken:  csrfToken,
-				IsDanger:   true,
-				ConfirmMsg: "Archive this bucket? It must have zero balance and zero targets.",
-			},
-		})
 
 		sb.WriteString(fmt.Sprintf(`
-			<div id="mobile-bucket-%s" class="card card-border bg-base-100 border-base-300 shadow-xs mobile-bucket-card" data-bucket-id="%s" data-search="%s">
-				<div class="card-body p-3.5 gap-2">
-					<div class="flex items-start justify-between gap-2">
-						<div class="flex items-center gap-2 min-w-0">
-							<span class="w-2.5 h-2.5 rounded-full shrink-0 %s"></span>
-							<div>
-								<div class="font-bold text-sm truncate flex items-center gap-1.5">
-									<span>%s</span>
-									%s
-								</div>
-								<div class="text-[11px] text-base-content/50">%s</div>
-							</div>
-						</div>
-						<div class="flex items-center gap-1 shrink-0">
-							<span class="badge %s badge-xs font-semibold">%s</span>
-							%s
-						</div>
+			<div id="mobile-group-%s" class="card card-border bg-base-200/80 border-base-300 px-3.5 py-2.5 mobile-group-header select-none" data-group-id="%s">
+				<div class="flex items-center justify-between gap-2">
+					<div class="flex items-center gap-2 min-w-0 cursor-pointer flex-1" onclick="toggleMobileGroup('%s')">
+						<span id="mobile-group-icon-%s" class="text-xs transition-transform duration-200">▼</span>
+						<span class="uppercase tracking-wider text-xs font-black text-base-content/80 truncate">%s</span>
+						<span class="badge badge-neutral badge-xs font-mono font-normal shrink-0">%d</span>
 					</div>
-
-					<div class="flex justify-between items-baseline pt-1">
-						<div>
-							<span class="text-[10px] uppercase font-bold text-base-content/50">Available</span>
-							<div class="font-mono font-bold text-sm %s">%.2f %s</div>
-						</div>
-						<div class="text-right">
-							<span class="text-[10px] uppercase font-bold text-base-content/50">Needed</span>
-							<div class="font-mono text-xs font-semibold %s">%.2f %s</div>
-						</div>
+					<div class="flex items-center gap-1 shrink-0">
+						<button type="button" class="btn btn-ghost btn-xs min-h-7 px-1.5 text-base-content/60 hover:text-primary touch-manipulation" onclick="openRenameGroupModal('%s')" title="Rename Category">✏️</button>
+						<form method="POST" action="/budgets/%s/groups/move?dir=up" class="inline">
+							<input type="hidden" name="csrf_token" value="%s" />
+							<input type="hidden" name="group_name" value="%s" />
+							<input type="hidden" name="horizon" value="%s" />
+							<input type="hidden" name="filter" value="%s" />
+							<button type="submit" class="btn btn-ghost btn-xs min-h-7 px-1 text-base-content/60 hover:text-primary touch-manipulation" title="Move Up">▲</button>
+						</form>
+						<form method="POST" action="/budgets/%s/groups/move?dir=down" class="inline">
+							<input type="hidden" name="csrf_token" value="%s" />
+							<input type="hidden" name="group_name" value="%s" />
+							<input type="hidden" name="horizon" value="%s" />
+							<input type="hidden" name="filter" value="%s" />
+							<button type="submit" class="btn btn-ghost btn-xs min-h-7 px-1 text-base-content/60 hover:text-primary touch-manipulation" title="Move Down">▼</button>
+						</form>
 					</div>
-
-					<div class="w-full">
-						<progress class="progress %s h-1.5 w-full" value="%d" max="100"></progress>
-						<div class="flex justify-between text-[10px] font-mono text-base-content/60 mt-0.5">
-							<span>%d%%%%</span>
-							<span>%s</span>
-						</div>
+				</div>
+				<div class="flex items-center justify-between gap-3 mt-1.5 text-[11px] font-mono text-base-content/70">
+					<div class="flex items-center gap-2 flex-1 min-w-0">
+						<progress class="progress %s h-1.5 w-20 shrink-0" value="%d" max="100"></progress>
+						<span class="truncate">%.2f / %.2f</span>
 					</div>
-
-					<div class="pt-2 border-t border-base-200 flex justify-between items-center text-xs">
-						<button type="button" class="btn btn-ghost btn-xs gap-1 font-semibold" onclick="toggleMobileTargets('%s')">
-							<span id="mobile-toggle-icon-%s">%s</span>
-							<span>%d targets</span>
-						</button>
-						<div class="flex items-center gap-1">
-							<button type="button" class="btn btn-ghost btn-xs text-primary font-semibold" onclick="openBucketDrawer('%s', '%s', '%s', '%.2f', '%s')">Inspect</button>
-							%s
-						</div>
-					</div>
-
-					<div id="mobile-targets-%s" class="mobile-target-sublist %s pt-2 space-y-1.5 border-t border-base-200" data-bucket-id="%s">
-						%s
+					<div class="shrink-0">
+						<span class="text-base-content/50">Avail:</span> <span class="font-bold text-base-content">%.2f %s</span>
 					</div>
 				</div>
 			</div>
 		`,
-			b.ID, b.ID, searchAttr,
-			statusDot, html.EscapeString(b.Name), formulaErrorBadge, html.EscapeString(b.GroupName),
-			b.HealthBadgeClass, b.HealthBadge, p3RiskBadge,
-			availColor, float64(b.BalanceMinor)/100.0, b.Currency,
-			neededColor, float64(b.TotalNeededMinor)/100.0, b.Currency,
-			bProgClass, b.ProgressPercent,
-			b.ProgressPercent, bufferStr,
-			b.ID, b.ID, toggleIcon, len(b.Targets),
-			b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), strings.ReplaceAll(b.GroupName, "'", "\\'"), float64(b.BalanceMinor)/100.0, b.Currency,
-			actionMenu,
-			b.ID, sublistHidden, b.ID,
-			mobileTargets.String(),
+			bg.GroupID, bg.GroupID,
+			bg.GroupID, bg.GroupID, html.EscapeString(bg.GroupName), len(bg.Buckets),
+			strings.ReplaceAll(bg.GroupName, "'", "\\'"),
+			budgetID, csrfToken, html.EscapeString(bg.GroupName), html.EscapeString(horizonParam), html.EscapeString(filterParam),
+			budgetID, csrfToken, html.EscapeString(bg.GroupName), html.EscapeString(horizonParam), html.EscapeString(filterParam),
+			grpProgClass, bg.ProgressPercent,
+			float64(bg.TotalFundedMinor)/100.0, float64(bg.TotalRequiredMinor)/100.0,
+			float64(bg.TotalAvailableMinor)/100.0, defaultCurr,
 		))
+
+		for _, b := range bg.Buckets {
+			statusDot := "bg-success"
+			switch b.HealthStatus {
+			case "Overspent":
+				statusDot = "bg-error"
+			case "Over-allocated":
+				statusDot = "bg-warning"
+			case "Underfunded":
+				statusDot = "bg-warning"
+			case "Optional remaining":
+				statusDot = "bg-base-300"
+			}
+
+			p3RiskBadge := ""
+			if b.HasP3AtRisk {
+				p3RiskBadge = `<span class="badge badge-error badge-outline badge-xs font-bold gap-1" title="Mandatory commitments are at risk"><span>⚠</span><span>P3 at risk</span></span>`
+			}
+
+			formulaErrorBadge := ""
+			if b.HasFormulaError {
+				formulaErrorBadge = fmt.Sprintf(`<span class="badge badge-error badge-outline badge-xs font-bold gap-1 cursor-pointer formula-error-badge" title="%s"><span>⚠</span><span>Formula Error</span></span>`, html.EscapeString(b.FormulaErrorMessage))
+			}
+
+			bufferStr := fmt.Sprintf("Buffer: +%.2f %s", float64(b.UnassignedBufferMinor)/100.0, b.Currency)
+			if b.UnassignedBufferMinor < 0 {
+				bufferStr = fmt.Sprintf("⚠ Over-allocated: %.2f %s", float64(b.UnassignedBufferMinor)/100.0, b.Currency)
+			} else if b.UnassignedBufferMinor == 0 {
+				bufferStr = fmt.Sprintf("Buffer: 0.00 %s", b.Currency)
+			}
+
+			bProgClass := "progress-warning"
+			if b.HealthStatus == "Overspent" || b.HealthStatus == "Over-allocated" {
+				bProgClass = "progress-error"
+			} else if b.ProgressPercent >= 100 {
+				bProgClass = "progress-success"
+			}
+
+			availColor := "text-base-content"
+			if b.BalanceMinor < 0 {
+				availColor = "text-error"
+			}
+
+			neededColor := "text-base-content/60"
+			if b.TotalNeededMinor > 0 {
+				neededColor = "text-warning"
+			}
+
+			var searchTokens []string
+			searchTokens = append(searchTokens, b.Name, b.GroupName, b.HealthStatus)
+			for _, t := range b.Targets {
+				searchTokens = append(searchTokens, t.Name)
+			}
+			searchAttr := html.EscapeString(strings.ToLower(strings.Join(searchTokens, " ")))
+
+			toggleIcon := "▶"
+			sublistHidden := "hidden"
+			if b.DefaultExpanded {
+				toggleIcon = "▼"
+				sublistHidden = ""
+			}
+
+			var mobileTargets strings.Builder
+			if len(b.Targets) > 0 {
+				for _, t := range b.Targets {
+					priorityText := "Optional"
+					prioBadgeClass := "badge-ghost"
+					if t.Priority == 3 {
+						priorityText = "Mandatory"
+						prioBadgeClass = "badge-error"
+					} else if t.Priority == 2 {
+						priorityText = "Recommended"
+						prioBadgeClass = "badge-primary"
+					}
+
+					rInt := t.RecurrenceInterval
+					if rInt == 0 {
+						rInt = t.RecurrenceDays
+					}
+					cadenceDisplay := t.RecurrenceCadence
+					if t.RecurrenceCadence == "CUSTOM_DAYS" {
+						if rInt == 0 {
+							rInt = 90
+						}
+						cadenceDisplay = fmt.Sprintf("%dd", rInt)
+					} else if t.RecurrenceCadence == "CUSTOM_MONTHS" {
+						if rInt == 0 {
+							rInt = 3
+						}
+						cadenceDisplay = fmt.Sprintf("%dm", rInt)
+					} else if t.RecurrenceCadence == "CUSTOM_YEARS" {
+						if rInt == 0 {
+							rInt = 1
+						}
+						cadenceDisplay = fmt.Sprintf("%dy", rInt)
+					}
+
+					dueText := ""
+					if t.DueDate > 0 {
+						dTime := time.UnixMicro(t.DueDate).UTC()
+						dueText = fmt.Sprintf(` • Due: %s`, dTime.Format("2006-01-02"))
+					}
+					goalText := ""
+					if t.CeilingAmountMinor != nil {
+						goalText = fmt.Sprintf(` • Goal: %.2f %s`, float64(*t.CeilingAmountMinor)/100.0, t.Currency)
+					}
+					luaBadge := ""
+					if t.AmountMode == "LUA_FORMULA" {
+						luaBadge = `<span class="badge badge-outline badge-xs font-mono text-secondary border-secondary">LUA</span>`
+					}
+
+					tProgClass := "progress-warning"
+					if t.CurrentFundedMinor < 0 {
+						tProgClass = "progress-error"
+					} else if t.ProgressPercent >= 100 {
+						tProgClass = "progress-success"
+					}
+
+					tNeededText := `<span class="font-mono text-[11px] text-base-content/40">✓ Funded</span>`
+					if t.NeededMinor > 0 {
+						tNeededText = fmt.Sprintf(`<span class="font-mono text-[11px] font-semibold text-warning">Needs %.2f %s</span>`, float64(t.NeededMinor)/100.0, t.Currency)
+					}
+
+					tNameDisplay := html.EscapeString(t.Name)
+					if strings.TrimSpace(tNameDisplay) == "" {
+						tNameDisplay = priorityText
+					}
+
+					mobileTargets.WriteString(fmt.Sprintf(`
+						<div class="flex flex-col gap-1 text-xs py-1.5 border-b border-base-200/60 last:border-0">
+							<div class="flex items-center justify-between gap-2">
+								<div class="flex items-center gap-1.5 min-w-0">
+									<span class="font-medium truncate">%s</span>
+									<span class="badge %s badge-xs shrink-0">%s</span>
+									%s
+								</div>
+								<div class="shrink-0">%s</div>
+							</div>
+							<div class="flex items-center justify-between gap-2 text-[11px] text-base-content/60">
+								<span class="truncate">%s%s%s</span>
+								<div class="flex items-center gap-2 shrink-0">
+									<progress class="progress %s h-1.5 w-14" value="%d" max="100"></progress>
+									<span class="font-mono text-[10px] text-base-content/70">%.2f / %.2f %s</span>
+								</div>
+							</div>
+						</div>
+					`,
+						tNameDisplay, prioBadgeClass, priorityText, luaBadge,
+						tNeededText,
+						cadenceDisplay, dueText, goalText,
+						tProgClass, t.ProgressPercent,
+						float64(t.CurrentFundedMinor)/100.0, float64(t.RequiredMinor)/100.0, t.Currency,
+					))
+				}
+			} else {
+				mobileTargets.WriteString(`<div class="text-xs text-base-content/40 italic">No targets defined in this envelope.</div>`)
+			}
+
+			actionMenu := RenderPopoverActionMenu("bucket_mob", b.ID, []TableActionItem{
+				{
+					Label:   "✏️ Edit Bucket",
+					OnClick: fmt.Sprintf("openEditBucketModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), strings.ReplaceAll(b.GroupName, "'", "\\'")),
+				},
+				{
+					Label:   "💵 Assign Funds",
+					OnClick: fmt.Sprintf("openAssignModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
+				},
+				{
+					Label:   "↔️ Move Money",
+					OnClick: fmt.Sprintf("openMoveModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
+				},
+				{
+					Label:      "📁 Archive Bucket",
+					FormAction: fmt.Sprintf("/budgets/%s/buckets/%s/archive", budgetID, b.ID),
+					CSRFToken:  csrfToken,
+					IsDanger:   true,
+					ConfirmMsg: "Archive this bucket? It must have zero balance and zero targets.",
+				},
+			})
+
+			escapedBucketName := strings.ReplaceAll(b.Name, "'", "\\'")
+			escapedGroupName := strings.ReplaceAll(b.GroupName, "'", "\\'")
+
+			sb.WriteString(fmt.Sprintf(`
+				<div id="mobile-bucket-%s" class="card card-border bg-base-100 border-base-300 shadow-xs mobile-bucket-card mobile-group-item-%s" data-bucket-id="%s" data-group-id="%s" data-search="%s">
+					<div class="card-body p-4 gap-2.5">
+						<div class="flex items-start justify-between gap-2">
+							<div class="flex items-center gap-2 min-w-0">
+								<span class="w-2.5 h-2.5 rounded-full shrink-0 %s"></span>
+								<div class="min-w-0">
+									<div class="font-bold text-sm truncate flex items-center gap-1.5">
+										<span class="truncate">%s</span>
+										%s
+									</div>
+									<div class="text-[11px] text-base-content/50 truncate">%s</div>
+								</div>
+							</div>
+							<div class="flex items-center gap-1 shrink-0">
+								<span class="badge %s badge-xs sm:badge-sm font-semibold">%s</span>
+								%s
+							</div>
+						</div>
+
+						<div class="flex justify-between items-baseline pt-1">
+							<div>
+								<span class="text-[10px] uppercase font-bold text-base-content/50">Available</span>
+								<div class="font-mono font-bold text-base %s">%.2f %s</div>
+							</div>
+							<div class="text-right">
+								<span class="text-[10px] uppercase font-bold text-base-content/50">Needed</span>
+								<div class="font-mono text-xs font-semibold %s">%.2f %s</div>
+							</div>
+						</div>
+
+						<div class="w-full">
+							<progress class="progress %s h-2 w-full" value="%d" max="100"></progress>
+							<div class="flex justify-between text-[11px] font-mono text-base-content/60 mt-1">
+								<span>%d%%%%</span>
+								<span>%s</span>
+							</div>
+						</div>
+
+						<div class="pt-2.5 border-t border-base-200 flex flex-wrap justify-between items-center gap-1.5 text-xs">
+							<button type="button" class="btn btn-ghost btn-sm min-h-8 px-2.5 gap-1.5 text-xs font-semibold touch-manipulation" onclick="toggleMobileTargets('%s')">
+								<span id="mobile-toggle-icon-%s">%s</span>
+								<span>%d targets</span>
+							</button>
+							<div class="flex items-center gap-1.5">
+								<button type="button" class="btn btn-soft btn-primary btn-sm min-h-8 px-2.5 text-xs font-semibold gap-1 touch-manipulation" onclick="openAssignModal('%s', '%s', '%s')">
+									<span>💵</span>
+									<span>Assign</span>
+								</button>
+								<button type="button" class="btn btn-ghost btn-sm min-h-8 px-2.5 text-xs text-primary font-semibold touch-manipulation" onclick="openBucketDrawer('%s', '%s', '%s', '%.2f', '%s')">Inspect</button>
+								%s
+							</div>
+						</div>
+
+						<div id="mobile-targets-%s" class="mobile-target-sublist %s pt-2 space-y-1.5 border-t border-base-200" data-bucket-id="%s">
+							%s
+						</div>
+					</div>
+				</div>
+			`,
+				b.ID, bg.GroupID, b.ID, bg.GroupID, searchAttr,
+				statusDot, html.EscapeString(b.Name), formulaErrorBadge, html.EscapeString(b.GroupName),
+				b.HealthBadgeClass, b.HealthBadge, p3RiskBadge,
+				availColor, float64(b.BalanceMinor)/100.0, b.Currency,
+				neededColor, float64(b.TotalNeededMinor)/100.0, b.Currency,
+				bProgClass, b.ProgressPercent,
+				b.ProgressPercent, bufferStr,
+				b.ID, b.ID, toggleIcon, len(b.Targets),
+				b.ID, escapedBucketName, b.Currency,
+				b.ID, escapedBucketName, escapedGroupName, float64(b.BalanceMinor)/100.0, b.Currency,
+				actionMenu,
+				b.ID, sublistHidden, b.ID,
+				mobileTargets.String(),
+			))
+		}
 	}
 
 	return sb.String()
@@ -2396,11 +2544,12 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	structureModalHTML := fmt.Sprintf(`
     <!-- Budget Structure Generator & Import Modal -->
     <dialog id="structure_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6 max-w-3xl w-11/12 max-h-[90vh] flex flex-col">
+        <div class="modal-box card-border border-base-300 p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6 max-w-3xl w-full sm:w-11/12 max-h-[85dvh] sm:max-h-[90vh] rounded-t-2xl sm:rounded-box overscroll-contain flex flex-col">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden shrink-0"></div>
             <div class="flex justify-between items-center mb-4 shrink-0">
                 <div class="flex items-center gap-2">
                     <span class="text-xl">✨</span>
-                    <h3 class="font-extrabold text-xl tracking-tight">Bucket Structure Assistant</h3>
+                    <h3 class="font-extrabold text-lg sm:text-xl tracking-tight">Bucket Structure Assistant</h3>
                 </div>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
             </div>
@@ -2527,7 +2676,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	)
 
 	mobileCardsHTML := renderBucketCardsMobile(
-		len(allBuckets), displayBuckets, defaultCurr, horizonParam, filterParam, csrfToken, budgetID,
+		len(allBuckets), bucketGroups, displayBuckets, defaultCurr, horizonParam, filterParam, csrfToken, budgetID,
 	)
 
 	horizonDisplay := "Monthly"
@@ -2615,26 +2764,27 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 </head>
 <body class="bg-base-200 text-base-content min-h-screen flex flex-col">
     <!-- Navbar -->
-    <header class="navbar bg-base-100 border-b border-base-300 px-6 sticky top-0 z-30 shadow-xs">
-        <div class="navbar-start gap-4 items-center">
-            <a href="/budgets" class="text-2xl font-black tracking-tight text-primary flex items-center gap-2">
+    <header class="navbar bg-base-100 border-b border-base-300 px-3 sm:px-6 pt-[env(safe-area-inset-top)] sticky top-0 z-30 shadow-xs min-h-14">
+        <div class="navbar-start gap-2 sm:gap-4 items-center min-w-0">
+            <a href="/budgets" class="text-xl sm:text-2xl font-black tracking-tight text-primary flex items-center gap-1.5 sm:gap-2 shrink-0">
                 <span>⚖️</span>
                 <span>Balance</span>
             </a>
-            <div class="badge badge-neutral font-semibold gap-1.5 py-3">
-                <span class="w-2 h-2 rounded-full bg-success"></span>
-                <span>%s</span>
+            <div class="badge badge-neutral font-semibold gap-1.5 py-2.5 sm:py-3 max-w-[140px] sm:max-w-none truncate">
+                <span class="w-2 h-2 rounded-full bg-success shrink-0"></span>
+                <span class="truncate">%s</span>
             </div>
-            <span class="badge badge-soft badge-primary font-semibold text-xs">%s</span>
+            <span class="badge badge-soft badge-primary font-semibold text-xs hidden sm:inline-flex">%s</span>
         </div>
-        <div class="navbar-end gap-3">
-            <div class="badge badge-accent badge-soft font-bold py-3 text-xs gap-1.5">
+        <div class="navbar-end gap-1.5 sm:gap-3 shrink-0">
+            <div class="badge badge-accent badge-soft font-bold py-2.5 sm:py-3 text-xs gap-1 sm:gap-1.5">
                 <span>⏳</span>
-                <span>Age of Money: %d days</span>
+                <span class="hidden sm:inline">Age of Money: %d days</span>
+                <span class="sm:hidden">%dd</span>
             </div>
             <form method="POST" action="/logout">
                 <input type="hidden" name="csrf_token" value="%s" />
-                <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
+                <button type="submit" class="btn btn-ghost btn-xs sm:btn-sm font-medium px-2 sm:px-3">Log Out</button>
             </form>
         </div>
     </header>
@@ -2655,7 +2805,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
         </aside>
 
         <!-- Center Workspace -->
-        <main class="flex-1 p-6 md:p-8 overflow-y-auto">
+        <main class="flex-1 p-4 sm:p-6 md:p-8 pb-24 md:pb-8 overflow-y-auto">
             %s
 
             %s
@@ -2679,7 +2829,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
     <!-- New Bucket Modal -->
     <dialog id="new_bucket_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
+        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
             <div class="flex justify-between items-center mb-4">
                 <h3 class="font-extrabold text-xl tracking-tight">Create New Bucket</h3>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
@@ -2690,7 +2841,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 <input type="hidden" name="filter" value="%s" />
                 <div class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Bucket Name</span></label>
-                    <input type="text" name="name" required placeholder="e.g. Groceries, Living Expenses" class="input input-bordered w-full input-md focus:input-primary" />
+                    <input type="text" id="new_bucket_name" name="name" required autofocus placeholder="e.g. Groceries, Living Expenses" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
                 <div class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Group / Category</span></label>
@@ -2707,7 +2858,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
     <!-- Rename Group Modal -->
     <dialog id="rename_group_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
+        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
             <div class="flex justify-between items-center mb-4">
                 <h3 class="font-extrabold text-xl tracking-tight">Rename Category / Group</h3>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
@@ -2719,7 +2871,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 <input type="hidden" id="rename_group_old_name" name="old_name" value="" />
                 <div class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Category Name</span></label>
-                    <input type="text" id="rename_group_new_name" name="new_name" required placeholder="e.g. Living, Housing, Needs" class="input input-bordered w-full input-md focus:input-primary" />
+                    <input type="text" id="rename_group_new_name" name="new_name" required autofocus placeholder="e.g. Living, Housing, Needs" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
                 <div class="modal-action mt-6 gap-2">
                     <button type="button" class="btn btn-ghost" onclick="rename_group_modal.close()">Cancel</button>
@@ -2732,7 +2884,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
     <!-- Edit Bucket Modal -->
     <dialog id="edit_bucket_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
+        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
             <div class="flex justify-between items-center mb-4">
                 <h3 class="font-extrabold text-xl tracking-tight">Edit Bucket</h3>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
@@ -2743,7 +2896,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 <input type="hidden" name="filter" value="%s" />
                 <div class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Bucket Name</span></label>
-                    <input type="text" id="edit_bucket_name" name="name" required class="input input-bordered w-full input-md focus:input-primary" />
+                    <input type="text" id="edit_bucket_name" name="name" required autofocus class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
                 <div class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Group / Category</span></label>
@@ -2760,7 +2913,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
     <!-- Assign Funds Modal -->
     <dialog id="assign_funds_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
+        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
             <div class="flex justify-between items-center mb-4">
                 <h3 class="font-extrabold text-xl tracking-tight">Assign Funds to Envelope</h3>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
@@ -2777,7 +2931,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 <div class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Amount</span></label>
                     <div class="join w-full">
-                        <input type="number" step="0.01" name="amount" required placeholder="100.00" class="input input-bordered join-item w-full input-md focus:input-primary font-mono" />
+                        <input type="number" step="0.01" inputmode="decimal" id="assign_amount_input" name="amount" required autofocus placeholder="100.00" class="input input-bordered join-item w-full input-md focus:input-primary font-mono" />
                         <span id="assign_currency_label" class="btn join-item btn-neutral no-animation">%s</span>
                     </div>
                 </div>
@@ -2792,7 +2946,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
     <!-- Move Funds Modal -->
     <dialog id="move_funds_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
+        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
             <div class="flex justify-between items-center mb-4">
                 <h3 class="font-extrabold text-xl tracking-tight">Move Funds Between Envelopes</h3>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
@@ -2815,7 +2970,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 <div class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Amount to Move</span></label>
                     <div class="join w-full">
-                        <input type="number" step="0.01" min="0.01" name="amount" required placeholder="50.00" class="input input-bordered join-item w-full input-md focus:input-primary font-mono" />
+                        <input type="number" step="0.01" min="0.01" inputmode="decimal" id="move_amount_input" name="amount" required autofocus placeholder="50.00" class="input input-bordered join-item w-full input-md focus:input-primary font-mono" />
                         <span id="move_currency_label" class="btn join-item btn-neutral no-animation">%s</span>
                     </div>
                 </div>
@@ -2830,25 +2985,26 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
     <!-- Bucket Inspector Drawer / Modal -->
     <dialog id="bucket_drawer" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6 max-w-2xl">
+        <div class="modal-box card-border border-base-300 w-full max-w-2xl max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
             <div class="flex justify-between items-start mb-4">
                 <div>
-                    <h3 id="drawer_bucket_name" class="font-extrabold text-2xl tracking-tight"></h3>
+                    <h3 id="drawer_bucket_name" class="font-extrabold text-xl sm:text-2xl tracking-tight"></h3>
                     <div id="drawer_bucket_meta" class="text-xs text-base-content/60 mt-0.5"></div>
                 </div>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
             </div>
 
-            <div class="stats stats-horizontal shadow-sm w-full bg-base-200/60 border border-base-300 mb-6">
-                <div class="stat p-4">
+            <div class="stats stats-vertical sm:stats-horizontal shadow-sm w-full bg-base-200/60 border border-base-300 mb-6">
+                <div class="stat p-3.5 sm:p-4">
                     <div class="stat-title text-[10px] font-bold uppercase tracking-wider">Available Envelope Balance</div>
                     <div id="drawer_bucket_balance" class="stat-value text-xl font-mono font-black text-primary"></div>
                 </div>
-                <div class="stat p-4">
+                <div class="stat p-3.5 sm:p-4">
                     <div class="stat-title text-[10px] font-bold uppercase tracking-wider">Funded / Required</div>
                     <div id="drawer_bucket_funded_req" class="stat-value text-base font-mono font-bold text-base-content/80"></div>
                 </div>
-                <div class="stat p-4">
+                <div class="stat p-3.5 sm:p-4">
                     <div class="stat-title text-[10px] font-bold uppercase tracking-wider">Unassigned Buffer</div>
                     <div id="drawer_bucket_buffer" class="stat-value text-base font-mono font-bold"></div>
                 </div>
@@ -2857,7 +3013,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             <!-- Target Management Section -->
             <div class="flex justify-between items-center mb-3">
                 <h4 class="font-bold text-sm uppercase tracking-wider text-base-content/70">Targets in this Bucket</h4>
-                <button type="button" class="btn btn-xs btn-primary gap-1 font-semibold" onclick="openNewTargetModal()">+ Add Target</button>
+                <button type="button" class="btn btn-sm sm:btn-xs btn-primary gap-1 font-semibold touch-manipulation" onclick="openNewTargetModal()">+ Add Target</button>
             </div>
 
             <div id="drawer_targets_container" class="space-y-3 mb-6">
@@ -2873,7 +3029,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
     <!-- Create / Edit Target Modal -->
     <dialog id="target_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6 max-w-xl">
+        <div class="modal-box card-border border-base-300 w-full max-w-xl max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
             <div class="flex justify-between items-center mb-4">
                 <h3 id="target_modal_title" class="font-extrabold text-xl tracking-tight">Add Target</h3>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
@@ -2967,7 +3124,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 <!-- Fixed Amount Input -->
                 <div id="fixed_amount_container" class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Period Amount</span></label>
-                    <input type="number" step="0.01" min="0" id="target_amount" name="amount" required placeholder="1000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
+                    <input type="number" step="0.01" min="0" inputmode="decimal" id="target_amount" name="amount" required placeholder="1000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
                 </div>
 
                 <!-- Lua Formula & AI Assistant Container -->
@@ -3009,7 +3166,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
                 <div class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Target Ceiling / Goal (Optional)</span></label>
-                    <input type="number" step="0.01" min="0" id="target_ceiling" name="ceiling_amount" placeholder="20000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
+                    <input type="number" step="0.01" min="0" inputmode="decimal" id="target_ceiling" name="ceiling_amount" placeholder="20000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
                 </div>
 
                 <div class="modal-action mt-6 gap-2">
@@ -3094,6 +3251,18 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             if (icon) icon.innerText = shouldHide ? '▶' : '▼';
         }
 
+        function toggleMobileGroup(groupID) {
+            const items = document.querySelectorAll('.mobile-group-item-' + groupID);
+            let anyHidden = false;
+            items.forEach(el => {
+                if (el.classList.contains('hidden')) anyHidden = true;
+            });
+            const shouldHide = !anyHidden;
+            items.forEach(el => el.classList.toggle('hidden', shouldHide));
+            const icon = document.getElementById('mobile-group-icon-' + groupID);
+            if (icon) icon.innerText = shouldHide ? '▶' : '▼';
+        }
+
         function expandAllEnvelopes() {
             document.querySelectorAll('.target-subrows').forEach(row => {
                 row.classList.remove('hidden');
@@ -3103,6 +3272,14 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 const btn = document.querySelector('.target-toggle-btn[aria-controls="targets-' + bID + '"]');
                 if (btn) btn.setAttribute('aria-expanded', 'true');
                 localStorage.setItem('balance_bucket_expanded_' + currentBudgetID + '_' + bID, 'true');
+            });
+            document.querySelectorAll('.mobile-bucket-card').forEach(card => {
+                card.classList.remove('hidden');
+            });
+            document.querySelectorAll('.mobile-group-header').forEach(hdr => {
+                const gID = hdr.getAttribute('data-group-id');
+                const icon = document.getElementById('mobile-group-icon-' + gID);
+                if (icon) icon.innerText = '▼';
             });
             document.querySelectorAll('.mobile-target-sublist').forEach(el => {
                 el.classList.remove('hidden');
@@ -3147,19 +3324,34 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 const matches = !q || text.includes(q);
                 card.classList.toggle('hidden', !matches);
             });
+            document.querySelectorAll('.mobile-group-header').forEach(hdr => {
+                const gID = hdr.getAttribute('data-group-id');
+                const visibleCards = document.querySelectorAll('.mobile-group-item-' + gID + ':not(.hidden)');
+                hdr.classList.toggle('hidden', q.length > 0 && visibleCards.length === 0);
+            });
+        }
+
+        function openNewBucketModal() {
+            new_bucket_modal.showModal();
+            const inp = document.getElementById('new_bucket_name');
+            if (inp) setTimeout(() => inp.focus(), 50);
         }
 
         function openRenameGroupModal(groupName) {
             document.getElementById('rename_group_old_name').value = groupName;
-            document.getElementById('rename_group_new_name').value = groupName;
+            const inp = document.getElementById('rename_group_new_name');
+            inp.value = groupName;
             rename_group_modal.showModal();
+            setTimeout(() => inp.focus(), 50);
         }
 
         function openEditBucketModal(id, name, group) {
             document.getElementById('edit_bucket_form').action = '/budgets/' + currentBudgetID + '/buckets/' + id + '/update';
-            document.getElementById('edit_bucket_name').value = name;
+            const inp = document.getElementById('edit_bucket_name');
+            inp.value = name;
             document.getElementById('edit_bucket_group').value = group;
             edit_bucket_modal.showModal();
+            setTimeout(() => inp.focus(), 50);
         }
 
         function openAssignModal(id, name, curr) {
@@ -3168,6 +3360,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             document.getElementById('assign_currency').value = curr;
             document.getElementById('assign_currency_label').innerText = curr;
             assign_funds_modal.showModal();
+            const inp = document.getElementById('assign_amount_input');
+            if (inp) setTimeout(() => inp.focus(), 50);
         }
 
         function openMoveModal(id, name, curr) {
@@ -3176,6 +3370,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
             document.getElementById('move_currency').value = curr;
             document.getElementById('move_currency_label').innerText = curr;
             move_funds_modal.showModal();
+            const inp = document.getElementById('move_amount_input');
+            if (inp) setTimeout(() => inp.focus(), 50);
         }
 
         let activeDrawerBucketID = '';
@@ -3239,12 +3435,12 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                         '<div class="flex justify-between items-center text-xs mt-1">' +
                             '<span class="font-mono">Funded: ' + (t.CurrentFundedMinor/100).toFixed(2) + ' / Required: ' + (t.RequiredMinor/100).toFixed(2) + ' ' + t.Currency + '</span>' +
                             '<div class="flex items-center gap-1">' +
-                                '<button type="button" class="btn btn-ghost btn-xs text-primary font-semibold target-edit-btn" onclick="openEditTargetModal(\'' + t.ID + '\')">Edit</button>' +
+                                '<button type="button" class="btn btn-ghost btn-sm sm:btn-xs text-primary font-semibold target-edit-btn touch-manipulation" onclick="openEditTargetModal(\'' + t.ID + '\')">Edit</button>' +
                                 '<form method="POST" action="/budgets/' + currentBudgetID + '/targets/' + t.ID + '/delete" onsubmit="return confirm(\'Delete this target?\')">' +
                                     '<input type="hidden" name="csrf_token" value="' + csrfTokenVal + '" />' +
                                     '<input type="hidden" name="horizon" value="' + currentHorizon + '" />' +
                                     '<input type="hidden" name="filter" value="' + currentFilter + '" />' +
-                                    '<button type="submit" class="btn btn-ghost btn-xs text-error font-semibold">Delete</button>' +
+                                    '<button type="submit" class="btn btn-ghost btn-sm sm:btn-xs text-error font-semibold touch-manipulation">Delete</button>' +
                                 '</form>' +
                             '</div>' +
                         '</div>';
@@ -3979,7 +4175,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
     </script>
 </body>
 </html>`,
-		budgetName, budgetName, role, aomHeadline, csrfToken,
+		budgetName, budgetName, role, aomHeadline, aomHeadline, csrfToken,
 		RenderSidebarNavigation(budgetID, "budget"),
 		accountSummaryRows.String(),
 		toastHTML,

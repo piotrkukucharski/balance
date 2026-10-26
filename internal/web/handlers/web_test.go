@@ -2561,6 +2561,150 @@ func TestGroupRenamingAndMovingEndpoints(t *testing.T) {
 	}
 }
 
+func TestMobileResponsiveBudgetViewAndErgonomics(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "balance_mobile_ux_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mainPath := filepath.Join(tmpDir, "main.db")
+	mainDB, err := db.OpenDB(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tmpDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+	e := echo.New()
+
+	userID := domain.NewUUIDv7()
+	budgetID := domain.NewUUIDv7()
+	now := time.Now().UTC().UnixMicro()
+
+	_, err = mainDB.Exec(`INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, 'mob@example.com', 'hash', 'Mobile User', ?, ?)`, userID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = mainDB.Exec(`INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at) VALUES (?, 'Mobile Family Budget', 'PLN', 'UTC', ?, ?, ?)`, budgetID, userID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = mainDB.Exec(`INSERT INTO budget_members (budget_id, user_id, role, joined_at) VALUES (?, ?, 'OWNER', ?)`, budgetID, userID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
+	if err != nil {
+		t.Fatalf("failed getting tenant db: %v", err)
+	}
+
+	bID, err := budget.CreateBucket(context.Background(), tenantDB, budget.CreateBucketInput{
+		GroupName:     "Housing & Bills",
+		Name:          "Electricity",
+		AgentID:       userID,
+		CorrelationID: "corr-mob-1",
+	})
+	if err != nil {
+		t.Fatalf("failed creating bucket: %v", err)
+	}
+
+	dueMicro := time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC).UnixMicro()
+	ceilMinor := int64(120000)
+	_, err = budget.CreateTarget(context.Background(), tenantDB, budget.CreateTargetInput{
+		BucketID:            bID,
+		Name:                "Monthly Power Bill",
+		TargetType:          "EXPENSE",
+		Priority:            3,
+		AmountMinor:         35000,
+		Currency:            "PLN",
+		RecurrenceCadence:   "MONTHLY",
+		DueDate:             &dueMicro,
+		CeilingAmountMinor:  &ceilMinor,
+		NonSpendingStrategy: "ROLL_OVER",
+		AgentID:             userID,
+		CorrelationID:       "corr-mob-target-1",
+	})
+	if err != nil {
+		t.Fatalf("failed creating target: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/budget?horizon=90d&filter=all", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("budgetId")
+	c.SetParamValues(budgetID)
+	c.Set(ContextBudgetDBKey, tenantDB)
+	c.Set(ContextUserIDKey, userID)
+	c.Set(ContextRoleKey, "OWNER")
+	c.Set("csrfToken", "csrf-mob")
+
+	if err := workspaceHandler.BudgetView(c); err != nil {
+		t.Fatalf("BudgetView failed: %v", err)
+	}
+	body := rec.Body.String()
+
+	// 1. Mobile Horizon Select & Desktop Join
+	if !strings.Contains(body, `id="mobile_horizon_select"`) {
+		t.Errorf("expected mobile_horizon_select dropdown in renderBudgetControlsToolbar")
+	}
+	if !strings.Contains(body, `value="/budgets/`+budgetID+`/budget?horizon=90d&filter=all" selected`) {
+		t.Errorf("expected 90d option to be selected in mobile_horizon_select")
+	}
+
+	// 2. Responsive Filter Toolbar & Full-Width Search Input
+	if !strings.Contains(body, `grid grid-cols-2 sm:inline-flex sm:join`) {
+		t.Errorf("expected 2-column mobile grid for filter buttons")
+	}
+	if !strings.Contains(body, `id="envelope_search_input"`) || !strings.Contains(body, `w-full sm:w-48`) {
+		t.Errorf("expected full-width mobile search wrapper w-full sm:w-48")
+	}
+
+	// 3. Mobile Bucket Cards with Category Header, Direct Assign Button & Enriched Target Sublist
+	if !strings.Contains(body, `id="mobile-group-Housing___Bills"`) || !strings.Contains(body, `toggleMobileGroup('Housing___Bills')`) {
+		t.Errorf("expected collapsible mobile category group header for Housing & Bills")
+	}
+	if !strings.Contains(body, `openAssignModal('`+bID+`', 'Electricity', 'PLN')`) {
+		t.Errorf("expected direct Assign quick action button on mobile bucket card")
+	}
+	if !strings.Contains(body, `Due: 2026-11-15`) || !strings.Contains(body, `Goal: 1200.00 PLN`) {
+		t.Errorf("expected target due date and goal in mobile target sublist")
+	}
+
+	// 4. Bottom Dock Safe Area & Thumb-Friendly Classes
+	if !strings.Contains(body, `dock dock-md md:hidden`) || !strings.Contains(body, `pb-[env(safe-area-inset-bottom)]`) {
+		t.Errorf("expected RenderBottomDock to include dock-md and safe-area-inset-bottom")
+	}
+	if !strings.Contains(body, `pb-24 md:pb-8`) {
+		t.Errorf("expected <main> to include pb-24 md:pb-8 so bottom dock does not obscure content")
+	}
+
+	// 5. Bottom-Sheet Modals & Responsive Bucket Drawer Stats
+	if !strings.Contains(body, `max-h-[85dvh]`) || !strings.Contains(body, `pb-[calc(1.5rem+env(safe-area-inset-bottom))]`) {
+		t.Errorf("expected bottom-sheet modals to include max-h-[85dvh] and safe-area bottom padding")
+	}
+	if !strings.Contains(body, `stats stats-vertical sm:stats-horizontal`) {
+		t.Errorf("expected bucket_drawer stats to stack vertically on mobile (stats-vertical sm:stats-horizontal)")
+	}
+	if !strings.Contains(body, `inputmode="decimal"`) {
+		t.Errorf("expected decimal inputmode on amount fields for mobile on-screen keyboards")
+	}
+}
+
+
 
 
 

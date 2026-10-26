@@ -2235,6 +2235,61 @@ func InitializeE2EScenario(ctx *godog.ScenarioContext) {
 			tc.page.MustElement(`#structure_preview_wrapper:not(.hidden)`).MustWaitVisible()
 		})
 	})
+
+	ctx.Step(`^I resize the browser viewport to mobile 375x812 and navigate to the "Budget" workspace view$`, func() error {
+		if err := tc.page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
+			Width:             375,
+			Height:            812,
+			DeviceScaleFactor: 2,
+			Mobile:            true,
+		}); err != nil {
+			return err
+		}
+		return tc.navigate("/budgets/" + tc.activeBudgetID + "/budget")
+	})
+
+	ctx.Step(`^the mobile horizon selector and bottom dock should be visible in the mobile viewport$`, func() error {
+		res, err := tc.page.Eval(`() => {
+			const sel = document.getElementById('mobile_horizon_select');
+			const dock = document.querySelector('.dock');
+			const groupHdr = document.querySelector('.mobile-group-header');
+			const card = document.querySelector('.mobile-bucket-card');
+			if (!sel || !dock || !groupHdr || !card) return false;
+			const selRect = sel.getBoundingClientRect();
+			const dockRect = dock.getBoundingClientRect();
+			const cardRect = card.getBoundingClientRect();
+			return selRect.width > 0 && dockRect.width > 0 && cardRect.width > 0;
+		}`)
+		if err != nil {
+			return err
+		}
+		if !res.Value.Bool() {
+			return fmt.Errorf("expected mobile_horizon_select, .dock, .mobile-group-header, and .mobile-bucket-card to have positive visible dimensions at 375x812")
+		}
+		return nil
+	})
+
+	ctx.Step(`^I click the quick "Assign" button on the mobile bucket card for "([^"]*)" and assign "([^"]*)" PLN$`, func(bucketName, amount string) error {
+		_, err := tc.page.Eval(`(args) => {
+			const cards = Array.from(document.querySelectorAll('.mobile-bucket-card'));
+			const card = cards.find(c => c.innerText.includes(args.name));
+			if (!card) throw new Error('mobile bucket card not found for ' + args.name);
+			const btn = Array.from(card.querySelectorAll('button')).find(b => b.innerText.includes('Assign'));
+			if (!btn) throw new Error('quick Assign button not found on mobile card');
+			btn.click();
+			const inp = document.querySelector('#assign_funds_modal input[name="amount"]');
+			inp.value = args.amount;
+		}`, map[string]any{"name": bucketName, "amount": amount})
+		if err != nil {
+			return err
+		}
+		wait := tc.page.WaitNavigation(proto.PageLifecycleEventNameLoad)
+		if err := tc.page.MustElement(`#assign_funds_modal button[type="submit"]`).Click(proto.InputMouseButtonLeft, 1); err != nil {
+			return err
+		}
+		wait()
+		return tc.page.WaitLoad()
+	})
 }
 
 func TestBrowserE2E(t *testing.T) {

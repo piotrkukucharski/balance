@@ -81,7 +81,7 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
             %s
         </aside>
 
-        <main class="flex-1 p-6 md:p-8 overflow-y-auto">
+        <main class="flex-1 p-4 sm:p-6 md:p-8 pb-24 md:pb-8 overflow-y-auto">
             <div class="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
                     <h1 class="text-3xl font-black tracking-tight">Reports & Analytics</h1>
@@ -1401,7 +1401,7 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
             %s
         </aside>
 
-        <main class="flex-1 p-6 md:p-8 overflow-y-auto flex flex-col gap-6">
+        <main class="flex-1 p-4 sm:p-6 md:p-8 pb-24 md:pb-8 overflow-y-auto flex flex-col gap-6">
             <!-- Header & Filter Controls Bar -->
             <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-base-100 p-6 rounded-2xl border border-base-300 shadow-sm">
                 <div>

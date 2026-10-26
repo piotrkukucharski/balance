@@ -132,7 +132,7 @@ func (h *PartiesHandler) PartiesView(c echo.Context) error {
             %s
         </aside>
 
-        <main class="flex-1 p-6 md:p-8 overflow-y-auto">
+        <main class="flex-1 p-4 sm:p-6 md:p-8 pb-24 md:pb-8 overflow-y-auto">
             <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
                 <div>
                     <h1 class="text-2xl font-black tracking-tight">Parties & Counterparties</h1>
@@ -432,7 +432,7 @@ func (h *PartiesHandler) PartyRulesView(c echo.Context) error {
             %s
         </aside>
 
-        <main class="flex-1 p-6 md:p-8 overflow-y-auto">
+        <main class="flex-1 p-4 sm:p-6 md:p-8 pb-24 md:pb-8 overflow-y-auto">
             <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
                 <div>
                     <div class="flex items-center gap-2 text-xs text-base-content/60 mb-1">

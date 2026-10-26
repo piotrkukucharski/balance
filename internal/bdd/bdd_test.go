@@ -7145,6 +7145,39 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		return nil
 	})
+
+	ctx.Step(`^the mobile horizon selector and responsive filter toolbar should be rendered$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, `id="mobile_horizon_select"`) {
+			return fmt.Errorf("expected mobile_horizon_select in budget view")
+		}
+		if !strings.Contains(body, `grid grid-cols-2 sm:inline-flex sm:join`) {
+			return fmt.Errorf("expected responsive 2-column filter toolbar in budget view")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the mobile bucket cards should be grouped by category with direct Assign actions$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, `mobile-group-header`) || !strings.Contains(body, `toggleMobileGroup('Needs')`) {
+			return fmt.Errorf("expected mobile category group header for Needs in budget view")
+		}
+		if !strings.Contains(body, `mobile-bucket-card`) || !strings.Contains(body, `<span>Assign</span>`) {
+			return fmt.Errorf("expected mobile bucket card with direct Assign button")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the bottom dock and bottom-sheet modals should include PWA safe-area insets$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, `pb-[env(safe-area-inset-bottom)]`) {
+			return fmt.Errorf("expected safe-area-inset-bottom on bottom dock")
+		}
+		if !strings.Contains(body, `max-h-[85dvh]`) || !strings.Contains(body, `pb-[calc(1.5rem+env(safe-area-inset-bottom))]`) {
+			return fmt.Errorf("expected bottom-sheet modal classes with 85dvh and safe-area padding")
+		}
+		return nil
+	})
 }
 
 func TestFeatures(t *testing.T) {

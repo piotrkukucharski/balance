@@ -208,7 +208,7 @@ func (h *TokensHandler) TokensView(c echo.Context) error {
             %s
         </aside>
 
-        <main class="flex-1 flex flex-col gap-6">
+        <main class="flex-1 flex flex-col gap-6 pb-24 md:pb-8">
             <div>
                 <h1 class="text-2xl font-black tracking-tight">Personal Access Tokens (PAT)</h1>
                 <p class="text-sm text-base-content/70 mt-1">Manage API tokens (<code>bal_pat_...</code>) for programmatic REST API access (OpenAPI 3.1).</p>

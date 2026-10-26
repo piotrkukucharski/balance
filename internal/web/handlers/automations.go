@@ -740,7 +740,7 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
 </head>
 <body class="bg-base-200 text-base-content min-h-screen flex flex-col md:flex-row pb-20 md:pb-0">
     <!-- SIDEBAR -->
-    <aside class="w-full md:w-64 bg-base-100 border-r border-base-300 p-4 flex flex-col gap-4">
+    <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
         <div class="flex items-center gap-2 px-2">
             <span class="text-2xl font-black text-primary">💰</span>
             <span class="font-extrabold text-xl tracking-tight">Balance</span>
@@ -749,7 +749,7 @@ func renderAutomationsPageMarkup(budgetID string, automations []automation.Autom
     </aside>
 
     <!-- MAIN CONTENT -->
-    <main class="flex-1 p-4 md:p-8 max-w-5xl mx-auto w-full">
+    <main class="flex-1 p-4 sm:p-6 md:p-8 pb-24 md:pb-8 max-w-5xl mx-auto w-full">
         <div class="flex items-center justify-between mb-6 flex-wrap gap-4">
             <div>
                 <h1 class="text-2xl md:text-3xl font-extrabold tracking-tight flex items-center gap-2">

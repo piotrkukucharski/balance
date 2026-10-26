@@ -83,4 +83,14 @@ Feature: Multi-Tenant Budget Provisioning and Workspace Navigation
     And the cloned budget should have zero transactions
     And the response should redirect to the budget view "/budgets/:budgetId/budget"
 
+  Scenario: Mobile UX and PWA responsive controls, grouped bucket cards, and bottom-sheet modals
+    Given an authenticated user "jan@example.com" who owns the budget "Family Home"
+    And an existing bucket "Groceries" with funded balance "500.00"
+    When I request the budget view "/budgets/:budgetId/budget"
+    Then the response status should be 200 OK
+    And the mobile horizon selector and responsive filter toolbar should be rendered
+    And the mobile bucket cards should be grouped by category with direct Assign actions
+    And the bottom dock and bottom-sheet modals should include PWA safe-area insets
+
+
 

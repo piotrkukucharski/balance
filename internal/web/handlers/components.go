@@ -70,8 +70,8 @@ func RenderPopoverActionMenu(prefix, id string, items []TableActionItem, extraCl
 	}
 
 	return fmt.Sprintf(`
-		<button popovertarget="%s" style="anchor-name:%s" class="btn btn-ghost btn-xs">•••</button>
-		<ul class="dropdown dropdown-end menu p-2 shadow-lg bg-base-100 rounded-box w-36 text-xs border border-base-300%s" popover id="%s" style="position-anchor:%s; position-try-fallbacks: flip-block, --flip-block; margin: 0;" onbeforetoggle="if(event.newState==='open'){const r=this.getBoundingClientRect();if(window.innerHeight-r.bottom<120){this.classList.add('dropdown-top');}}else{this.classList.remove('dropdown-top');}">
+		<button popovertarget="%s" style="anchor-name:%s" class="btn btn-ghost btn-sm sm:btn-xs min-h-8 sm:min-h-6 px-2 touch-manipulation" aria-label="More actions">•••</button>
+		<ul class="dropdown dropdown-end menu p-2 shadow-lg bg-base-100 rounded-box w-40 text-xs border border-base-300%s" popover id="%s" style="position-anchor:%s; position-try-fallbacks: flip-block, --flip-block; margin: 0;" onbeforetoggle="if(event.newState==='open'){const r=this.getBoundingClientRect();if(window.innerHeight-r.bottom<120){this.classList.add('dropdown-top');}}else{this.classList.remove('dropdown-top');}">
 			%s
 		</ul>`,
 		targetID, anchorName, extraClass, targetID, anchorName, itemsHTML.String(),
@@ -139,36 +139,36 @@ func RenderSidebarNavigation(budgetID string, activeItem string) string {
 func RenderBottomDock(budgetID string, activeItem string) string {
 	dockClass := func(item string) string {
 		if item == activeItem {
-			return ` class="dock-active"`
+			return ` class="dock-active text-primary font-semibold touch-manipulation min-h-12"`
 		}
-		return ""
+		return ` class="touch-manipulation min-h-12 text-base-content/70"`
 	}
 
 	return fmt.Sprintf(`
-    <div class="dock md:hidden bg-base-100 border-t border-base-300">
+    <div class="dock dock-md md:hidden bg-base-100/95 backdrop-blur-xs border-t border-base-300 z-40 pb-[env(safe-area-inset-bottom)] shadow-lg" role="navigation" aria-label="Mobile Bottom Navigation">
         <a href="/budgets/%s/budget"%s>
-            <span class="text-xl">📂</span>
-            <span class="dock-label">Budget</span>
+            <span class="text-xl leading-none">📂</span>
+            <span class="dock-label text-[11px]">Budget</span>
         </a>
         <a href="/budgets/%s/accounts"%s>
-            <span class="text-xl">💳</span>
-            <span class="dock-label">Accounts</span>
+            <span class="text-xl leading-none">💳</span>
+            <span class="dock-label text-[11px]">Accounts</span>
         </a>
         <a href="/budgets/%s/transactions"%s>
-            <span class="text-xl">💸</span>
-            <span class="dock-label">Txns</span>
+            <span class="text-xl leading-none">💸</span>
+            <span class="dock-label text-[11px]">Txns</span>
         </a>
         <a href="/budgets/%s/automations"%s>
-            <span class="text-xl">⚡</span>
-            <span class="dock-label">Rules</span>
+            <span class="text-xl leading-none">⚡</span>
+            <span class="dock-label text-[11px]">Rules</span>
         </a>
         <a href="/budgets/%s/reports"%s>
-            <span class="text-xl">📊</span>
-            <span class="dock-label">Reports</span>
+            <span class="text-xl leading-none">📊</span>
+            <span class="dock-label text-[11px]">Reports</span>
         </a>
         <a href="/budgets/%s/settings"%s>
-            <span class="text-xl">⚙️</span>
-            <span class="dock-label">Settings</span>
+            <span class="text-xl leading-none">⚙️</span>
+            <span class="dock-label text-[11px]">Settings</span>
         </a>
     </div>`,
 		budgetID, dockClass("budget"),

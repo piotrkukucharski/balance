@@ -28,3 +28,12 @@ Feature: Browser E2E Envelope Buckets, Targets, Fund Assignments and Priority Au
     And I click the "Auto-Assign by Priority" button
     Then the Ready to Assign banner should display "0.00 PLN"
     And the bucket "Fixed Costs" available balance should be "2,200.00 PLN"
+
+  Scenario: Mobile viewport ergonomics for horizon select, bucket cards, and bottom-sheet assign modal
+    Given an authenticated browser session for "jan.e2e@example.com" on budget "Family Home" with "1,500.00 PLN" in "Main Checking"
+    And bucket "Fixed Costs" has mandatory target "Rent" of "1,000.00 PLN" and recommended target "Internet" of "200.00 PLN"
+    When I resize the browser viewport to mobile 375x812 and navigate to the "Budget" workspace view
+    Then the mobile horizon selector and bottom dock should be visible in the mobile viewport
+    When I click the quick "Assign" button on the mobile bucket card for "Fixed Costs" and assign "600.00" PLN
+    Then the bucket "Fixed Costs" available balance should be "600.00 PLN"
+

@@ -147,7 +147,7 @@ func (h *ProfileHandler) ProfileView(c echo.Context) error {
         %s
 
         <!-- Main Content -->
-        <main class="flex-1 p-6 md:p-8 overflow-y-auto max-w-4xl">
+        <main class="flex-1 p-4 sm:p-6 md:p-8 pb-24 md:pb-8 overflow-y-auto max-w-4xl">
             <div class="mb-6">
                 <h1 class="text-2xl font-black tracking-tight">Profile & Preferences</h1>
                 <p class="text-xs text-base-content/60 mt-1">Manage personal account details and regional date/time formatting preferences.</p>
