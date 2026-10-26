@@ -43,3 +43,25 @@ Feature: Diagnostic and Audit Tools for Budget Owner
     Then the orphaned balance should be deleted from "account_currency_balances"
     And the response should include a success confirmation notification
 
+  Scenario: Audit detects orphaned transactions from a deleted account
+    Given an authenticated user "owner@example.com" with "OWNER" role on budget "Integrity Test"
+    And a deleted account "Old Deprecated Account" has remaining orphaned budget and raw transactions
+    When I trigger the integrity audit check via HTMX
+    Then the audit result should report orphaned transactions for "Old Deprecated Account"
+    And the audit card should offer an option to resurrect the account
+
+  Scenario: Owner resurrects an orphaned account as closed
+    Given an authenticated user "owner@example.com" with "OWNER" role on budget "Integrity Test"
+    And a deleted account "Old Deprecated Account" has remaining orphaned budget and raw transactions
+    When I trigger the resurrect account action for "Old Deprecated Account" via HTMX
+    Then the account "Old Deprecated Account" should be restored in "accounts_current" with is_closed equal to 1
+    And the response should include a success confirmation notification
+
+  Scenario: Owner deletes all orphaned transactions
+    Given an authenticated user "owner@example.com" with "OWNER" role on budget "Integrity Test"
+    And a deleted account "Old Deprecated Account" has remaining orphaned budget and raw transactions
+    When I trigger the delete orphaned transactions action via HTMX
+    Then the orphaned transactions should be removed from "budget_transactions_current" and "raw_transactions_current"
+    And the response should include a success confirmation notification
+
+

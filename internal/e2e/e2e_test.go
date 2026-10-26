@@ -270,6 +270,8 @@ func (tc *e2eScenarioContext) setup() error {
 	tenantOwner.GET("/debug", debugHandler.DebugView)
 	tenantOwner.POST("/debug/audit", debugHandler.AuditAction)
 	tenantOwner.POST("/debug/actions/cleanup-orphaned", debugHandler.CleanupOrphanedAction)
+	tenantOwner.POST("/debug/actions/resurrect-account", debugHandler.ResurrectAccountAction)
+	tenantOwner.POST("/debug/actions/delete-orphaned-transactions", debugHandler.DeleteOrphanedTransactionsAction)
 	tenantOwner.POST("/debug/actions/reconcile-discrepancies", debugHandler.ReconcileDiscrepanciesAction)
 
 	apiServer := openapi.NewServer(mainDB, tenantMgr, appService)

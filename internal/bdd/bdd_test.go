@@ -7574,6 +7574,202 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		return nil
 	})
+
+	ctx.Step(`^a deleted account "([^"]*)" has remaining orphaned budget and raw transactions$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		acctID := domain.NewUUIDv7()
+		tc.activeAcctID = acctID
+
+		// Ensure a party exists
+		var pID string
+		err = bDB.QueryRow(`SELECT id FROM parties_current WHERE is_user_owned = 1 LIMIT 1`).Scan(&pID)
+		if err != nil {
+			pID = domain.NewUUIDv7()
+			_, _ = bDB.Exec(`INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at) VALUES (?, 1, 'Owner Party', 'INDIVIDUAL', 1, ?, ?)`, pID, tc.activeUserID, now)
+		}
+
+		// Insert account in historical accounts table as SOFT_DELETE
+		_, err = bDB.Exec(`
+			INSERT INTO accounts (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, action, agent_id, correlation_id, created_at)
+			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 'PL111222333', 'EMOJI', '🏦', 0, 'CREATE', ?, ?, ?)`,
+			acctID, pID, acctName, tc.activeUserID, domain.NewUUIDv7(), now-1000)
+		if err != nil {
+			return err
+		}
+		_, err = bDB.Exec(`
+			INSERT INTO accounts (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, action, agent_id, correlation_id, created_at)
+			VALUES (?, 2, ?, ?, 'CHECKING', 'PLN', 'PL111222333', 'EMOJI', '🏦', 1, 'SOFT_DELETE', ?, ?, ?)`,
+			acctID, pID, acctName, tc.activeUserID, domain.NewUUIDv7(), now)
+		if err != nil {
+			return err
+		}
+
+		// Do NOT insert into accounts_current (simulate it being deleted/missing from projection)
+
+		// Create orphaned budget transaction referencing acctID as destination
+		var extPartyID, extAcctID string
+		_ = bDB.QueryRow(`SELECT p.id, a.id FROM parties_current p JOIN accounts_current a ON a.party_id = p.id WHERE p.is_user_owned = 0 LIMIT 1`).Scan(&extPartyID, &extAcctID)
+		if extAcctID == "" {
+			extPartyID = domain.NewUUIDv7()
+			extAcctID = domain.NewUUIDv7()
+			_, _ = bDB.Exec(`INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at) VALUES (?, 1, 'External Merchant', 'ORGANIZATION', 0, ?, ?)`, extPartyID, tc.activeUserID, now)
+			_, _ = bDB.Exec(`INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at) VALUES (?, 1, ?, 'Merchant POS', 'EXTERNAL', 'PLN', 0, ?, ?)`, extAcctID, extPartyID, tc.activeUserID, now)
+		}
+
+		bTxID := domain.NewUUIDv7()
+		_, err = bDB.Exec(`
+			INSERT INTO budget_transactions_current (id, version, source_account_id, destination_account_id, source_amount_minor, source_currency, destination_amount_minor, destination_currency, transaction_date, notes, updated_at)
+			VALUES (?, 1, ?, ?, 15000, 'PLN', 15000, 'PLN', ?, 'Orphaned Transfer', ?)`,
+			bTxID, extAcctID, acctID, now, now)
+		if err != nil {
+			return err
+		}
+		_, err = bDB.Exec(`
+			INSERT INTO budget_transactions (id, version, source_account_id, destination_account_id, source_amount_minor, source_currency, destination_amount_minor, destination_currency, transaction_date, notes, action, agent_id, correlation_id, created_at)
+			VALUES (?, 1, ?, ?, 15000, 'PLN', 15000, 'PLN', ?, 'Orphaned Transfer', 'CREATE', ?, ?, ?)`,
+			bTxID, extAcctID, acctID, now, tc.activeUserID, domain.NewUUIDv7(), now)
+		if err != nil {
+			return err
+		}
+
+		// Create orphaned raw transaction referencing acctID
+		rawTxID := domain.NewUUIDv7()
+		_, err = bDB.Exec(`
+			INSERT INTO raw_transactions_current (id, version, account_id, dedup_hash, booking_date, amount_minor, currency, raw_payee, status, booking_status, updated_at)
+			VALUES (?, 1, ?, 'orphaned_hash_1', ?, 15000, 'PLN', 'ORPHANED PAYEE', 'PENDING', 'BOOKED', ?)`,
+			rawTxID, acctID, now, now)
+		if err != nil {
+			return err
+		}
+		_, err = bDB.Exec(`
+			INSERT INTO raw_transactions (id, version, account_id, dedup_hash, booking_date, amount_minor, currency, raw_payee, status, booking_status, action, agent_id, correlation_id, created_at)
+			VALUES (?, 1, ?, 'orphaned_hash_1', ?, 15000, 'PLN', 'ORPHANED PAYEE', 'PENDING', 'BOOKED', 'CREATE', ?, ?, ?)`,
+			rawTxID, acctID, now, tc.activeUserID, domain.NewUUIDv7(), now)
+		return err
+	})
+
+	ctx.Step(`^the audit result should report orphaned transactions for "([^"]*)"$`, func(acctName string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, acctName) {
+			return fmt.Errorf("expected audit card to contain orphaned account name %q, got: %s", acctName, body)
+		}
+		if !strings.Contains(body, "Orphaned Transfer") && !strings.Contains(body, "ORPHANED PAYEE") {
+			return fmt.Errorf("expected audit card to contain details of orphaned transactions")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the audit card should offer an option to resurrect the account$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "resurrect-account") || !strings.Contains(body, "Wskrześ Konto") {
+			return fmt.Errorf("expected audit card to offer resurrect-account button")
+		}
+		return nil
+	})
+
+	ctx.Step(`^I trigger the resurrect account action for "([^"]*)" via HTMX$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		form := strings.NewReader("account_id=" + tc.activeAcctID + "&csrf_token=" + tc.activeCSRF)
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/debug/actions/resurrect-account", tc.activeBudgetID), form)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+
+		var role string
+		_ = tc.mainDB.QueryRow(`SELECT role FROM budget_members WHERE budget_id = ? AND user_id = ?`, tc.activeBudgetID, tc.activeUserID).Scan(&role)
+
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextRoleKey, role)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		err = tc.debugHandler.ResurrectAccountAction(c)
+		if err != nil {
+			if he, ok := err.(*echo.HTTPError); ok {
+				rec.Code = he.Code
+			}
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^the account "([^"]*)" should be restored in "accounts_current" with is_closed equal to 1$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var isClosed int
+		err = bDB.QueryRow(`SELECT is_closed FROM accounts_current WHERE id = ? AND name = ?`, tc.activeAcctID, acctName).Scan(&isClosed)
+		if err != nil {
+			return fmt.Errorf("account %s (%s) not found in accounts_current: %w", acctName, tc.activeAcctID, err)
+		}
+		if isClosed != 1 {
+			return fmt.Errorf("expected is_closed = 1, got %d", isClosed)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I trigger the delete orphaned transactions action via HTMX$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		form := strings.NewReader("csrf_token=" + tc.activeCSRF)
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/debug/actions/delete-orphaned-transactions", tc.activeBudgetID), form)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+
+		var role string
+		_ = tc.mainDB.QueryRow(`SELECT role FROM budget_members WHERE budget_id = ? AND user_id = ?`, tc.activeBudgetID, tc.activeUserID).Scan(&role)
+
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextRoleKey, role)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		err = tc.debugHandler.DeleteOrphanedTransactionsAction(c)
+		if err != nil {
+			if he, ok := err.(*echo.HTTPError); ok {
+				rec.Code = he.Code
+			}
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^the orphaned transactions should be removed from "budget_transactions_current" and "raw_transactions_current"$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var bCount, rCount int
+		_ = bDB.QueryRow(`
+			SELECT count(*) FROM budget_transactions_current b
+			LEFT JOIN accounts_current sa ON b.source_account_id = sa.id
+			LEFT JOIN accounts_current da ON b.destination_account_id = da.id
+			WHERE sa.id IS NULL OR da.id IS NULL`).Scan(&bCount)
+		_ = bDB.QueryRow(`
+			SELECT count(*) FROM raw_transactions_current r
+			LEFT JOIN accounts_current a ON r.account_id = a.id
+			WHERE a.id IS NULL`).Scan(&rCount)
+
+		if bCount != 0 || rCount != 0 {
+			return fmt.Errorf("expected 0 orphaned transactions, found budget: %d, raw: %d", bCount, rCount)
+		}
+		return nil
+	})
 }
 
 func TestFeatures(t *testing.T) {

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -37,6 +38,28 @@ type OrphanedBalanceItem struct {
 	BalanceMinor int64  `json:"balance_minor"`
 }
 
+// OrphanedTransactionItem represents a budget or raw transaction referencing a missing account.
+type OrphanedTransactionItem struct {
+	TransactionID string `json:"transaction_id"`
+	Type          string `json:"type"` // "BUDGET" or "RAW"
+	AccountID     string `json:"account_id"`
+	Role          string `json:"role"` // "SOURCE", "DESTINATION", or "RAW_ACCOUNT"
+	AmountMinor   int64  `json:"amount_minor"`
+	Currency      string `json:"currency"`
+	NotesOrPayee  string `json:"notes_or_payee"`
+	Date          int64  `json:"date"`
+}
+
+// OrphanedAccountSummary groups orphaned transactions per missing account.
+type OrphanedAccountSummary struct {
+	AccountID          string `json:"account_id"`
+	AccountName        string `json:"account_name"` // From historical accounts table if available, else "(Unknown)"
+	BudgetTxCount      int    `json:"budget_tx_count"`
+	RawTxCount         int    `json:"raw_tx_count"`
+	CanResurrect       bool   `json:"can_resurrect"` // true if present in accounts historical table
+	LastRecordedStatus string `json:"last_recorded_status"`
+}
+
 // AccountDiscrepancyItem represents a difference between account_currency_balances and net sum of budget transactions.
 type AccountDiscrepancyItem struct {
 	AccountID     string `json:"account_id"`
@@ -49,11 +72,13 @@ type AccountDiscrepancyItem struct {
 
 // IntegrityAuditReport represents the full status of all diagnostic checks.
 type IntegrityAuditReport struct {
-	OrphanedBalances      []OrphanedBalanceItem    `json:"orphaned_balances"`
-	AccountDiscrepancies  []AccountDiscrepancyItem `json:"account_discrepancies"`
-	FundamentalEquationOK bool                     `json:"fundamental_equation_ok"`
-	FundamentalDetails    string                   `json:"fundamental_details"`
-	HasAnomalies          bool                     `json:"has_anomalies"`
+	OrphanedBalances      []OrphanedBalanceItem     `json:"orphaned_balances"`
+	OrphanedTransactions  []OrphanedTransactionItem `json:"orphaned_transactions"`
+	OrphanedAccounts      []OrphanedAccountSummary  `json:"orphaned_accounts"`
+	AccountDiscrepancies  []AccountDiscrepancyItem  `json:"account_discrepancies"`
+	FundamentalEquationOK bool                      `json:"fundamental_equation_ok"`
+	FundamentalDetails    string                    `json:"fundamental_details"`
+	HasAnomalies          bool                      `json:"has_anomalies"`
 }
 
 // RunAudit performs the read-only integrity audit checks.
@@ -77,6 +102,120 @@ func (h *DebugHandler) RunAudit(ctx context.Context, tenantDB *sql.DB) (Integrit
 			report.OrphanedBalances = append(report.OrphanedBalances, item)
 			report.HasAnomalies = true
 		}
+	}
+
+	// 1b. Check orphaned budget transactions (source_account_id or destination_account_id not in accounts_current)
+	// Map to track accounts for summary
+	acctSummaryMap := make(map[string]*OrphanedAccountSummary)
+
+	bRows, err := tenantDB.QueryContext(ctx, `
+		SELECT b.id, b.source_account_id, b.destination_account_id, b.source_amount_minor, b.source_currency,
+		       b.destination_amount_minor, b.destination_currency, COALESCE(b.notes, ''), b.transaction_date,
+		       sa.id, da.id
+		FROM budget_transactions_current b
+		LEFT JOIN accounts_current sa ON b.source_account_id = sa.id
+		LEFT JOIN accounts_current da ON b.destination_account_id = da.id
+		WHERE sa.id IS NULL OR da.id IS NULL`)
+	if err == nil {
+		defer bRows.Close()
+		for bRows.Next() {
+			var bID, srcID, dstID, srcCurr, dstCurr, notes string
+			var srcAmt, dstAmt, txDate int64
+			var saID, daID sql.NullString
+			if err := bRows.Scan(&bID, &srcID, &dstID, &srcAmt, &srcCurr, &dstAmt, &dstCurr, &notes, &txDate, &saID, &daID); err == nil {
+				if !saID.Valid {
+					report.OrphanedTransactions = append(report.OrphanedTransactions, OrphanedTransactionItem{
+						TransactionID: bID,
+						Type:          "BUDGET",
+						AccountID:     srcID,
+						Role:          "SOURCE",
+						AmountMinor:   srcAmt,
+						Currency:      srcCurr,
+						NotesOrPayee:  notes,
+						Date:          txDate,
+					})
+					report.HasAnomalies = true
+					if _, ok := acctSummaryMap[srcID]; !ok {
+						acctSummaryMap[srcID] = &OrphanedAccountSummary{AccountID: srcID}
+					}
+					acctSummaryMap[srcID].BudgetTxCount++
+				}
+				if !daID.Valid {
+					report.OrphanedTransactions = append(report.OrphanedTransactions, OrphanedTransactionItem{
+						TransactionID: bID,
+						Type:          "BUDGET",
+						AccountID:     dstID,
+						Role:          "DESTINATION",
+						AmountMinor:   dstAmt,
+						Currency:      dstCurr,
+						NotesOrPayee:  notes,
+						Date:          txDate,
+					})
+					report.HasAnomalies = true
+					if _, ok := acctSummaryMap[dstID]; !ok {
+						acctSummaryMap[dstID] = &OrphanedAccountSummary{AccountID: dstID}
+					}
+					acctSummaryMap[dstID].BudgetTxCount++
+				}
+			}
+		}
+	}
+
+	// 1c. Check orphaned raw transactions (account_id not in accounts_current)
+	rRows, err := tenantDB.QueryContext(ctx, `
+		SELECT r.id, r.account_id, r.amount_minor, r.currency, r.raw_payee, r.booking_date
+		FROM raw_transactions_current r
+		LEFT JOIN accounts_current a ON r.account_id = a.id
+		WHERE a.id IS NULL`)
+	if err == nil {
+		defer rRows.Close()
+		for rRows.Next() {
+			var rID, acctID, curr, payee string
+			var amt, bDate int64
+			if err := rRows.Scan(&rID, &acctID, &amt, &curr, &payee, &bDate); err == nil {
+				report.OrphanedTransactions = append(report.OrphanedTransactions, OrphanedTransactionItem{
+					TransactionID: rID,
+					Type:          "RAW",
+					AccountID:     acctID,
+					Role:          "RAW_ACCOUNT",
+					AmountMinor:   amt,
+					Currency:      curr,
+					NotesOrPayee:  payee,
+					Date:          bDate,
+				})
+				report.HasAnomalies = true
+				if _, ok := acctSummaryMap[acctID]; !ok {
+					acctSummaryMap[acctID] = &OrphanedAccountSummary{AccountID: acctID}
+				}
+				acctSummaryMap[acctID].RawTxCount++
+			}
+		}
+	}
+
+	// Also include accounts from orphaned balances if not yet in summary
+	for _, ob := range report.OrphanedBalances {
+		if _, ok := acctSummaryMap[ob.AccountID]; !ok {
+			acctSummaryMap[ob.AccountID] = &OrphanedAccountSummary{AccountID: ob.AccountID}
+		}
+	}
+
+	// Populate metadata for orphaned accounts from historical accounts table
+	for acctID, summary := range acctSummaryMap {
+		var name, act string
+		err := tenantDB.QueryRowContext(ctx, `
+			SELECT name, action FROM accounts
+			WHERE id = ?
+			ORDER BY version DESC LIMIT 1`, acctID).Scan(&name, &act)
+		if err == nil {
+			summary.AccountName = name
+			summary.CanResurrect = true
+			summary.LastRecordedStatus = act
+		} else {
+			summary.AccountName = "(Unknown / Deleted History)"
+			summary.CanResurrect = false
+			summary.LastRecordedStatus = "UNKNOWN"
+		}
+		report.OrphanedAccounts = append(report.OrphanedAccounts, *summary)
 	}
 
 	// 2. Check transaction sum vs account_currency_balances for active user-owned accounts
@@ -323,28 +462,124 @@ func RenderAuditCard(budgetID, csrfToken string, report IntegrityAuditReport) st
 	}
 
 	var orphanedHTML strings.Builder
-	if len(report.OrphanedBalances) == 0 {
-		orphanedHTML.WriteString(`<div class="text-xs text-success flex items-center gap-1.5 font-medium"><span>✓</span><span>No orphaned balances in account_currency_balances.</span></div>`)
+	if len(report.OrphanedBalances) == 0 && len(report.OrphanedTransactions) == 0 {
+		orphanedHTML.WriteString(`<div class="text-xs text-success flex items-center gap-1.5 font-medium"><span>✓</span><span>Brak osieroconych sald ani transakcji powiązanych z nieistniejącymi kontami.</span></div>`)
 	} else {
-		orphanedHTML.WriteString(fmt.Sprintf(`
-			<div class="alert alert-error alert-soft text-xs mb-3">
-				<span>Found <strong>%d</strong> orphaned balance records without corresponding account!</span>
-			</div>
-			<div class="overflow-x-auto">
-				<table class="table table-xs w-full">
-					<thead>
-						<tr><th>Account ID</th><th>Currency</th><th class="text-right">Balance</th></tr>
-					</thead>
-					<tbody>`, len(report.OrphanedBalances)))
-		for _, o := range report.OrphanedBalances {
+		if len(report.OrphanedBalances) > 0 {
 			orphanedHTML.WriteString(fmt.Sprintf(`
-				<tr>
-					<td class="font-mono text-xs">%s</td>
-					<td><span class="badge badge-neutral text-xs">%s</span></td>
-					<td class="font-mono text-right font-bold">%.2f</td>
-				</tr>`, html.EscapeString(o.AccountID), html.EscapeString(o.Currency), float64(o.BalanceMinor)/100.0))
+				<div class="alert alert-error alert-soft text-xs mb-3">
+					<span>Wykryto <strong>%d</strong> osieroconych rekordów sald w <code>account_currency_balances</code>!</span>
+				</div>
+				<div class="overflow-x-auto mb-4">
+					<table class="table table-xs w-full">
+						<thead>
+							<tr><th>Account ID</th><th>Waluta</th><th class="text-right">Saldo</th></tr>
+						</thead>
+						<tbody>`, len(report.OrphanedBalances)))
+			for _, o := range report.OrphanedBalances {
+				orphanedHTML.WriteString(fmt.Sprintf(`
+					<tr>
+						<td class="font-mono text-xs">%s</td>
+						<td><span class="badge badge-neutral text-xs">%s</span></td>
+						<td class="font-mono text-right font-bold">%.2f</td>
+					</tr>`, html.EscapeString(o.AccountID), html.EscapeString(o.Currency), float64(o.BalanceMinor)/100.0))
+			}
+			orphanedHTML.WriteString(`</tbody></table></div>`)
 		}
-		orphanedHTML.WriteString(`</tbody></table></div>`)
+
+		if len(report.OrphanedAccounts) > 0 {
+			orphanedHTML.WriteString(fmt.Sprintf(`
+				<div class="alert alert-warning alert-soft text-xs mb-3">
+					<span>Wykryto <strong>%d</strong> nieistniejących kont powiązanych z transakcjami lub saldami:</span>
+				</div>
+				<div class="overflow-x-auto mb-4">
+					<table class="table table-xs w-full">
+						<thead>
+							<tr>
+								<th>Nazwa Konta (Historia)</th>
+								<th>ID Konta</th>
+								<th class="text-center">Transakcje Budżetowe</th>
+								<th class="text-center">Transakcje Raw</th>
+								<th>Status w Historii</th>
+								<th class="text-right">Działania Naprawcze</th>
+							</tr>
+						</thead>
+						<tbody>`, len(report.OrphanedAccounts)))
+			for _, oa := range report.OrphanedAccounts {
+				resurrectBtn := ""
+				if oa.CanResurrect {
+					resurrectBtn = fmt.Sprintf(`
+						<form hx-post="/budgets/%s/debug/actions/resurrect-account" hx-target="#audit-card-container" hx-swap="innerHTML" class="inline"
+						      hx-disabled-elt="find button"
+						      onsubmit="return confirm('Przywrócić konto &quot;%s&quot; w stanie zamkniętym (is_closed=1)?') ? (this.querySelector('button').disabled = true, true) : false;">
+							<input type="hidden" name="csrf_token" value="%s" />
+							<input type="hidden" name="account_id" value="%s" />
+							<button type="submit" class="btn btn-xs btn-primary gap-1">
+								<span>♻️</span>
+								<span>Wskrześ Konto</span>
+							</button>
+						</form>`, budgetID, html.EscapeString(oa.AccountName), csrfToken, html.EscapeString(oa.AccountID))
+				} else {
+					resurrectBtn = `<span class="badge badge-ghost text-xs">Brak w historii</span>`
+				}
+
+				orphanedHTML.WriteString(fmt.Sprintf(`
+					<tr>
+						<td class="font-bold text-xs">%s</td>
+						<td class="font-mono text-xs">%s</td>
+						<td class="text-center font-bold">%d</td>
+						<td class="text-center font-bold">%d</td>
+						<td><span class="badge badge-neutral text-xs font-mono">%s</span></td>
+						<td class="text-right">%s</td>
+					</tr>`,
+					html.EscapeString(oa.AccountName),
+					html.EscapeString(oa.AccountID),
+					oa.BudgetTxCount,
+					oa.RawTxCount,
+					html.EscapeString(oa.LastRecordedStatus),
+					resurrectBtn,
+				))
+			}
+			orphanedHTML.WriteString(`</tbody></table></div>`)
+		}
+
+		if len(report.OrphanedTransactions) > 0 {
+			orphanedHTML.WriteString(fmt.Sprintf(`
+				<div class="text-xs font-semibold text-base-content/70 mb-1 flex items-center justify-between">
+					<span>Szczegóły osieroconych transakcji (%d):</span>
+				</div>
+				<div class="overflow-x-auto max-h-48 border border-base-300 rounded-lg mb-2">
+					<table class="table table-xs w-full">
+						<thead class="sticky top-0 bg-base-200">
+							<tr>
+								<th>Typ</th>
+								<th>Rola brakującego konta</th>
+								<th>Brakujące Account ID</th>
+								<th>Opis / Payee</th>
+								<th class="text-right">Kwota</th>
+							</tr>
+						</thead>
+						<tbody>`, len(report.OrphanedTransactions)))
+			for _, ot := range report.OrphanedTransactions {
+				orphanedHTML.WriteString(fmt.Sprintf(`
+					<tr>
+						<td><span class="badge badge-outline text-xs">%s</span></td>
+						<td class="font-mono text-xs">%s</td>
+						<td class="font-mono text-xs">%s</td>
+						<td class="text-xs truncate max-w-xs" title="%s">%s</td>
+						<td class="font-mono text-right font-bold">%.2f %s</td>
+					</tr>`,
+					html.EscapeString(ot.Type),
+					html.EscapeString(ot.Role),
+					html.EscapeString(ot.AccountID),
+					html.EscapeString(ot.NotesOrPayee),
+					html.EscapeString(ot.NotesOrPayee),
+					float64(ot.AmountMinor)/100.0,
+					html.EscapeString(ot.Currency),
+				))
+			}
+			orphanedHTML.WriteString(`</tbody></table></div>`)
+		}
 	}
 
 	var discrepancyHTML strings.Builder
@@ -395,10 +630,10 @@ func RenderAuditCard(budgetID, csrfToken string, report IntegrityAuditReport) st
 					<div>%s</div>
 				</div>
 
-				<!-- Check 1: Orphaned Balances -->
+				<!-- Check 1: Orphaned Balances and Transactions -->
 				<div class="space-y-2">
 					<h3 class="text-xs font-bold uppercase tracking-wider text-base-content/70 flex items-center gap-1.5">
-						<span>1. Osierocone Salda (account_currency_balances)</span>
+						<span>1. Osierocone Salda & Transakcje (Konta usunięte z accounts_current)</span>
 					</h3>
 					%s
 				</div>
@@ -447,6 +682,16 @@ func RenderAuditCard(budgetID, csrfToken string, report IntegrityAuditReport) st
 							</button>
 						</form>
 
+						<form hx-post="/budgets/%s/debug/actions/delete-orphaned-transactions" hx-target="#audit-card-container" hx-swap="innerHTML" class="inline"
+						      hx-disabled-elt="find button"
+						      onsubmit="return confirm('Czy na pewno chcesz trwale usunąć wszystkie osierocone transakcje budżetowe i raw?') ? (this.querySelector('button').disabled = true, true) : false;">
+							<input type="hidden" name="csrf_token" value="%s" />
+							<button type="submit" class="btn btn-sm btn-error gap-1.5" %s>
+								<span>🗑️</span>
+								<span>Usuń Osierocone Transakcje</span>
+							</button>
+						</form>
+
 						<form hx-post="/budgets/%s/debug/actions/reconcile-discrepancies" hx-target="#audit-card-container" hx-swap="innerHTML" class="inline"
 						      hx-disabled-elt="find button"
 						      onsubmit="return confirm('Utworzyć automatyczne transakcje korygujące dla wykrytych rozbieżności sald?') ? (this.querySelector('button').disabled = true, true) : false;">
@@ -467,6 +712,7 @@ func RenderAuditCard(budgetID, csrfToken string, report IntegrityAuditReport) st
 		report.FundamentalDetails,
 		budgetID, csrfToken,
 		budgetID, csrfToken, disabledAttr(len(report.OrphanedBalances) == 0),
+		budgetID, csrfToken, disabledAttr(len(report.OrphanedTransactions) == 0),
 		budgetID, csrfToken, disabledAttr(len(report.AccountDiscrepancies) == 0),
 	)
 }
@@ -539,6 +785,202 @@ func (h *DebugHandler) CleanupOrphanedAction(c echo.Context) error {
 	report, _ := h.RunAudit(c.Request().Context(), tenantDB)
 	msg := fmt.Sprintf("Wyczyszczono %d osieroconych rekordów sald.", deletedCount)
 	c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "`+msg+`", "success": true}}`)
+
+	return c.HTML(http.StatusOK, RenderAuditCard(budgetID, csrfToken, report))
+}
+
+// ResurrectAccountAction handles POST /budgets/:budgetId/debug/actions/resurrect-account.
+// Recreates a soft-deleted account in accounts_current from the latest version in accounts history, set as is_closed = 1.
+func (h *DebugHandler) ResurrectAccountAction(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	role, _ := c.Get(ContextRoleKey).(string)
+	if role != "OWNER" {
+		return echo.NewHTTPError(http.StatusForbidden, "Forbidden")
+	}
+
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID, _ := c.Get(ContextUserIDKey).(string)
+	corrID, _ := c.Get("correlationID").(string)
+	if corrID == "" {
+		corrID = domain.NewUUIDv7()
+	}
+	csrfToken, _ := c.Get("csrfToken").(string)
+	acctID := c.FormValue("account_id")
+	if acctID == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "Missing account_id")
+	}
+
+	now := time.Now().UTC().UnixMicro()
+
+	tx, err := tenantDB.BeginTx(c.Request().Context(), nil)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Transaction error")
+	}
+	defer tx.Rollback()
+
+	// 1. Fetch latest historical version of the account
+	var maxVer int
+	var partyID, name, aType, curr string
+	var iban, favType, favVal sql.NullString
+	err = tx.QueryRowContext(c.Request().Context(), `
+		SELECT version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value
+		FROM accounts
+		WHERE id = ?
+		ORDER BY version DESC LIMIT 1`, acctID).Scan(&maxVer, &partyID, &name, &aType, &curr, &iban, &favType, &favVal)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Konto nie istnieje w historii accounts", "success": false}}`)
+			return c.String(http.StatusNotFound, "Account history not found")
+		}
+		return echo.NewHTTPError(http.StatusInternalServerError, "DB error fetching account history: "+err.Error())
+	}
+
+	// 2. Ensure party exists in parties_current; if not, restore or create fallback
+	var partyExists int
+	_ = tx.QueryRowContext(c.Request().Context(), `SELECT count(*) FROM parties_current WHERE id = ?`, partyID).Scan(&partyExists)
+	if partyExists == 0 {
+		var pName, pType string
+		var pUserOwned int
+		pErr := tx.QueryRowContext(c.Request().Context(), `
+			SELECT name, party_type, is_user_owned FROM parties
+			WHERE id = ? ORDER BY version DESC LIMIT 1`, partyID).Scan(&pName, &pType, &pUserOwned)
+		if pErr == nil {
+			_, _ = tx.ExecContext(c.Request().Context(), `
+				INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+				VALUES (?, 1, ?, ?, ?, ?, ?)`, partyID, pName, pType, pUserOwned, userID, now)
+		} else {
+			// Fallback user party
+			_, _ = tx.ExecContext(c.Request().Context(), `
+				INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+				VALUES (?, 1, 'Restored Party', 'INDIVIDUAL', 1, ?, ?)`, partyID, userID, now)
+		}
+	}
+
+	nextVer := maxVer + 1
+	fType := favType.String
+	if fType == "" {
+		fType = "EMOJI"
+	}
+
+	// 3. Append RESTORE record in accounts historical table with is_closed = 1
+	_, err = tx.ExecContext(c.Request().Context(), `
+		INSERT INTO accounts (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, action, agent_id, correlation_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'RESTORE', ?, ?, ?)`,
+		acctID, nextVer, partyID, name, aType, curr, iban.String, fType, favVal.String, userID, corrID, now)
+	if err != nil {
+		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Błąd zapisu historii wskrzeszenia konta", "success": false}}`)
+		return c.String(http.StatusInternalServerError, "Failed appending restore account: "+err.Error())
+	}
+
+	// 4. Upsert into accounts_current as closed (is_closed = 1)
+	_, err = tx.ExecContext(c.Request().Context(), `
+		INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed, agent_id, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			version = excluded.version,
+			party_id = excluded.party_id,
+			name = excluded.name,
+			account_type = excluded.account_type,
+			primary_currency = excluded.primary_currency,
+			iban = excluded.iban,
+			favicon_type = excluded.favicon_type,
+			favicon_value = excluded.favicon_value,
+			is_closed = excluded.is_closed,
+			agent_id = excluded.agent_id,
+			updated_at = excluded.updated_at`,
+		acctID, nextVer, partyID, name, aType, curr, iban.String, fType, favVal.String, userID, now)
+	if err != nil {
+		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Błąd przywracania accounts_current", "success": false}}`)
+		return c.String(http.StatusInternalServerError, "Failed upserting accounts_current: "+err.Error())
+	}
+
+	if err := tx.Commit(); err != nil {
+		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Błąd zatwierdzania transakcji wskrzeszenia", "success": false}}`)
+		return c.String(http.StatusInternalServerError, "Commit error: "+err.Error())
+	}
+
+	report, _ := h.RunAudit(c.Request().Context(), tenantDB)
+	msg := fmt.Sprintf("Konto \"%s\" zostało pomyślnie wskrzeszone jako zamknięte (is_closed=1).", name)
+	c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "`+templateEscape(msg)+`", "success": true}}`)
+
+	return c.HTML(http.StatusOK, RenderAuditCard(budgetID, csrfToken, report))
+}
+
+// DeleteOrphanedTransactionsAction handles POST /budgets/:budgetId/debug/actions/delete-orphaned-transactions.
+// Atomically removes orphaned budget and raw transactions whose account_id is not in accounts_current.
+func (h *DebugHandler) DeleteOrphanedTransactionsAction(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	role, _ := c.Get(ContextRoleKey).(string)
+	if role != "OWNER" {
+		return echo.NewHTTPError(http.StatusForbidden, "Forbidden")
+	}
+
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	csrfToken, _ := c.Get("csrfToken").(string)
+
+	tx, err := tenantDB.BeginTx(c.Request().Context(), nil)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Transaction error")
+	}
+	defer tx.Rollback()
+
+	// 1. Find all budget transactions in budget_transactions_current referencing missing accounts
+	bRows, err := tx.QueryContext(c.Request().Context(), `
+		SELECT b.id FROM budget_transactions_current b
+		LEFT JOIN accounts_current sa ON b.source_account_id = sa.id
+		LEFT JOIN accounts_current da ON b.destination_account_id = da.id
+		WHERE sa.id IS NULL OR da.id IS NULL`)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error finding orphaned budget transactions: "+err.Error())
+	}
+	var bTxIDs []string
+	for bRows.Next() {
+		var id string
+		if err := bRows.Scan(&id); err == nil {
+			bTxIDs = append(bTxIDs, id)
+		}
+	}
+	bRows.Close()
+
+	// 2. Find all raw transactions in raw_transactions_current referencing missing accounts
+	rRows, err := tx.QueryContext(c.Request().Context(), `
+		SELECT r.id FROM raw_transactions_current r
+		LEFT JOIN accounts_current a ON r.account_id = a.id
+		WHERE a.id IS NULL`)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error finding orphaned raw transactions: "+err.Error())
+	}
+	var rTxIDs []string
+	for rRows.Next() {
+		var id string
+		if err := rRows.Scan(&id); err == nil {
+			rTxIDs = append(rTxIDs, id)
+		}
+	}
+	rRows.Close()
+
+	// Delete from budget_transactions_current and budget_transactions
+	for _, id := range bTxIDs {
+		_, _ = tx.ExecContext(c.Request().Context(), `DELETE FROM budget_transactions_current WHERE id = ?`, id)
+		_, _ = tx.ExecContext(c.Request().Context(), `DELETE FROM budget_transactions WHERE id = ?`, id)
+		_, _ = tx.ExecContext(c.Request().Context(), `DELETE FROM transaction_links WHERE budget_transaction_id = ?`, id)
+	}
+
+	// Delete from raw_transactions_current and raw_transactions
+	for _, id := range rTxIDs {
+		_, _ = tx.ExecContext(c.Request().Context(), `DELETE FROM raw_transactions_current WHERE id = ?`, id)
+		_, _ = tx.ExecContext(c.Request().Context(), `DELETE FROM raw_transactions WHERE id = ?`, id)
+		_, _ = tx.ExecContext(c.Request().Context(), `DELETE FROM transaction_links WHERE raw_transaction_id = ?`, id)
+	}
+
+	if err := tx.Commit(); err != nil {
+		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Błąd zapisu usuwania osieroconych transakcji", "success": false}}`)
+		return c.String(http.StatusInternalServerError, "Commit error: "+err.Error())
+	}
+
+	report, _ := h.RunAudit(c.Request().Context(), tenantDB)
+	msg := fmt.Sprintf("Pomyślnie usunięto %d transakcji budżetowych i %d transakcji raw.", len(bTxIDs), len(rTxIDs))
+	c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "`+templateEscape(msg)+`", "success": true}}`)
 
 	return c.HTML(http.StatusOK, RenderAuditCard(budgetID, csrfToken, report))
 }
