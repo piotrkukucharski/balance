@@ -169,11 +169,8 @@ func CreateBucketTx(ctx context.Context, tx *sql.Tx, input CreateBucketInput) (s
 
 // UpdateBucket updates bucket name or group name.
 func UpdateBucket(ctx context.Context, tenantDB *sql.DB, input UpdateBucketInput) error {
-	if input.ID == "" || input.Name == "" {
-		return errors.New("bucket id and name are required")
-	}
-	if input.GroupName == "" {
-		input.GroupName = "Default"
+	if input.ID == "" {
+		return errors.New("bucket id is required")
 	}
 
 	tx, err := tenantDB.BeginTx(ctx, nil)
@@ -183,12 +180,20 @@ func UpdateBucket(ctx context.Context, tenantDB *sql.DB, input UpdateBucketInput
 	defer tx.Rollback()
 
 	var currentVersion int
-	err = tx.QueryRowContext(ctx, `SELECT version FROM buckets_projection WHERE id = ? AND is_archived = 0`, input.ID).Scan(&currentVersion)
+	var currentName, currentGroup string
+	err = tx.QueryRowContext(ctx, `SELECT version, name, group_name FROM buckets_projection WHERE id = ? AND is_archived = 0`, input.ID).Scan(&currentVersion, &currentName, &currentGroup)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return errors.New("bucket not found or archived")
 		}
 		return err
+	}
+
+	if input.Name == "" {
+		input.Name = currentName
+	}
+	if input.GroupName == "" {
+		input.GroupName = currentGroup
 	}
 
 	now := time.Now().UTC().UnixMicro()
@@ -223,7 +228,12 @@ func UpdateBucket(ctx context.Context, tenantDB *sql.DB, input UpdateBucketInput
 		return fmt.Errorf("failed updating buckets_projection: %w", err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Ensure bucket group exists in bucket_groups table
+	return EnsureBucketGroupsSync(ctx, tenantDB)
 }
 
 // ArchiveBucket archives a bucket if and only if it has zero active targets and zero balance.

@@ -199,6 +199,21 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     And the new bucket group input should have an empty value and placeholder containing the first categories
     And the edit bucket group input should be bound to the existing category groups datalist
 
+  Scenario: Moving bucket to another category group via drag and drop endpoint
+    Given an open budget "Family Home"
+    When I create a bucket "Groceries" in group "Living"
+    And I request the budget view "/budgets/:budgetId/budget"
+    Then the response status should be 200 OK
+    And bucket "Groceries" in projections should have group "Living"
+    When I move bucket "Groceries" to category group "Food & Dining"
+    Then the response status should be 200 OK
+    And bucket "Groceries" in projections should have group "Food & Dining"
+    And I request the budget view "/budgets/:budgetId/budget"
+    Then the response status should be 200 OK
+    And the desktop bucket row "Groceries" should have a drag handle
+    And category group "Food & Dining" should be a drop target for buckets
+
+
 
 
 

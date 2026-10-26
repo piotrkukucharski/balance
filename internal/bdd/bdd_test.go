@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"math"
 	"mime/multipart"
 	"net/http"
@@ -4723,6 +4724,63 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		body := tc.lastResponse.Body.String()
 		if !strings.Contains(body, `id="edit_bucket_group" name="group_name" required list="existing_category_groups"`) {
 			return fmt.Errorf("expected edit bucket group input to have list='existing_category_groups'")
+		}
+		return nil
+	})
+
+	ctx.Step(`^I move bucket "([^"]*)" to category group "([^"]*)"$`, func(bucketName, groupName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var bucketID string
+		err = bDB.QueryRow(`SELECT id FROM buckets_projection WHERE name = ?`, bucketName).Scan(&bucketID)
+		if err != nil {
+			return fmt.Errorf("bucket %q not found: %w", bucketName, err)
+		}
+
+		form := url.Values{}
+		form.Set("csrf_token", tc.activeCSRF)
+		form.Set("group_name", groupName)
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/buckets/%s/move-group", tc.activeBudgetID, bucketID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		req.Header.Set("Accept", "application/json")
+		rec := httptest.NewRecorder()
+
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "id")
+		c.SetParamValues(tc.activeBudgetID, bucketID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextRoleKey, "OWNER")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.workspaceHandler.MoveBucketGroup(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the desktop bucket row "([^"]*)" should have a drag handle$`, func(bucketName string) error {
+		body := tc.lastResponse.Body.String()
+		pattern := fmt.Sprintf(`data-bucket-name="%s"`, html.EscapeString(bucketName))
+		if !strings.Contains(body, pattern) {
+			return fmt.Errorf("expected row with %s in response body", pattern)
+		}
+		if !strings.Contains(body, `class="bucket-drag-handle`) {
+			return fmt.Errorf("expected drag handle with class 'bucket-drag-handle' in response body")
+		}
+		return nil
+	})
+
+	ctx.Step(`^category group "([^"]*)" should be a drop target for buckets$`, func(groupName string) error {
+		body := tc.lastResponse.Body.String()
+		pattern := fmt.Sprintf(`data-group-name="%s"`, html.EscapeString(groupName))
+		if !strings.Contains(body, pattern) {
+			return fmt.Errorf("expected group header with %s in response body", pattern)
+		}
+		if !strings.Contains(body, `group-drop-zone`) {
+			return fmt.Errorf("expected group drop zone class 'group-drop-zone' in response body")
 		}
 		return nil
 	})

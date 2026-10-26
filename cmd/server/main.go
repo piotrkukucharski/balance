@@ -192,6 +192,7 @@ func main() {
 	tenantEditor.POST("/groups/move", workspaceHandler.MoveGroup)
 	tenantEditor.POST("/buckets", workspaceHandler.CreateBucket)
 	tenantEditor.POST("/buckets/:id/update", workspaceHandler.UpdateBucket)
+	tenantEditor.POST("/buckets/:id/move-group", workspaceHandler.MoveBucketGroup)
 	tenantEditor.POST("/buckets/:id/archive", workspaceHandler.ArchiveBucket)
 	tenantEditor.POST("/buckets/:id/assign", workspaceHandler.AssignFunds)
 	tenantEditor.POST("/buckets/move", workspaceHandler.MoveFunds)

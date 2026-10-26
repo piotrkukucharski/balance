@@ -1315,7 +1315,7 @@ func renderBucketRowsDesktop(allBucketsCount int, bucketGroups []bucketGroupView
 		}
 
 		sb.WriteString(fmt.Sprintf(`
-			<tr class="bg-base-200/80 font-bold border-t-2 border-base-300 group-header select-none">
+			<tr id="group-header-%s" class="bg-base-200/80 font-bold border-t-2 border-base-300 group-header select-none group-drop-zone transition-colors" data-group-id="%s" data-group-name="%s">
 				<td class="py-2.5">
 					<div class="flex items-center gap-2">
 						<div class="flex items-center gap-2 cursor-pointer" onclick="toggleGroup('%s')">
@@ -1359,6 +1359,7 @@ func renderBucketRowsDesktop(allBucketsCount int, bucketGroups []bucketGroupView
 				<td class="py-2.5"></td>
 			</tr>
 		`,
+			bg.GroupID, bg.GroupID, html.EscapeString(bg.GroupName),
 			bg.GroupID, bg.GroupID, html.EscapeString(bg.GroupName), len(bg.Buckets),
 			strings.ReplaceAll(bg.GroupName, "'", "\\'"),
 			budgetID, csrfToken, html.EscapeString(bg.GroupName), html.EscapeString(horizonParam), html.EscapeString(filterParam),
@@ -1554,10 +1555,11 @@ func renderBucketRowsDesktop(allBucketsCount int, bucketGroups []bucketGroupView
 			})
 
 			sb.WriteString(fmt.Sprintf(`
-				<tr id="bucket-%s" class="hover transition-colors bucket-row group-item-%s" data-bucket-id="%s" data-group-id="%s" data-search="%s">
+				<tr id="bucket-%s" class="hover transition-colors bucket-row group-item-%s" data-bucket-id="%s" data-group-id="%s" data-group-name="%s" data-bucket-name="%s" data-search="%s">
 					<td>
 						<div class="flex flex-col gap-1">
 							<div class="flex items-center gap-2">
+								<span class="bucket-drag-handle cursor-grab active:cursor-grabbing text-base-content/40 hover:text-primary select-none px-0.5 text-sm" title="Drag to reorder or move category" draggable="true">⠿</span>
 								<button type="button" class="btn btn-ghost btn-xs btn-circle p-0 h-6 w-6 target-toggle-btn" onclick="toggleBucketTargets('%s')" aria-expanded="%t" aria-controls="targets-%s" aria-label="Toggle targets for %s">
 									<span id="bucket-toggle-icon-%s" class="text-xs transition-transform duration-200 font-mono select-none">%s</span>
 								</button>
@@ -1606,7 +1608,7 @@ func renderBucketRowsDesktop(allBucketsCount int, bucketGroups []bucketGroupView
 					</td>
 				</tr>
 			`,
-				b.ID, bg.GroupID, b.ID, bg.GroupID, searchAttr,
+				b.ID, bg.GroupID, b.ID, bg.GroupID, html.EscapeString(b.GroupName), html.EscapeString(b.Name), searchAttr,
 				b.ID, ariaExp, b.ID, html.EscapeString(b.Name),
 				b.ID, toggleIcon, statusDot,
 				html.EscapeString(b.Name), p3RiskBadge, formulaErrorBadge,
@@ -1648,7 +1650,7 @@ func renderBucketCardsMobile(allBucketsCount int, bucketGroups []bucketGroupView
 		}
 
 		sb.WriteString(fmt.Sprintf(`
-			<div id="mobile-group-%s" class="card card-border bg-base-200/80 border-base-300 px-3.5 py-2.5 mobile-group-header select-none" data-group-id="%s">
+			<div id="mobile-group-%s" class="card card-border bg-base-200/80 border-base-300 px-3.5 py-2.5 mobile-group-header select-none mobile-group-drop-zone transition-colors" data-group-id="%s" data-group-name="%s">
 				<div class="flex items-center justify-between gap-2">
 					<div class="flex items-center gap-2 min-w-0 cursor-pointer flex-1" onclick="toggleMobileGroup('%s')">
 						<span id="mobile-group-icon-%s" class="text-xs transition-transform duration-200">▼</span>
@@ -1684,7 +1686,7 @@ func renderBucketCardsMobile(allBucketsCount int, bucketGroups []bucketGroupView
 				</div>
 			</div>
 		`,
-			bg.GroupID, bg.GroupID,
+			bg.GroupID, bg.GroupID, html.EscapeString(bg.GroupName),
 			bg.GroupID, bg.GroupID, html.EscapeString(bg.GroupName), len(bg.Buckets),
 			strings.ReplaceAll(bg.GroupName, "'", "\\'"),
 			budgetID, csrfToken, html.EscapeString(bg.GroupName), html.EscapeString(horizonParam), html.EscapeString(filterParam),
@@ -1877,10 +1879,11 @@ func renderBucketCardsMobile(allBucketsCount int, bucketGroups []bucketGroupView
 			escapedGroupName := strings.ReplaceAll(b.GroupName, "'", "\\'")
 
 			sb.WriteString(fmt.Sprintf(`
-				<div id="mobile-bucket-%s" class="card card-border bg-base-100 border-base-300 shadow-xs mobile-bucket-card mobile-group-item-%s" data-bucket-id="%s" data-group-id="%s" data-search="%s">
+				<div id="mobile-bucket-%s" class="card card-border bg-base-100 border-base-300 shadow-xs mobile-bucket-card mobile-group-item-%s" data-bucket-id="%s" data-group-id="%s" data-group-name="%s" data-bucket-name="%s" data-search="%s">
 					<div class="card-body p-4 gap-2.5">
 						<div class="flex items-start justify-between gap-2">
 							<div class="flex items-center gap-2 min-w-0">
+								<span class="mobile-bucket-drag-handle cursor-grab active:cursor-grabbing text-base-content/40 hover:text-primary select-none px-0.5 text-sm shrink-0" title="Drag to reorder or move category" draggable="true">⠿</span>
 								<span class="w-2.5 h-2.5 rounded-full shrink-0 %s"></span>
 								<div class="min-w-0">
 									<div class="font-bold text-sm truncate flex items-center gap-1.5">
@@ -1936,7 +1939,7 @@ func renderBucketCardsMobile(allBucketsCount int, bucketGroups []bucketGroupView
 					</div>
 				</div>
 			`,
-				b.ID, bg.GroupID, b.ID, bg.GroupID, searchAttr,
+				b.ID, bg.GroupID, b.ID, bg.GroupID, html.EscapeString(b.GroupName), html.EscapeString(b.Name), searchAttr,
 				statusDot, html.EscapeString(b.Name), formulaErrorBadge, html.EscapeString(b.GroupName),
 				b.HealthBadgeClass, b.HealthBadge, p3RiskBadge,
 				availColor, float64(b.BalanceMinor)/100.0, b.Currency,
@@ -3216,7 +3219,265 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                     if (btn) btn.setAttribute('aria-expanded', isExp ? 'true' : 'false');
                 }
             });
+
+            initBucketDragAndDrop();
         });
+
+        function showAppToast(message, isSuccess = true) {
+            let toast = document.getElementById('budget-toast');
+            if (!toast) return;
+            const alertBox = toast.querySelector('.alert');
+            const msgEl = document.getElementById('budget-toast-msg');
+            if (msgEl) msgEl.innerText = message;
+            if (alertBox) {
+                alertBox.className = 'alert text-xs shadow-lg flex items-center gap-2 ' + (isSuccess ? 'alert-success' : 'alert-error');
+            }
+            toast.classList.remove('hidden');
+            toast.style.opacity = '1';
+            clearTimeout(window.__toastTimeout);
+            window.__toastTimeout = setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.classList.add('hidden'), 300);
+            }, 4000);
+        }
+
+        function initBucketDragAndDrop() {
+            let draggedBucket = null;
+
+            // Desktop Drag Handles
+            document.querySelectorAll('.bucket-drag-handle').forEach(handle => {
+                handle.addEventListener('dragstart', (e) => {
+                    const row = handle.closest('.bucket-row');
+                    if (!row) return;
+                    draggedBucket = {
+                        type: 'desktop',
+                        id: row.getAttribute('data-bucket-id'),
+                        name: row.getAttribute('data-bucket-name'),
+                        groupId: row.getAttribute('data-group-id'),
+                        groupName: row.getAttribute('data-group-name'),
+                        rowEl: row,
+                        subrowEl: document.getElementById('targets-' + row.getAttribute('data-bucket-id'))
+                    };
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', draggedBucket.id);
+                    row.classList.add('opacity-40');
+                });
+
+                handle.addEventListener('dragend', () => {
+                    if (draggedBucket && draggedBucket.rowEl) {
+                        draggedBucket.rowEl.classList.remove('opacity-40');
+                    }
+                    document.querySelectorAll('.group-drop-zone').forEach(z => {
+                        z.classList.remove('bg-primary/20', 'border-primary');
+                    });
+                    draggedBucket = null;
+                });
+            });
+
+            // Desktop Drop Zones (Category Group Headers)
+            document.querySelectorAll('.group-drop-zone').forEach(zone => {
+                zone.addEventListener('dragover', (e) => {
+                    if (!draggedBucket || draggedBucket.type !== 'desktop') return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    zone.classList.add('bg-primary/20', 'border-primary');
+                });
+
+                zone.addEventListener('dragleave', (e) => {
+                    if (!zone.contains(e.relatedTarget)) {
+                        zone.classList.remove('bg-primary/20', 'border-primary');
+                    }
+                });
+
+                zone.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    zone.classList.remove('bg-primary/20', 'border-primary');
+                    if (!draggedBucket || draggedBucket.type !== 'desktop') return;
+
+                    const targetGroupId = zone.getAttribute('data-group-id');
+                    const targetGroupName = zone.getAttribute('data-group-name');
+                    if (targetGroupId === draggedBucket.groupId) return;
+
+                    moveBucketToGroupDOM(draggedBucket, targetGroupId, targetGroupName);
+                });
+            });
+
+            // Mobile Drag Handles
+            document.querySelectorAll('.mobile-bucket-drag-handle').forEach(handle => {
+                handle.addEventListener('dragstart', (e) => {
+                    const card = handle.closest('.mobile-bucket-card');
+                    if (!card) return;
+                    draggedBucket = {
+                        type: 'mobile',
+                        id: card.getAttribute('data-bucket-id'),
+                        name: card.getAttribute('data-bucket-name'),
+                        groupId: card.getAttribute('data-group-id'),
+                        groupName: card.getAttribute('data-group-name'),
+                        cardEl: card
+                    };
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', draggedBucket.id);
+                    card.classList.add('opacity-40');
+                });
+
+                handle.addEventListener('dragend', () => {
+                    if (draggedBucket && draggedBucket.cardEl) {
+                        draggedBucket.cardEl.classList.remove('opacity-40');
+                    }
+                    document.querySelectorAll('.mobile-group-drop-zone').forEach(z => {
+                        z.classList.remove('bg-primary/20', 'border-primary');
+                    });
+                    draggedBucket = null;
+                });
+            });
+
+            // Mobile Drop Zones (Category Headers)
+            document.querySelectorAll('.mobile-group-drop-zone').forEach(zone => {
+                zone.addEventListener('dragover', (e) => {
+                    if (!draggedBucket || draggedBucket.type !== 'mobile') return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    zone.classList.add('bg-primary/20', 'border-primary');
+                });
+
+                zone.addEventListener('dragleave', (e) => {
+                    if (!zone.contains(e.relatedTarget)) {
+                        zone.classList.remove('bg-primary/20', 'border-primary');
+                    }
+                });
+
+                zone.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    zone.classList.remove('bg-primary/20', 'border-primary');
+                    if (!draggedBucket || draggedBucket.type !== 'mobile') return;
+
+                    const targetGroupId = zone.getAttribute('data-group-id');
+                    const targetGroupName = zone.getAttribute('data-group-name');
+                    if (targetGroupId === draggedBucket.groupId) return;
+
+                    moveMobileBucketToGroupDOM(draggedBucket, targetGroupId, targetGroupName);
+                });
+            });
+        }
+
+        function moveBucketToGroupDOM(item, targetGroupId, targetGroupName) {
+            const oldGroupId = item.groupId;
+            const oldGroupName = item.groupName;
+            const row = item.rowEl;
+            const subrow = item.subrowEl;
+            const header = document.getElementById('group-header-' + targetGroupId);
+            if (!header) return;
+
+            // Save old location for rollback
+            const prevSibling = row.previousElementSibling;
+
+            // Optimistic DOM update
+            row.classList.remove('group-item-' + oldGroupId);
+            row.classList.add('group-item-' + targetGroupId);
+            row.setAttribute('data-group-id', targetGroupId);
+            row.setAttribute('data-group-name', targetGroupName);
+
+            if (subrow) {
+                subrow.classList.remove('group-item-' + oldGroupId);
+                subrow.classList.add('group-item-' + targetGroupId);
+            }
+
+            header.after(row);
+            if (subrow) {
+                row.after(subrow);
+            }
+
+            // Also update search attribute tokens
+            const searchAttr = row.getAttribute('data-search') || '';
+            row.setAttribute('data-search', searchAttr.replace(oldGroupName.toLowerCase(), targetGroupName.toLowerCase()));
+
+            // Send request to server
+            fetch('/budgets/' + currentBudgetID + '/buckets/' + item.id + '/move-group', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                body: new URLSearchParams({
+                    'csrf_token': csrfTokenVal,
+                    'group_name': targetGroupName
+                })
+            })
+            .then(res => {
+                if (!res.ok) throw new Error('Server returned status ' + res.status);
+                return res.json();
+            })
+            .then(data => {
+                showAppToast('Bucket moved to ' + targetGroupName, true);
+            })
+            .catch(err => {
+                // Rollback DOM
+                row.classList.remove('group-item-' + targetGroupId);
+                row.classList.add('group-item-' + oldGroupId);
+                row.setAttribute('data-group-id', oldGroupId);
+                row.setAttribute('data-group-name', oldGroupName);
+                if (subrow) {
+                    subrow.classList.remove('group-item-' + targetGroupId);
+                    subrow.classList.add('group-item-' + oldGroupId);
+                }
+                if (prevSibling) {
+                    prevSibling.after(row);
+                }
+                if (subrow) {
+                    row.after(subrow);
+                }
+                showAppToast('Failed to move bucket: ' + err.message, false);
+            });
+        }
+
+        function moveMobileBucketToGroupDOM(item, targetGroupId, targetGroupName) {
+            const oldGroupId = item.groupId;
+            const oldGroupName = item.groupName;
+            const card = item.cardEl;
+            const header = document.getElementById('mobile-group-' + targetGroupId);
+            if (!header) return;
+
+            const prevSibling = card.previousElementSibling;
+
+            // Optimistic DOM update
+            card.classList.remove('mobile-group-item-' + oldGroupId);
+            card.classList.add('mobile-group-item-' + targetGroupId);
+            card.setAttribute('data-group-id', targetGroupId);
+            card.setAttribute('data-group-name', targetGroupName);
+
+            header.after(card);
+
+            fetch('/budgets/' + currentBudgetID + '/buckets/' + item.id + '/move-group', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                body: new URLSearchParams({
+                    'csrf_token': csrfTokenVal,
+                    'group_name': targetGroupName
+                })
+            })
+            .then(res => {
+                if (!res.ok) throw new Error('Server returned status ' + res.status);
+                return res.json();
+            })
+            .then(data => {
+                showAppToast('Bucket moved to ' + targetGroupName, true);
+            })
+            .catch(err => {
+                card.classList.remove('mobile-group-item-' + targetGroupId);
+                card.classList.add('mobile-group-item-' + oldGroupId);
+                card.setAttribute('data-group-id', oldGroupId);
+                card.setAttribute('data-group-name', oldGroupName);
+                if (prevSibling) {
+                    prevSibling.after(card);
+                }
+                showAppToast('Failed to move bucket: ' + err.message, false);
+            });
+        }
 
         function toggleBucketTargets(bID) {
             const row = document.getElementById('targets-' + bID);
@@ -4285,6 +4546,52 @@ func (h *WorkspaceHandler) UpdateBucket(c echo.Context) error {
 	})
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "updated", bucketID))
+}
+
+// MoveBucketGroup handles moving a bucket into another category group via drag & drop or direct API.
+func (h *WorkspaceHandler) MoveBucketGroup(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	bucketID := c.Param("id")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	groupName := strings.TrimSpace(c.FormValue("group_name"))
+	if groupName == "" {
+		// Also support JSON body if sent as application/json
+		var req struct {
+			GroupName string `json:"group_name"`
+		}
+		if err := c.Bind(&req); err == nil && req.GroupName != "" {
+			groupName = strings.TrimSpace(req.GroupName)
+		}
+	}
+	if groupName == "" {
+		groupName = "Default"
+	}
+
+	err := budget.UpdateBucket(c.Request().Context(), tenantDB, budget.UpdateBucketInput{
+		ID:            bucketID,
+		GroupName:     groupName,
+		AgentID:       userID,
+		CorrelationID: corrID,
+	})
+	if err != nil {
+		if strings.Contains(c.Request().Header.Get("Accept"), "application/json") || c.Request().Header.Get("X-Requested-With") == "XMLHttpRequest" {
+			return c.JSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
+		}
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	if strings.Contains(c.Request().Header.Get("Accept"), "application/json") || c.Request().Header.Get("X-Requested-With") == "XMLHttpRequest" {
+		return c.JSON(http.StatusOK, map[string]any{
+			"success":    true,
+			"bucket_id":  bucketID,
+			"group_name": groupName,
+		})
 	}
 
 	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "updated", bucketID))
