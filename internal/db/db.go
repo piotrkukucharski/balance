@@ -414,7 +414,7 @@ func ensureTenantSchemaCompat(ctx context.Context, db *sql.DB) error {
 				CREATE TABLE targets_projection_compat (
 					id TEXT PRIMARY KEY,
 					bucket_id TEXT NOT NULL,
-					name TEXT NOT NULL,
+					name TEXT,
 					target_type TEXT NOT NULL CHECK(target_type IN ('EXPENSE', 'SAVINGS', 'DEBT_PAYMENT')),
 					priority INTEGER NOT NULL DEFAULT 2 CHECK(priority >= 1),
 					sort_order INTEGER NOT NULL DEFAULT 0,

@@ -44,15 +44,20 @@ func BuildBudgetSnapshot(ctx context.Context, tenantDB *sql.DB, targetCurrency s
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
-			var id, name, curr string
+			var id, curr string
+			var nameNull sql.NullString
 			var priority int
 			var amt, funded int64
 			var dueDate sql.NullInt64
-			if err := rows.Scan(&id, &name, &priority, &amt, &funded, &curr, &dueDate); err == nil {
+			if err := rows.Scan(&id, &nameNull, &priority, &amt, &funded, &curr, &dueDate); err == nil {
 				var anchorDueDateSec *int64
 				if dueDate.Valid && dueDate.Int64 > 0 {
 					sec := dueDate.Int64 / 1_000_000
 					anchorDueDateSec = &sec
+				}
+				name := ""
+				if nameNull.Valid {
+					name = nameNull.String
 				}
 				meta := &lua.TargetMeta{
 					ID:            id,
@@ -66,8 +71,10 @@ func BuildBudgetSnapshot(ctx context.Context, tenantDB *sql.DB, targetCurrency s
 					AnchorDueDate: anchorDueDateSec,
 				}
 				snap.Targets[id] = meta
-				snap.Targets[name] = meta
-				snap.Targets[strings.ToLower(name)] = meta
+				if name != "" {
+					snap.Targets[name] = meta
+					snap.Targets[strings.ToLower(name)] = meta
+				}
 			}
 		}
 	}

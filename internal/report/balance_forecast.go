@@ -66,9 +66,13 @@ func CalculateBalanceForecast(ctx context.Context, tenantDB *sql.DB, daysForward
 	var targets []targetInfo
 	for targetRows.Next() {
 		var t targetInfo
+		var nameNull sql.NullString
 		var rInterval sql.NullInt64
-		if err := targetRows.Scan(&t.name, &t.targetType, &t.amount, &t.cadence, &rInterval, &t.dueDate); err != nil {
+		if err := targetRows.Scan(&nameNull, &t.targetType, &t.amount, &t.cadence, &rInterval, &t.dueDate); err != nil {
 			return nil, err
+		}
+		if nameNull.Valid {
+			t.name = nameNull.String
 		}
 		if rInterval.Valid {
 			t.interval = int(rInterval.Int64)

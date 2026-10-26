@@ -86,15 +86,19 @@ func EnsureDailyTargetsEvaluated(ctx context.Context, tenantDB *sql.DB, timezone
 
 	for rows.Next() {
 		var t evalTarget
+		var nameNull sql.NullString
 		var dueDateNull sql.NullInt64
 		var lastEvalNull sql.NullInt64
 		var lastErrNull sql.NullString
 		if err := rows.Scan(
-			&t.ID, &t.BucketID, &t.Name, &t.Priority, &t.SortOrder, &t.AmountMinor,
+			&t.ID, &t.BucketID, &nameNull, &t.Priority, &t.SortOrder, &t.AmountMinor,
 			&t.LuaScript, &t.Currency, &dueDateNull, &t.UsesRuntime, &lastEvalNull,
 			&lastErrNull, &t.CurrentFundedMinor,
 		); err != nil {
 			continue
+		}
+		if nameNull.Valid {
+			t.Name = nameNull.String
 		}
 		if dueDateNull.Valid {
 			t.DueDate = &dueDateNull.Int64
@@ -111,7 +115,9 @@ func EnsureDailyTargetsEvaluated(ctx context.Context, tenantDB *sql.DB, timezone
 
 		allTargets = append(allTargets, &t)
 		targetByID[t.ID] = &t
-		targetByName[strings.ToLower(t.Name)] = &t
+		if t.Name != "" {
+			targetByName[strings.ToLower(t.Name)] = &t
+		}
 	}
 
 	// Find the seed targets: uses_runtime = 1 and (last_evaluated_at IS NULL OR < todayStartMicros)

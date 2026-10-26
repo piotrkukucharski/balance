@@ -1032,15 +1032,21 @@ func (s *Server) ListBuckets(ctx echo.Context, budgetId BudgetIdPathParam) error
 		targets := []Target{}
 		if err == nil {
 			for tRows.Next() {
-				var tid, tbid, tname, ttype, amode, curr, rcad, strat string
+				var tid, tbid, ttype, amode, curr, rcad, strat string
+				var tnameNull sql.NullString
 				var prio, sortOrd, curFunded, tarch int
 				var amtMinor, ceilMinor, dDate, recInterval sql.NullInt64
 				var luaSc, lastErr sql.NullString
-				if err := tRows.Scan(&tid, &tbid, &tname, &ttype, &prio, &sortOrd, &amode, &amtMinor, &luaSc, &lastErr, &curr, &rcad, &recInterval, &dDate, &strat, &ceilMinor, &curFunded, &tarch); err != nil {
+				if err := tRows.Scan(&tid, &tbid, &tnameNull, &ttype, &prio, &sortOrd, &amode, &amtMinor, &luaSc, &lastErr, &curr, &rcad, &recInterval, &dDate, &strat, &ceilMinor, &curFunded, &tarch); err != nil {
 					continue
 				}
 				targetUUID, _ := uuid.Parse(tid)
 				bucketUUID, _ := uuid.Parse(tbid)
+
+				tname := ""
+				if tnameNull.Valid {
+					tname = tnameNull.String
+				}
 
 				var aMinorPtr, cMinorPtr, dDatePtr *int64
 				if amtMinor.Valid {
@@ -1267,13 +1273,19 @@ func (s *Server) CreateTarget(ctx echo.Context, budgetId BudgetIdPathParam, id I
 		amtMinor = *req.AmountMinor
 	}
 
+	var nameVal *string
+	if strings.TrimSpace(req.Name) != "" {
+		s := strings.TrimSpace(req.Name)
+		nameVal = &s
+	}
+
 	_, err = tx.ExecContext(ctx.Request().Context(), `
 		INSERT INTO targets_projection (
 			id, bucket_id, name, target_type, priority, sort_order, amount_mode, amount_minor,
 			lua_script, currency, recurrence_cadence, recurrence_interval, due_date, non_spending_strategy,
 			ceiling_amount_minor, current_funded_minor, is_archived, version, updated_at
 		) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?)`,
-		targetID, bucketID, req.Name, string(req.TargetType), prio, amode, amtMinor,
+		targetID, bucketID, nameVal, string(req.TargetType), prio, amode, amtMinor,
 		req.LuaScript, req.Currency, string(req.RecurrenceCadence), rInterval, req.DueDate,
 		strat, req.CeilingAmountMinor, now,
 	)

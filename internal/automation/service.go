@@ -856,12 +856,18 @@ func loadSnapshotWithDBTX(ctx context.Context, dbtx DBTX) (*lua.InMemoryBudgetSn
 		for tRows.Next() {
 			var t lua.TargetMeta
 			var bucketID sql.NullString
-			if err := tRows.Scan(&t.ID, &bucketID, &t.Name, &t.Required, &t.Priority, &t.Currency); err == nil {
+			var nameNull sql.NullString
+			if err := tRows.Scan(&t.ID, &bucketID, &nameNull, &t.Required, &t.Priority, &t.Currency); err == nil {
 				if bucketID.Valid {
 					t.BucketID = bucketID.String
 				}
+				if nameNull.Valid {
+					t.Name = nameNull.String
+				}
 				snap.Targets[t.ID] = &t
-				snap.Targets[strings.ToLower(t.Name)] = &t
+				if t.Name != "" {
+					snap.Targets[strings.ToLower(t.Name)] = &t
+				}
 			}
 		}
 	}

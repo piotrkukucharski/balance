@@ -1439,11 +1439,16 @@ func renderBucketRowsDesktop(allBucketsCount int, bucketGroups []bucketGroupView
 						neededText = fmt.Sprintf(`<span class="font-mono text-xs font-semibold text-warning">Needs %.2f %s</span>`, float64(t.NeededMinor)/100.0, t.Currency)
 					}
 
+					targetLabel := ""
+					if strings.TrimSpace(t.Name) != "" {
+						targetLabel = fmt.Sprintf(`<span class="font-medium truncate">%s</span>`, html.EscapeString(t.Name))
+					}
+
 					targetsSublist.WriteString(fmt.Sprintf(`
 						<div class="flex items-center justify-between py-1 border-b border-base-200/60 last:border-0 text-xs">
 							<div class="flex items-center gap-2 min-w-0">
 								<span class="text-base-content/40 font-mono select-none">├</span>
-								<span class="font-medium truncate">%s</span>
+								%s
 								<span class="badge %s badge-xs">%s</span>
 								<span class="text-[11px] text-base-content/50 truncate">%s%s%s</span>
 								%s
@@ -1458,7 +1463,7 @@ func renderBucketRowsDesktop(allBucketsCount int, bucketGroups []bucketGroupView
 							</div>
 						</div>
 					`,
-						html.EscapeString(t.Name), prioBadgeClass, priorityText,
+						targetLabel, prioBadgeClass, priorityText,
 						cadenceDisplay, dueText, goalText, luaBadge,
 						t.ProgressPercent, tProgClass, t.ProgressPercent,
 						float64(t.CurrentFundedMinor)/100.0, float64(t.RequiredMinor)/100.0, t.Currency,
@@ -1899,15 +1904,19 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		defer targetRows.Close()
 		for targetRows.Next() {
 			var t targetViewData
+			var nameNull sql.NullString
 			var dueDate sql.NullInt64
 			var rInterval sql.NullInt64
 			var ceiling sql.NullInt64
 			var luaScriptNull sql.NullString
 			var lastErrNull sql.NullString
-			targetRows.Scan(&t.ID, &t.BucketID, &t.Name, &t.TargetType, &t.Priority, &t.SortOrder,
+			targetRows.Scan(&t.ID, &t.BucketID, &nameNull, &t.TargetType, &t.Priority, &t.SortOrder,
 				&t.AmountMinor, &t.Currency, &t.RecurrenceCadence, &rInterval,
 				&dueDate, &t.NonSpendingStrategy, &ceiling, &t.CurrentFundedMinor,
 				&t.AmountMode, &luaScriptNull, &lastErrNull, &t.UsesRuntime)
+			if nameNull.Valid {
+				t.Name = nameNull.String
+			}
 			if rInterval.Valid {
 				t.RecurrenceInterval = int(rInterval.Int64)
 				t.RecurrenceDays = t.RecurrenceInterval
@@ -2778,8 +2787,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
                 <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div class="form-control sm:col-span-2">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Target Name</span></label>
-                        <input type="text" id="target_name" name="name" required placeholder="e.g. Monthly Rent, Electricity" class="input input-bordered w-full input-md focus:input-primary" />
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Target Name <span class="text-base-content/50 font-normal">(optional)</span></span></label>
+                        <input type="text" id="target_name" name="name" placeholder="e.g. Monthly Rent, Electricity" class="input input-bordered w-full input-md focus:input-primary" />
                     </div>
                     <div class="form-control sm:col-span-1">
                         <label class="label pb-1"><span class="label-text font-medium text-xs">Currency</span></label>
@@ -3109,11 +3118,13 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                         dueHtml = ' • Due: ' + d.toISOString().split('T')[0];
                     }
 
+                    const targetTitle = (t.Name && t.Name.trim().length > 0) ? (escapeHtml(t.Name) + luaBadge) : ('<span class="badge ' + (t.Priority === 3 ? 'badge-error' : (t.Priority === 2 ? 'badge-primary' : 'badge-ghost')) + ' badge-sm font-semibold">' + priorityText + '</span>' + luaBadge);
+
                     card.innerHTML = 
                         '<div class="flex justify-between items-start">' +
                             '<div>' +
                                 '<div class="font-bold text-sm tracking-tight flex items-center gap-1">' +
-                                    escapeHtml(t.Name) + luaBadge +
+                                    targetTitle +
                                 '</div>' +
                                 '<div class="text-[11px] text-base-content/60">Priority: ' + priorityText + ' • Cadence: ' + cadenceDisplay + dueHtml + ' • Strategy: ' + t.NonSpendingStrategy + ceilingHtml + '</div>' +
                             '</div>' +
@@ -4074,12 +4085,16 @@ func (h *WorkspaceHandler) AutoAssign(c echo.Context) error {
 	var targets []*budget.TargetDefinition
 	for rows.Next() {
 		var t budget.TargetDefinition
+		var nameNull sql.NullString
 		var dueDate sql.NullInt64
 		var ceiling sql.NullInt64
 		var rInterval sql.NullInt64
-		rows.Scan(&t.ID, &t.BucketID, &t.Name, &t.Priority, &t.SortOrder, &t.AmountMinor,
+		rows.Scan(&t.ID, &t.BucketID, &nameNull, &t.Priority, &t.SortOrder, &t.AmountMinor,
 			&t.Currency, &t.RecurrenceCadence, &rInterval, &dueDate,
 			&t.NonSpendingStrategy, &ceiling, &t.CurrentFundedMinor)
+		if nameNull.Valid {
+			t.Name = nameNull.String
+		}
 		if rInterval.Valid {
 			t.RecurrenceInterval = int(rInterval.Int64)
 		}

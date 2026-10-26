@@ -150,11 +150,8 @@ func ApplyBudgetStructure(ctx context.Context, tenantDB *sql.DB, structure *ai.B
 			// Create targets
 			for idx, proposedTarget := range proposedBucket.Targets {
 				targetName := strings.TrimSpace(proposedTarget.Name)
-				if targetName == "" {
-					continue
-				}
 
-				if conflictRes != "REPLACE" {
+				if targetName != "" && conflictRes != "REPLACE" {
 					// Check if target with the same name already exists in this bucket in this transaction
 					var targetCount int
 					err := tx.QueryRowContext(ctx, `SELECT count(*) FROM targets_projection WHERE bucket_id = ? AND lower(trim(name)) = lower(trim(?)) AND is_archived = 0`, bucketID, targetName).Scan(&targetCount)
@@ -298,7 +295,7 @@ func ExportBudgetStructure(ctx context.Context, tenantDB *sql.DB) (*ai.BudgetStr
 
 	// Fetch targets
 	targetRows, err := tenantDB.QueryContext(ctx, `
-		SELECT bucket_id, name, target_type, priority, amount_minor, currency, recurrence_cadence, recurrence_interval, non_spending_strategy
+		SELECT bucket_id, COALESCE(name, ''), target_type, priority, amount_minor, currency, recurrence_cadence, recurrence_interval, non_spending_strategy
 		FROM targets_projection
 		WHERE is_archived = 0
 		ORDER BY priority DESC, sort_order ASC, name ASC`)

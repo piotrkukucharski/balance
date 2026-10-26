@@ -114,10 +114,70 @@ func TestBucketAndTargetLifecycle(t *testing.T) {
 		t.Fatalf("failed updating target: %v", err)
 	}
 
-	// 5. Delete Target
+	// 5. Create Target with empty name (optional name)
+	optTargetID, err := CreateTarget(ctx, tenantDB, CreateTargetInput{
+		BucketID:          bucketID,
+		Name:              "",
+		TargetType:        "EXPENSE",
+		Priority:          1,
+		AmountMinor:       50000,
+		Currency:          "PLN",
+		RecurrenceCadence: CadenceMonthly,
+		AgentID:           agentID,
+		CorrelationID:     correlationID,
+	})
+	if err != nil {
+		t.Fatalf("failed creating target with empty name: %v", err)
+	}
+
+	var optNameNull sql.NullString
+	var optPriority int
+	err = tenantDB.QueryRow(`SELECT name, priority FROM targets_projection WHERE id = ?`, optTargetID).Scan(&optNameNull, &optPriority)
+	if err != nil {
+		t.Fatalf("failed querying target projection: %v", err)
+	}
+	if optNameNull.Valid && optNameNull.String != "" {
+		t.Fatalf("expected empty/null name, got %s", optNameNull.String)
+	}
+	if optPriority != 1 {
+		t.Fatalf("expected priority 1, got %d", optPriority)
+	}
+
+	// 6. Update Target with empty name
+	err = UpdateTarget(ctx, tenantDB, UpdateTargetInput{
+		ID:                  targetID,
+		Name:                "",
+		TargetType:          "EXPENSE",
+		Priority:            2,
+		AmountMinor:         150000,
+		RecurrenceCadence:   CadenceMonthly,
+		NonSpendingStrategy: StrategyRollOver,
+		AgentID:             agentID,
+		CorrelationID:       correlationID,
+	})
+	if err != nil {
+		t.Fatalf("failed updating target to empty name: %v", err)
+	}
+
+	err = tenantDB.QueryRow(`SELECT name, priority FROM targets_projection WHERE id = ?`, targetID).Scan(&optNameNull, &optPriority)
+	if err != nil {
+		t.Fatalf("failed querying target projection after update: %v", err)
+	}
+	if optNameNull.Valid && optNameNull.String != "" {
+		t.Fatalf("expected empty/null name after update, got %s", optNameNull.String)
+	}
+	if optPriority != 2 {
+		t.Fatalf("expected priority 2, got %d", optPriority)
+	}
+
+	// 5. Delete Targets
 	err = DeleteTarget(ctx, tenantDB, targetID, agentID, correlationID)
 	if err != nil {
 		t.Fatalf("failed deleting target: %v", err)
+	}
+	err = DeleteTarget(ctx, tenantDB, optTargetID, agentID, correlationID)
+	if err != nil {
+		t.Fatalf("failed deleting optional target: %v", err)
 	}
 
 	// 6. Archive Bucket -> MUST SUCCEED now

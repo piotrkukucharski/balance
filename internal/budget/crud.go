@@ -351,9 +351,10 @@ func CreateTarget(ctx context.Context, tenantDB *sql.DB, input CreateTargetInput
 
 // CreateTargetTx creates a new target within an existing transaction.
 func CreateTargetTx(ctx context.Context, tx *sql.Tx, input CreateTargetInput) (string, error) {
-	if input.BucketID == "" || input.Name == "" {
-		return "", errors.New("bucket id and target name are required")
+	if input.BucketID == "" {
+		return "", errors.New("bucket id is required")
 	}
+	input.Name = strings.TrimSpace(input.Name)
 	if input.TargetType == "" {
 		input.TargetType = "EXPENSE"
 	}
@@ -414,10 +415,15 @@ func CreateTargetTx(ctx context.Context, tx *sql.Tx, input CreateTargetInput) (s
 	eventID := domain.NewUUIDv7()
 	usesRuntime := DetectUsesRuntime(input.AmountMode, input.LuaScript)
 
+	var nameVal *string
+	if input.Name != "" {
+		nameVal = &input.Name
+	}
+
 	payload, err := json.Marshal(map[string]any{
 		"target_id":             targetID,
 		"bucket_id":             input.BucketID,
-		"name":                  input.Name,
+		"name":                  nameVal,
 		"target_type":           input.TargetType,
 		"priority":              input.Priority,
 		"sort_order":            input.SortOrder,
@@ -452,7 +458,7 @@ func CreateTargetTx(ctx context.Context, tx *sql.Tx, input CreateTargetInput) (s
 			ceiling_amount_minor, current_funded_minor, is_archived, version, updated_at,
 			last_evaluated_at, uses_runtime
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?, NULL, ?)`,
-		targetID, input.BucketID, input.Name, input.TargetType, input.Priority, input.SortOrder,
+		targetID, input.BucketID, nameVal, input.TargetType, input.Priority, input.SortOrder,
 		input.AmountMode, input.AmountMinor, input.LuaScript, input.Currency, input.RecurrenceCadence,
 		rInterval, input.DueDate, input.NonSpendingStrategy, input.CeilingAmountMinor, now, usesRuntime,
 	)
@@ -465,9 +471,10 @@ func CreateTargetTx(ctx context.Context, tx *sql.Tx, input CreateTargetInput) (s
 
 // UpdateTarget updates an existing target.
 func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput) error {
-	if input.ID == "" || input.Name == "" {
-		return errors.New("target id and name are required")
+	if input.ID == "" {
+		return errors.New("target id is required")
 	}
+	input.Name = strings.TrimSpace(input.Name)
 	if input.Priority < 1 {
 		input.Priority = 2
 	}
@@ -554,9 +561,14 @@ func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput
 	eventID := domain.NewUUIDv7()
 	usesRuntime := DetectUsesRuntime(input.AmountMode, input.LuaScript)
 
+	var nameVal *string
+	if input.Name != "" {
+		nameVal = &input.Name
+	}
+
 	payload, err := json.Marshal(map[string]any{
 		"target_id":             input.ID,
-		"name":                  input.Name,
+		"name":                  nameVal,
 		"target_type":           input.TargetType,
 		"priority":              input.Priority,
 		"sort_order":            input.SortOrder,
@@ -589,7 +601,7 @@ func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput
 		    lua_script = ?, recurrence_cadence = ?, recurrence_interval = ?, due_date = ?, non_spending_strategy = ?,
 		    ceiling_amount_minor = ?, version = ?, updated_at = ?, uses_runtime = ?
 		WHERE id = ?`,
-		input.Name, input.TargetType, input.Priority, input.SortOrder, input.AmountMode, input.AmountMinor,
+		nameVal, input.TargetType, input.Priority, input.SortOrder, input.AmountMode, input.AmountMinor,
 		input.LuaScript, input.RecurrenceCadence, rInterval, input.DueDate, input.NonSpendingStrategy,
 		input.CeilingAmountMinor, newVersion, now, usesRuntime, input.ID,
 	)

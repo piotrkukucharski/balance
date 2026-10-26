@@ -171,6 +171,14 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     Then the response status should be 200 OK
     And the action menu popover should support upward positioning and anchor try fallbacks
 
+  Scenario: Creating and displaying a target with optional name and showing only priority
+    Given an open budget "Family Home"
+    When I create a bucket "Emergency Fund" in group "Savings"
+    And I add a target with priority 3, cadence "MONTHLY", amount "500.00 PLN" without a name
+    Then the target in bucket "Emergency Fund" with priority 3 should have an empty or null name
+    And the budget page for "Family Home" should display priority badge "Mandatory" without target name
+
+
 
 
 

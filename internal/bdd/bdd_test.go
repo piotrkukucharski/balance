@@ -3882,6 +3882,73 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	ctx.Step(`^I add a target with priority (\d+), cadence "([^"]*)", amount "([^"]*)" without a name$`, func(prio int, cadence, amt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		tID, err := budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:          activeBucketID,
+			Name:              "",
+			TargetType:        "EXPENSE",
+			Priority:          prio,
+			AmountMinor:       parseAmountStr(amt),
+			Currency:          "PLN",
+			RecurrenceCadence: cadence,
+			AgentID:           tc.activeUserID,
+			CorrelationID:     domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		activeTargetID = tID
+		return nil
+	})
+
+	ctx.Step(`^the target in bucket "([^"]*)" with priority (\d+) should have an empty or null name$`, func(bucketName string, expectedPrio int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var bucketID string
+		err = bDB.QueryRow(`SELECT id FROM buckets_projection WHERE name = ?`, bucketName).Scan(&bucketID)
+		if err != nil {
+			return fmt.Errorf("bucket %s not found: %w", bucketName, err)
+		}
+		var nameNull sql.NullString
+		err = bDB.QueryRow(`SELECT name FROM targets_projection WHERE bucket_id = ? AND priority = ? AND is_archived = 0`, bucketID, expectedPrio).Scan(&nameNull)
+		if err != nil {
+			return fmt.Errorf("target not found: %w", err)
+		}
+		if nameNull.Valid && strings.TrimSpace(nameNull.String) != "" {
+			return fmt.Errorf("expected null or empty name, got %q", nameNull.String)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the budget page for "([^"]*)" should display priority badge "([^"]*)" without target name$`, func(budgetName, prioText string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		reqView := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/budgets/%s/budget", tc.activeBudgetID), nil)
+		recView := httptest.NewRecorder()
+		cView := tc.echoEngine.NewContext(reqView, recView)
+		cView.SetParamNames("budgetId")
+		cView.SetParamValues(tc.activeBudgetID)
+		cView.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		cView.Set(handlers.ContextRoleKey, "OWNER")
+		cView.Set(handlers.ContextBudgetDBKey, bDB)
+		if err := tc.workspaceHandler.BudgetView(cView); err != nil {
+			return err
+		}
+		body := recView.Body.String()
+		if !strings.Contains(body, prioText) {
+			return fmt.Errorf("expected priority badge %q in body", prioText)
+		}
+		return nil
+	})
+
 	ctx.Step(`^the bucket and targets should be recorded in event streams and projections$`, func() error {
 		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
 		if err != nil {

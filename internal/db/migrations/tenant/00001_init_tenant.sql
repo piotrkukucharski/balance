@@ -213,7 +213,7 @@ CREATE TABLE IF NOT EXISTS bucket_currency_balances (
 CREATE TABLE IF NOT EXISTS targets_projection (
     id TEXT PRIMARY KEY, -- Target UUIDv7
     bucket_id TEXT NOT NULL,
-    name TEXT NOT NULL,
+    name TEXT,
     target_type TEXT NOT NULL CHECK(target_type IN ('EXPENSE', 'SAVINGS', 'DEBT_PAYMENT')),
     priority INTEGER NOT NULL DEFAULT 2 CHECK(priority >= 1), -- 1 = Optional, 2 = Recommended, 3 = Mandatory, higher = more important
     sort_order INTEGER NOT NULL DEFAULT 0, -- Tie-breaker order within bucket
