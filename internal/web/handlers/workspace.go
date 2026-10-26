@@ -476,6 +476,24 @@ func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
 	var dangerZoneHTML string
 	if role == "OWNER" {
 		dangerZoneHTML = fmt.Sprintf(`
+			<!-- Diagnostic Tools Shortcut Card -->
+			<div class="card card-border bg-base-100 border-base-300 shadow-md">
+				<div class="card-body p-6">
+					<div class="flex items-center justify-between">
+						<div>
+							<h2 class="card-title text-base font-bold flex items-center gap-2">
+								<span>🛠️</span>
+								<span>Narzędzia diagnostyczne (Debug)</span>
+							</h2>
+							<p class="text-xs text-base-content/60 mt-1">Sprawdź integralność finansową, osierocone salda i wykonaj akcje naprawcze bilansu.</p>
+						</div>
+						<a href="/budgets/%s/debug" class="btn btn-sm btn-outline btn-warning font-medium">
+							Otwórz Narzędzia Debug →
+						</a>
+					</div>
+				</div>
+			</div>
+
 			<div class="card card-border bg-base-100 border-error/30 shadow-md">
 				<div class="card-body p-6">
 					<h2 class="card-title text-error text-lg font-bold flex items-center gap-2">
@@ -496,7 +514,7 @@ func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
 					</div>
 				</div>
 			</div>
-		`, budgetID, csrfToken)
+		`, budgetID, budgetID, csrfToken)
 	} else {
 		dangerZoneHTML = `
 			<div class="card card-border bg-base-100 border-base-300 shadow-sm opacity-70">

@@ -153,6 +153,50 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 			faviconHTML = fmt.Sprintf(`<div class="w-8 h-8 rounded-lg bg-base-200 border border-base-300 flex items-center justify-center text-lg select-none" title="%s">%s</div>`, html.EscapeString(favType), emojiChar)
 		}
 
+		// Check if account can be safely deleted:
+		// Cannot be deleted if it has raw transactions or budget transactions (other than initial 'Set Balance Offset' / starting balance).
+		canDeleteAccount := true
+		var rawCount int
+		_ = tenantDB.QueryRowContext(c.Request().Context(), `SELECT count(*) FROM raw_transactions_current WHERE account_id = ?`, id).Scan(&rawCount)
+		if rawCount > 0 {
+			canDeleteAccount = false
+		} else {
+			var regularTxCount int
+			_ = tenantDB.QueryRowContext(c.Request().Context(), `
+				SELECT count(*) FROM budget_transactions_current
+				WHERE (source_account_id = ? OR destination_account_id = ?)
+				  AND (notes IS NULL OR (notes NOT LIKE '%Set Balance Offset%' AND notes NOT LIKE '%Starting Balance%'))`, id, id).Scan(&regularTxCount)
+			if regularTxCount > 0 {
+				canDeleteAccount = false
+			}
+		}
+
+		actions := []TableActionItem{
+			{
+				Label: "🕒 History",
+				HXGet: fmt.Sprintf("/budgets/%s/history/accounts/%s", budgetID, id),
+			},
+			{
+				Label:   "✏️ Edit",
+				OnClick: fmt.Sprintf("openEditModal('%s', '%s', '%s', '%s', '%s', '%s')", id, strings.ReplaceAll(name, "'", "\\'"), curr, aType, favType, strings.ReplaceAll(favVal, "'", "\\'")),
+			},
+			{
+				Label:      toggleActionText(isClosed),
+				FormAction: fmt.Sprintf("/budgets/%s/accounts/%s/toggle-close", budgetID, id),
+				CSRFToken:  c.Get("csrfToken").(string),
+			},
+		}
+
+		if canDeleteAccount {
+			actions = append(actions, TableActionItem{
+				Label:      "🗑️ Delete",
+				FormAction: fmt.Sprintf("/budgets/%s/accounts/%s/delete", budgetID, id),
+				CSRFToken:  c.Get("csrfToken").(string),
+				IsDanger:   true,
+				ConfirmMsg: "Delete this account?",
+			})
+		}
+
 		accountRows.WriteString(fmt.Sprintf(`
 			<tr class="hover">
 				<td>
@@ -180,28 +224,7 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 			faviconHTML, name, iban, typeBadge, aType, integrationBadge, statusBadge,
 			float64(balanceMinor)/100.0, curr,
 			reconnectBtn,
-			RenderPopoverActionMenu("account", id, []TableActionItem{
-				{
-					Label: "🕒 History",
-					HXGet: fmt.Sprintf("/budgets/%s/history/accounts/%s", budgetID, id),
-				},
-				{
-					Label:   "✏️ Edit",
-					OnClick: fmt.Sprintf("openEditModal('%s', '%s', '%s', '%s', '%s', '%s')", id, strings.ReplaceAll(name, "'", "\\'"), curr, aType, favType, strings.ReplaceAll(favVal, "'", "\\'")),
-				},
-				{
-					Label:      toggleActionText(isClosed),
-					FormAction: fmt.Sprintf("/budgets/%s/accounts/%s/toggle-close", budgetID, id),
-					CSRFToken:  c.Get("csrfToken").(string),
-				},
-				{
-					Label:      "🗑️ Delete",
-					FormAction: fmt.Sprintf("/budgets/%s/accounts/%s/delete", budgetID, id),
-					CSRFToken:  c.Get("csrfToken").(string),
-					IsDanger:   true,
-					ConfirmMsg: "Delete this account?",
-				},
-			}),
+			RenderPopoverActionMenu("account", id, actions),
 		))
 
 	}
@@ -1463,12 +1486,61 @@ func (h *AccountsHandler) ToggleCloseAccount(c echo.Context) error {
 }
 
 // DeleteAccount soft-deletes the account from current projection.
+// Account can only be deleted if it has NO raw transactions and NO budget transactions
+// (other than initial 'Set Balance Offset' / starting balance).
+// If it has starting transactions, they and account_currency_balances are cleaned up.
 func (h *AccountsHandler) DeleteAccount(c echo.Context) error {
 	budgetID := c.Param("budgetId")
 	acctID := c.Param("id")
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	userID := c.Get(ContextUserIDKey).(string)
 	corrID := c.Get("correlationID").(string)
+
+	// 1. Check if account exists
+	var acctExists int
+	err := tenantDB.QueryRowContext(c.Request().Context(), `SELECT count(*) FROM accounts_current WHERE id = ?`, acctID).Scan(&acctExists)
+	if err != nil || acctExists == 0 {
+		return echo.NewHTTPError(http.StatusNotFound, "Account not found")
+	}
+
+	// 2. Reject if any raw transactions exist
+	var rawCount int
+	err = tenantDB.QueryRowContext(c.Request().Context(), `SELECT count(*) FROM raw_transactions_current WHERE account_id = ?`, acctID).Scan(&rawCount)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "DB error checking raw transactions")
+	}
+	if rawCount > 0 {
+		return echo.NewHTTPError(http.StatusBadRequest, "Cannot delete account with existing transactions; close the account instead")
+	}
+
+	// 3. Reject if any non-starting budget transactions exist
+	var nonStartingCount int
+	err = tenantDB.QueryRowContext(c.Request().Context(), `
+		SELECT count(*) FROM budget_transactions_current
+		WHERE (source_account_id = ? OR destination_account_id = ?)
+		  AND (notes IS NULL OR (notes NOT LIKE '%Set Balance Offset%' AND notes NOT LIKE '%Starting Balance%'))`, acctID, acctID).Scan(&nonStartingCount)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "DB error checking budget transactions")
+	}
+	if nonStartingCount > 0 {
+		return echo.NewHTTPError(http.StatusBadRequest, "Cannot delete account with existing transactions; close the account instead")
+	}
+
+	// Find any starting/Set Balance transactions for this account to clean them up
+	startRows, err := tenantDB.QueryContext(c.Request().Context(), `
+		SELECT id FROM budget_transactions_current
+		WHERE (source_account_id = ? OR destination_account_id = ?)
+		  AND (notes LIKE '%Set Balance Offset%' OR notes LIKE '%Starting Balance%')`, acctID, acctID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "DB error checking starting transactions")
+	}
+	var startingTxIDs []string
+	for startRows.Next() {
+		var sID string
+		startRows.Scan(&sID)
+		startingTxIDs = append(startingTxIDs, sID)
+	}
+	startRows.Close()
 
 	now := time.Now().UTC().UnixMicro()
 	tx, err := tenantDB.BeginTx(c.Request().Context(), nil)
@@ -1494,6 +1566,15 @@ func (h *AccountsHandler) DeleteAccount(c echo.Context) error {
 	// Remove from accounts_current
 	tx.ExecContext(c.Request().Context(), `DELETE FROM accounts_current WHERE id = ?`, acctID)
 	tx.ExecContext(c.Request().Context(), `DELETE FROM account_integration_links WHERE account_id = ?`, acctID)
+
+	// Clean up starting transactions from projection and ledger
+	for _, stxID := range startingTxIDs {
+		tx.ExecContext(c.Request().Context(), `DELETE FROM budget_transactions_current WHERE id = ?`, stxID)
+		tx.ExecContext(c.Request().Context(), `DELETE FROM budget_transactions WHERE id = ?`, stxID)
+	}
+
+	// Clean up account_currency_balances for this account
+	tx.ExecContext(c.Request().Context(), `DELETE FROM account_currency_balances WHERE account_id = ?`, acctID)
 
 	if err := tx.Commit(); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Commit error")

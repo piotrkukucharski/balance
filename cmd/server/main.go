@@ -90,6 +90,7 @@ func main() {
 	accountsHandler.SetService(appService)
 	automationsHandler := handlers.NewAutomationsHandler(mainDB, tenantMgr)
 	historyHandler := handlers.NewHistoryHandler(mainDB, tenantMgr)
+	debugHandler := handlers.NewDebugHandler(mainDB, tenantMgr)
 
 	pwaHandler := handlers.NewPWAHandler()
 
@@ -229,6 +230,10 @@ func main() {
 	tenantOwner.POST("/update", workspaceHandler.UpdateBudget)
 	tenantOwner.POST("/clone", workspaceHandler.CloneBudget)
 	tenantOwner.POST("/delete", workspaceHandler.DeleteBudget)
+	tenantOwner.GET("/debug", debugHandler.DebugView)
+	tenantOwner.POST("/debug/audit", debugHandler.AuditAction)
+	tenantOwner.POST("/debug/actions/cleanup-orphaned", debugHandler.CleanupOrphanedAction)
+	tenantOwner.POST("/debug/actions/reconcile-discrepancies", debugHandler.ReconcileDiscrepanciesAction)
 
 	// REST API v1 (OpenAPI 3.1)
 	apiServer := openapi.NewServer(mainDB, tenantMgr, appService)

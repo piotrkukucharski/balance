@@ -68,6 +68,7 @@ type bddTestContext struct {
 	historyHandler     *handlers.HistoryHandler
 	pwaHandler         *handlers.PWAHandler
 	automationsHandler *handlers.AutomationsHandler
+	debugHandler       *handlers.DebugHandler
 
 	activeAcctID       string
 	activePartyID      string
@@ -129,6 +130,7 @@ func (tc *bddTestContext) setup() error {
 	tc.historyHandler = handlers.NewHistoryHandler(mainDB, tenantMgr)
 	tc.pwaHandler = handlers.NewPWAHandler()
 	tc.automationsHandler = handlers.NewAutomationsHandler(mainDB, tenantMgr)
+	tc.debugHandler = handlers.NewDebugHandler(mainDB, tenantMgr)
 
 	// Register REST API v1
 	appSvc := service.NewAppService(mainDB, tenantMgr, nil)
@@ -7233,6 +7235,342 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		if !strings.Contains(body, `max-h-[85dvh]`) || !strings.Contains(body, `pb-[calc(1.5rem+env(safe-area-inset-bottom))]`) {
 			return fmt.Errorf("expected bottom-sheet modal classes with 85dvh and safe-area padding")
+		}
+		return nil
+	})
+
+	// 18_diagnostics_debug.feature step definitions (BALANCE-75)
+	ctx.Step(`^an active checking account "([^"]*)" in current budget$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		bDB.Exec(`INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at) VALUES (?, 1, 'Main User', 'INDIVIDUAL', 1, ?, ?)`, pID, tc.activeUserID, now)
+		acctID := domain.NewUUIDv7()
+		tc.activeAcctID = acctID
+		bDB.Exec(`INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at) VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, ?, ?)`, acctID, pID, acctName, tc.activeUserID, now)
+		return nil
+	})
+
+	ctx.Step(`^a budget transaction exists for account "([^"]*)"$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		dstAcctID := domain.NewUUIDv7()
+		pID := domain.NewUUIDv7()
+		bDB.Exec(`INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at) VALUES (?, 1, 'Store', 'ORGANIZATION', 0, ?, ?)`, pID, tc.activeUserID, now)
+		bDB.Exec(`INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at) VALUES (?, 1, ?, 'Store Account', 'EXTERNAL', 'PLN', 0, ?, ?)`, dstAcctID, pID, tc.activeUserID, now)
+
+		txID := domain.NewUUIDv7()
+		notes := "Grocery shopping"
+		_, err = bDB.Exec(`
+			INSERT INTO budget_transactions_current (id, version, source_account_id, destination_account_id, source_amount_minor, source_currency, destination_amount_minor, destination_currency, transaction_date, notes, updated_at)
+			VALUES (?, 1, ?, ?, 5000, 'PLN', 5000, 'PLN', ?, ?, ?)`, txID, tc.activeAcctID, dstAcctID, now, notes, now)
+		return err
+	})
+
+	ctx.Step(`^I attempt to delete account "([^"]*)"$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var acctID string
+		err = bDB.QueryRow(`SELECT id FROM accounts_current WHERE name = ?`, acctName).Scan(&acctID)
+		if err != nil {
+			return fmt.Errorf("account %s not found: %w", acctName, err)
+		}
+
+		form := url.Values{}
+		form.Set("csrf_token", tc.activeCSRF)
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/accounts/%s/delete", tc.activeBudgetID, acctID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "id")
+		c.SetParamValues(tc.activeBudgetID, acctID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set("csrfToken", tc.activeCSRF)
+
+		err = tc.accountsHandler.DeleteAccount(c)
+		if err != nil {
+			if he, ok := err.(*echo.HTTPError); ok {
+				rec.Code = he.Code
+			}
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^the delete account request should be rejected with bad request status$`, func() error {
+		if tc.lastResponse.Code != http.StatusBadRequest {
+			return fmt.Errorf("expected 400 Bad Request, got %d", tc.lastResponse.Code)
+		}
+		return nil
+	})
+
+	ctx.Step(`^an account "([^"]*)" with only initial Set Balance offset transaction and zero balance$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		bDB.Exec(`INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at) VALUES (?, 1, 'Main User', 'INDIVIDUAL', 1, ?, ?)`, pID, tc.activeUserID, now)
+		acctID := domain.NewUUIDv7()
+		tc.activeAcctID = acctID
+		bDB.Exec(`INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at) VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, ?, ?)`, acctID, pID, acctName, tc.activeUserID, now)
+		bDB.Exec(`INSERT INTO account_currency_balances (account_id, currency, balance_minor, updated_at) VALUES (?, 'PLN', 0, ?)`, acctID, now)
+
+		setBalPartyID := domain.NewUUIDv7()
+		setBalAcctID := domain.NewUUIDv7()
+		bDB.Exec(`INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at) VALUES (?, 1, 'Set Balance', 'ORGANIZATION', 0, ?, ?)`, setBalPartyID, tc.activeUserID, now)
+		bDB.Exec(`INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at) VALUES (?, 1, ?, 'Set Balance Offset', 'EXTERNAL', 'PLN', 0, ?, ?)`, setBalAcctID, setBalPartyID, tc.activeUserID, now)
+
+		stxID := domain.NewUUIDv7()
+		tc.activeTxID = stxID
+		notes := "Starting Balance (Set Balance Offset)"
+		bDB.Exec(`INSERT INTO budget_transactions_current (id, version, source_account_id, destination_account_id, source_amount_minor, source_currency, destination_amount_minor, destination_currency, transaction_date, notes, updated_at)
+			VALUES (?, 1, ?, ?, 10000, 'PLN', 10000, 'PLN', ?, ?, ?)`, stxID, setBalAcctID, acctID, now, notes, now)
+		return nil
+	})
+
+	ctx.Step(`^I delete account "([^"]*)"$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var acctID string
+		err = bDB.QueryRow(`SELECT id FROM accounts_current WHERE name = ?`, acctName).Scan(&acctID)
+		if err != nil {
+			return fmt.Errorf("account %s not found: %w", acctName, err)
+		}
+
+		form := url.Values{}
+		form.Set("csrf_token", tc.activeCSRF)
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/accounts/%s/delete", tc.activeBudgetID, acctID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "id")
+		c.SetParamValues(tc.activeBudgetID, acctID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set("csrfToken", tc.activeCSRF)
+
+		err = tc.accountsHandler.DeleteAccount(c)
+		if err != nil {
+			if he, ok := err.(*echo.HTTPError); ok {
+				rec.Code = he.Code
+			}
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^the account "([^"]*)" should be removed from "accounts_current"$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var count int
+		err = bDB.QueryRow(`SELECT count(*) FROM accounts_current WHERE name = ?`, acctName).Scan(&count)
+		if err != nil {
+			return err
+		}
+		if count != 0 {
+			return fmt.Errorf("expected account %s to be removed from accounts_current, found %d", acctName, count)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the initial Set Balance transaction should be removed from "budget_transactions_current"$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var count int
+		err = bDB.QueryRow(`SELECT count(*) FROM budget_transactions_current WHERE id = ?`, tc.activeTxID).Scan(&count)
+		if err != nil {
+			return err
+		}
+		if count != 0 {
+			return fmt.Errorf("expected Set Balance transaction %s to be removed from budget_transactions_current, found %d", tc.activeTxID, count)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the currency balance in "account_currency_balances" for "([^"]*)" should be cleaned up$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var count int
+		err = bDB.QueryRow(`SELECT count(*) FROM account_currency_balances WHERE account_id = ?`, tc.activeAcctID).Scan(&count)
+		if err != nil {
+			return err
+		}
+		if count != 0 {
+			return fmt.Errorf("expected account_currency_balances for %s to be removed, found %d", tc.activeAcctID, count)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I request the debug view "([^"]*)"$`, func(path string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/budgets/%s/debug", tc.activeBudgetID), nil)
+		rec := httptest.NewRecorder()
+
+		var role string
+		_ = tc.mainDB.QueryRow(`SELECT role FROM budget_members WHERE budget_id = ? AND user_id = ?`, tc.activeBudgetID, tc.activeUserID).Scan(&role)
+
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextRoleKey, role)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		err = tc.debugHandler.DebugView(c)
+		if err != nil {
+			if he, ok := err.(*echo.HTTPError); ok {
+				rec.Code = he.Code
+			}
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^the sidebar should include a link to the debug page$`, func() error {
+		body := tc.lastResponse.Body.String()
+		expectedLink := fmt.Sprintf("/budgets/%s/debug", tc.activeBudgetID)
+		if !strings.Contains(body, expectedLink) {
+			return fmt.Errorf("expected sidebar to contain link %q", expectedLink)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the response status should be 403 Forbidden$`, func() error {
+		if tc.lastResponse.Code != http.StatusForbidden {
+			return fmt.Errorf("expected status 403 Forbidden, got %d", tc.lastResponse.Code)
+		}
+		return nil
+	})
+
+	ctx.Step(`^an orphaned balance exists in "account_currency_balances" without corresponding account$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		orphanedID := "orphaned_" + domain.NewUUIDv7()[:8]
+		_, err = bDB.Exec(`
+			INSERT INTO account_currency_balances (account_id, currency, balance_minor, updated_at)
+			VALUES (?, 'PLN', 45000, ?)`, orphanedID, now)
+		return err
+	})
+
+	ctx.Step(`^I trigger the integrity audit check via HTMX$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/debug/audit", tc.activeBudgetID), nil)
+		rec := httptest.NewRecorder()
+
+		var role string
+		_ = tc.mainDB.QueryRow(`SELECT role FROM budget_members WHERE budget_id = ? AND user_id = ?`, tc.activeBudgetID, tc.activeUserID).Scan(&role)
+
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextRoleKey, role)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		err = tc.debugHandler.AuditAction(c)
+		if err != nil {
+			if he, ok := err.(*echo.HTTPError); ok {
+				rec.Code = he.Code
+			}
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^the audit result should report an anomaly for orphaned account currency balances$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "orphaned balance records") && !strings.Contains(body, "Osierocone Salda") {
+			return fmt.Errorf("expected audit result to report orphaned balances anomaly, got: %s", body)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I trigger the cleanup orphaned balances action via HTMX$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/debug/actions/cleanup-orphaned", tc.activeBudgetID), nil)
+		rec := httptest.NewRecorder()
+
+		var role string
+		_ = tc.mainDB.QueryRow(`SELECT role FROM budget_members WHERE budget_id = ? AND user_id = ?`, tc.activeBudgetID, tc.activeUserID).Scan(&role)
+
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextRoleKey, role)
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		err = tc.debugHandler.CleanupOrphanedAction(c)
+		if err != nil {
+			if he, ok := err.(*echo.HTTPError); ok {
+				rec.Code = he.Code
+			}
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^the orphaned balance should be deleted from "account_currency_balances"$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var count int
+		err = bDB.QueryRow(`
+			SELECT count(*) FROM account_currency_balances acb
+			LEFT JOIN accounts_current a ON acb.account_id = a.id
+			WHERE a.id IS NULL`).Scan(&count)
+		if err != nil {
+			return err
+		}
+		if count != 0 {
+			return fmt.Errorf("expected 0 orphaned balances, found %d", count)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the response should include a success confirmation notification$`, func() error {
+		triggerHeader := tc.lastResponse.Header().Get("HX-Trigger")
+		if !strings.Contains(triggerHeader, "debugNotification") || !strings.Contains(triggerHeader, "true") {
+			return fmt.Errorf("expected HX-Trigger debugNotification with success=true, got: %q", triggerHeader)
 		}
 		return nil
 	})

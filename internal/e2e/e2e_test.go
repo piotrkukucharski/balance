@@ -155,6 +155,7 @@ func (tc *e2eScenarioContext) setup() error {
 	partiesHandler := handlers.NewPartiesHandler(mainDB, tenantMgr)
 	membersHandler := handlers.NewMembersHandler(mainDB, tenantMgr)
 	tokensHandler := handlers.NewTokensHandler(mainDB)
+	debugHandler := handlers.NewDebugHandler(mainDB, tenantMgr)
 	accountsHandler := handlers.NewAccountsHandler(mainDB, tenantMgr)
 	accountsHandler.SetService(appService)
 	pwaHandler := handlers.NewPWAHandler()
@@ -266,6 +267,10 @@ func (tc *e2eScenarioContext) setup() error {
 	tenantOwner.POST("/update", workspaceHandler.UpdateBudget)
 	tenantOwner.POST("/clone", workspaceHandler.CloneBudget)
 	tenantOwner.POST("/delete", workspaceHandler.DeleteBudget)
+	tenantOwner.GET("/debug", debugHandler.DebugView)
+	tenantOwner.POST("/debug/audit", debugHandler.AuditAction)
+	tenantOwner.POST("/debug/actions/cleanup-orphaned", debugHandler.CleanupOrphanedAction)
+	tenantOwner.POST("/debug/actions/reconcile-discrepancies", debugHandler.ReconcileDiscrepanciesAction)
 
 	apiServer := openapi.NewServer(mainDB, tenantMgr, appService)
 	apiGroup := e.Group("/api/v1", func(next echo.HandlerFunc) echo.HandlerFunc {
