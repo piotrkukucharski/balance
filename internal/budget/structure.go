@@ -350,8 +350,17 @@ func ExportBudgetStructure(ctx context.Context, tenantDB *sql.DB) (*ai.BudgetStr
 	return &res, nil
 }
 
-// GetExistingGroupNames returns all distinct active group names from the tenantDB.
+// GetExistingGroupNames returns all distinct active group names from the tenantDB in configured sort order.
 func GetExistingGroupNames(ctx context.Context, tenantDB *sql.DB) ([]string, error) {
+	groups, err := ListBucketGroups(ctx, tenantDB)
+	if err == nil && len(groups) > 0 {
+		var names []string
+		for _, g := range groups {
+			names = append(names, g.Name)
+		}
+		return names, nil
+	}
+
 	groupRows, err := tenantDB.QueryContext(ctx, `SELECT DISTINCT group_name FROM buckets_projection WHERE is_archived = 0 ORDER BY group_name ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("failed querying groups: %w", err)

@@ -188,6 +188,8 @@ func main() {
 	tenantEditor.POST("/parties", partiesHandler.CreateParty)
 	tenantEditor.POST("/parties/:partyId/rules", partiesHandler.CreatePartyRule)
 	tenantEditor.POST("/parties/:partyId/rules/:ruleId/delete", partiesHandler.DeletePartyRule)
+	tenantEditor.POST("/groups/rename", workspaceHandler.RenameGroup)
+	tenantEditor.POST("/groups/move", workspaceHandler.MoveGroup)
 	tenantEditor.POST("/buckets", workspaceHandler.CreateBucket)
 	tenantEditor.POST("/buckets/:id/update", workspaceHandler.UpdateBucket)
 	tenantEditor.POST("/buckets/:id/archive", workspaceHandler.ArchiveBucket)

@@ -1042,6 +1042,11 @@ func getFlashMessage(code string) string {
 	}
 }
 
+// SafeDOMID converts any string into a valid, safe DOM element identifier or token.
+func SafeDOMID(s string) string {
+	return safeDOMID(s)
+}
+
 func safeDOMID(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -1285,10 +1290,31 @@ func renderBucketRowsDesktop(allBucketsCount int, bucketGroups []bucketGroupView
 		sb.WriteString(fmt.Sprintf(`
 			<tr class="bg-base-200/80 font-bold border-t-2 border-base-300 group-header select-none">
 				<td class="py-2.5">
-					<div class="flex items-center gap-2 cursor-pointer" onclick="toggleGroup('%s')">
-						<span id="group-icon-%s" class="text-xs transition-transform duration-200">▼</span>
-						<span class="uppercase tracking-wider text-xs font-black text-base-content/80">%s</span>
-						<span class="badge badge-neutral badge-xs font-mono font-normal">%d envelopes</span>
+					<div class="flex items-center gap-2">
+						<div class="flex items-center gap-2 cursor-pointer" onclick="toggleGroup('%s')">
+							<span id="group-icon-%s" class="text-xs transition-transform duration-200">▼</span>
+							<span class="uppercase tracking-wider text-xs font-black text-base-content/80">%s</span>
+							<span class="badge badge-neutral badge-xs font-mono font-normal">%d envelopes</span>
+						</div>
+						<div class="flex items-center gap-0.5 ml-2">
+							<button type="button" class="btn btn-ghost btn-xs p-1 h-6 min-h-0 text-base-content/60 hover:text-primary" onclick="openRenameGroupModal('%s')" title="Rename Category">
+								✏️
+							</button>
+							<form method="POST" action="/budgets/%s/groups/move?dir=up" class="inline">
+								<input type="hidden" name="csrf_token" value="%s" />
+								<input type="hidden" name="group_name" value="%s" />
+								<input type="hidden" name="horizon" value="%s" />
+								<input type="hidden" name="filter" value="%s" />
+								<button type="submit" class="btn btn-ghost btn-xs p-0.5 h-6 min-h-0 text-base-content/60 hover:text-primary" title="Move Up">▲</button>
+							</form>
+							<form method="POST" action="/budgets/%s/groups/move?dir=down" class="inline">
+								<input type="hidden" name="csrf_token" value="%s" />
+								<input type="hidden" name="group_name" value="%s" />
+								<input type="hidden" name="horizon" value="%s" />
+								<input type="hidden" name="filter" value="%s" />
+								<button type="submit" class="btn btn-ghost btn-xs p-0.5 h-6 min-h-0 text-base-content/60 hover:text-primary" title="Move Down">▼</button>
+							</form>
+						</div>
 					</div>
 				</td>
 				<td class="py-2.5">
@@ -1307,6 +1333,9 @@ func renderBucketRowsDesktop(allBucketsCount int, bucketGroups []bucketGroupView
 			</tr>
 		`,
 			bg.GroupID, bg.GroupID, html.EscapeString(bg.GroupName), len(bg.Buckets),
+			strings.ReplaceAll(bg.GroupName, "'", "\\'"),
+			budgetID, csrfToken, html.EscapeString(bg.GroupName), html.EscapeString(horizonParam), html.EscapeString(filterParam),
+			budgetID, csrfToken, html.EscapeString(bg.GroupName), html.EscapeString(horizonParam), html.EscapeString(filterParam),
 			bg.ProgressPercent, grpProgClass, bg.ProgressPercent,
 			float64(bg.TotalFundedMinor)/100.0, float64(bg.TotalRequiredMinor)/100.0,
 			float64(bg.TotalNeededMinor)/100.0, defaultCurr,
@@ -2025,9 +2054,10 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	rows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT b.id, b.group_name, b.name, COALESCE(bcb.balance_minor, 0)
 		FROM buckets_projection b
+		LEFT JOIN bucket_groups bg ON b.group_name = bg.name
 		LEFT JOIN bucket_currency_balances bcb ON b.id = bcb.bucket_id AND bcb.currency = ?
 		WHERE b.is_archived = 0
-		ORDER BY b.group_name, b.name`, defaultCurr)
+		ORDER BY COALESCE(bg.sort_order, 999999) ASC, b.group_name ASC, b.name ASC`, defaultCurr)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed loading buckets")
 	}
@@ -2174,13 +2204,25 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		}
 	}
 
-	// Group display buckets by GroupName
+	// Group display buckets by GroupName preserving configured order
 	type groupEntry struct {
 		GroupName string
 		Buckets   []bucketViewData
 	}
 	var groupEntries []groupEntry
 	groupIndex := make(map[string]int)
+
+	// Fetch all configured groups from bucket_groups to guarantee order and allow empty or filtered groups
+	configuredGroups, _ := budget.ListBucketGroups(c.Request().Context(), tenantDB)
+	for _, cg := range configuredGroups {
+		if _, exists := groupIndex[cg.Name]; !exists {
+			idx := len(groupEntries)
+			groupIndex[cg.Name] = idx
+			groupEntries = append(groupEntries, groupEntry{
+				GroupName: cg.Name,
+			})
+		}
+	}
 
 	for _, b := range displayBuckets {
 		gName := b.GroupName
@@ -2200,6 +2242,10 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
 	var bucketGroups []bucketGroupViewData
 	for _, ge := range groupEntries {
+		// When filtering (e.g. attention, overspent, buffer), skip groups with 0 matching buckets
+		if filterParam != "" && filterParam != "all" && len(ge.Buckets) == 0 {
+			continue
+		}
 		bg := bucketGroupViewData{
 			GroupName: ge.GroupName,
 			GroupID:   safeDOMID(ge.GroupName),
@@ -2631,6 +2677,31 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
         <form method="dialog" class="modal-backdrop"><button>close</button></form>
     </dialog>
 
+    <!-- Rename Group Modal -->
+    <dialog id="rename_group_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Rename Category / Group</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form id="rename_group_form" method="POST" action="/budgets/%s/groups/rename" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="%s" />
+                <input type="hidden" name="horizon" value="%s" />
+                <input type="hidden" name="filter" value="%s" />
+                <input type="hidden" id="rename_group_old_name" name="old_name" value="" />
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Category Name</span></label>
+                    <input type="text" id="rename_group_new_name" name="new_name" required placeholder="e.g. Living, Housing, Needs" class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="rename_group_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Category Name</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
     <!-- Edit Bucket Modal -->
     <dialog id="edit_bucket_modal" class="modal modal-bottom sm:modal-middle">
         <div class="modal-box card-border border-base-300 p-6">
@@ -3048,6 +3119,12 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 const matches = !q || text.includes(q);
                 card.classList.toggle('hidden', !matches);
             });
+        }
+
+        function openRenameGroupModal(groupName) {
+            document.getElementById('rename_group_old_name').value = groupName;
+            document.getElementById('rename_group_new_name').value = groupName;
+            rename_group_modal.showModal();
         }
 
         function openEditBucketModal(id, name, group) {
@@ -3885,6 +3962,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		RenderBottomDock(budgetID, "budget"),
 		structureModalHTML,
 		budgetID, csrfToken, horizonParam, filterParam,
+		budgetID, csrfToken, horizonParam, filterParam,
 		csrfToken, horizonParam, filterParam,
 		csrfToken, horizonParam, filterParam, defaultCurr, defaultCurr,
 		budgetID, csrfToken, horizonParam, filterParam, defaultCurr, bucketSelectOptions.String(), defaultCurr,
@@ -3923,6 +4001,43 @@ func (h *WorkspaceHandler) CreateBucket(c echo.Context) error {
 	}
 
 	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "created", bID))
+}
+
+// RenameGroup handles renaming an entire bucket category/group across envelopes.
+func (h *WorkspaceHandler) RenameGroup(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	oldName := strings.TrimSpace(c.FormValue("old_name"))
+	newName := strings.TrimSpace(c.FormValue("new_name"))
+
+	if err := budget.RenameBucketGroup(c.Request().Context(), tenantDB, budget.RenameBucketGroupInput{
+		OldName:       oldName,
+		NewName:       newName,
+		AgentID:       userID,
+		CorrelationID: corrID,
+	}); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "updated", ""))
+}
+
+// MoveGroup handles reordering bucket groups up or down.
+func (h *WorkspaceHandler) MoveGroup(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+
+	groupName := strings.TrimSpace(c.FormValue("group_name"))
+	dir := strings.TrimSpace(c.QueryParam("dir"))
+
+	if err := budget.MoveBucketGroup(c.Request().Context(), tenantDB, groupName, dir); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "updated", ""))
 }
 
 // UpdateBucket handles updating bucket name or group.

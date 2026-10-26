@@ -4593,6 +4593,105 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	ctx.Step(`^I request to move category group "([^"]*)" up$`, func(groupName string) error {
+		form := url.Values{}
+		form.Set("group_name", groupName)
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/groups/move?dir=up", tc.activeBudgetID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextRoleKey, "OWNER")
+		c.Set("correlationID", domain.NewUUIDv7())
+
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.workspaceHandler.MoveGroup(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^category group "([^"]*)" should precede "([^"]*)" in budget view$`, func(groupA, groupB string) error {
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/budgets/%s/budget", tc.activeBudgetID), nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextRoleKey, "OWNER")
+
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		if err := tc.workspaceHandler.BudgetView(c); err != nil {
+			return err
+		}
+		body := rec.Body.String()
+		headerA := fmt.Sprintf("toggleGroup('%s')", handlers.SafeDOMID(groupA))
+		headerB := fmt.Sprintf("toggleGroup('%s')", handlers.SafeDOMID(groupB))
+		idxA := strings.Index(body, headerA)
+		idxB := strings.Index(body, headerB)
+		if idxA == -1 || idxB == -1 {
+			return fmt.Errorf("could not find both group headers (%s at %d, %s at %d) in HTML", headerA, idxA, headerB, idxB)
+		}
+		if idxA >= idxB {
+			return fmt.Errorf("expected group %q (idx %d) to precede %q (idx %d) in budget view", groupA, idxA, groupB, idxB)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I request to rename category group "([^"]*)" to "([^"]*)"$`, func(oldName, newName string) error {
+		form := url.Values{}
+		form.Set("old_name", oldName)
+		form.Set("new_name", newName)
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/groups/rename", tc.activeBudgetID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextRoleKey, "OWNER")
+		c.Set("correlationID", domain.NewUUIDv7())
+
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.workspaceHandler.RenameGroup(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^bucket "([^"]*)" in projections should have group "([^"]*)"$`, func(bucketName, expectedGroup string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var actualGroup string
+		err = bDB.QueryRow(`SELECT group_name FROM buckets_projection WHERE name = ?`, bucketName).Scan(&actualGroup)
+		if err != nil {
+			return fmt.Errorf("failed fetching bucket %q group: %w", bucketName, err)
+		}
+		if actualGroup != expectedGroup {
+			return fmt.Errorf("expected bucket %q to have group %q, got %q", bucketName, expectedGroup, actualGroup)
+		}
+		return nil
+	})
+
 	ctx.Step(`^the OpenAPI specification is loaded$`, func() error {
 		swagger, err := openapi.GetSwagger()
 		if err != nil {

@@ -137,7 +137,7 @@ func TestAuthAndWorkspaceFlow(t *testing.T) {
 	vCtx.Set(ContextUserIDKey, userID)
 	vCtx.Set(ContextRoleKey, "OWNER")
 
-	tenantDB, err := tenantMgr.GetTenantDB(budgetID, false)
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -794,7 +794,7 @@ func TestBudgetRenameAndDeleteFlow(t *testing.T) {
 
 	// Test Budget Settings View and Update via /budgets/:id/settings
 	t.Run("Budget settings view and update", func(t *testing.T) {
-		tenantDB, err := tenantMgr.GetTenantDB(budgetID, false)
+		tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -963,7 +963,7 @@ func TestTargetModalAndLuaFormulaAssistant(t *testing.T) {
 	loc := bRec.Header().Get("Location")
 	budgetID := strings.Split(loc, "/")[2]
 
-	tenantDB, err := tenantMgr.GetTenantDB(budgetID, false)
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
 	if err != nil {
 		t.Fatalf("GetTenantDB failed: %v", err)
 	}
@@ -1176,7 +1176,7 @@ func TestCreateAndEditTarget_CustomDays(t *testing.T) {
 	loc := bRec.Header().Get("Location")
 	budgetID := strings.Split(loc, "/")[2]
 
-	tenantDB, err := tenantMgr.GetTenantDB(budgetID, false)
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
 	if err != nil {
 		t.Fatalf("GetTenantDB failed: %v", err)
 	}
@@ -2399,6 +2399,168 @@ func TestReadyToAssignMultiCurrencyLayout(t *testing.T) {
 		t.Errorf("Expected GBP and USD inside dropdown")
 	}
 }
+
+func TestGroupRenamingAndMovingEndpoints(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "balance_groups_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mainPath := filepath.Join(tmpDir, "main.db")
+	mainDB, err := db.OpenDB(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tmpDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+	e := echo.New()
+
+	userID := domain.NewUUIDv7()
+	budgetID := domain.NewUUIDv7()
+	now := time.Now().UTC().UnixMicro()
+
+	_, err = mainDB.Exec(`INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, 'guser@example.com', 'hash', 'Group User', ?, ?)`, userID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = mainDB.Exec(`INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at) VALUES (?, 'Group Budget', 'PLN', 'UTC', ?, ?, ?)`, budgetID, userID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = mainDB.Exec(`INSERT INTO budget_members (budget_id, user_id, role, joined_at) VALUES (?, ?, 'OWNER', ?)`, budgetID, userID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
+	if err != nil {
+		t.Fatalf("failed getting tenant db: %v", err)
+	}
+
+	// Create two buckets in different groups
+	_, err = budget.CreateBucket(context.Background(), tenantDB, budget.CreateBucketInput{
+		GroupName:     "Needs",
+		Name:          "Rent",
+		AgentID:       userID,
+		CorrelationID: "c1",
+	})
+	if err != nil {
+		t.Fatalf("failed creating bucket in Needs: %v", err)
+	}
+
+	_, err = budget.CreateBucket(context.Background(), tenantDB, budget.CreateBucketInput{
+		GroupName:     "Wants",
+		Name:          "Dining Out",
+		AgentID:       userID,
+		CorrelationID: "c2",
+	})
+	if err != nil {
+		t.Fatalf("failed creating bucket in Wants: %v", err)
+	}
+
+	// 1. Move "Wants" up
+	formMove := make(url.Values)
+	formMove.Set("group_name", "Wants")
+	formMove.Set("csrf_token", "token123")
+	moveReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/groups/move?dir=up", strings.NewReader(formMove.Encode()))
+	moveReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	moveRec := httptest.NewRecorder()
+	moveCtx := e.NewContext(moveReq, moveRec)
+	moveCtx.SetParamNames("budgetId")
+	moveCtx.SetParamValues(budgetID)
+	moveCtx.Set(ContextBudgetDBKey, tenantDB)
+	moveCtx.Set(ContextUserIDKey, userID)
+	moveCtx.Set(ContextRoleKey, "EDITOR")
+	moveCtx.Set("correlationID", "corr-move")
+
+	if err := workspaceHandler.MoveGroup(moveCtx); err != nil {
+		t.Fatalf("MoveGroup failed: %v", err)
+	}
+	if moveRec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 See Other, got %d", moveRec.Code)
+	}
+
+	// Verify order in ListBucketGroups
+	groups, err := budget.ListBucketGroups(context.Background(), tenantDB)
+	if err != nil || len(groups) != 2 {
+		t.Fatalf("unexpected groups: %v (err: %v)", groups, err)
+	}
+	if groups[0].Name != "Wants" || groups[1].Name != "Needs" {
+		t.Errorf("expected Wants to be first after move up, got: %s, %s", groups[0].Name, groups[1].Name)
+	}
+
+	// 2. Rename "Wants" to "Lifestyle & Fun"
+	formRename := make(url.Values)
+	formRename.Set("old_name", "Wants")
+	formRename.Set("new_name", "Lifestyle & Fun")
+	formRename.Set("csrf_token", "token123")
+	renReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/groups/rename", strings.NewReader(formRename.Encode()))
+	renReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	renRec := httptest.NewRecorder()
+	renCtx := e.NewContext(renReq, renRec)
+	renCtx.SetParamNames("budgetId")
+	renCtx.SetParamValues(budgetID)
+	renCtx.Set(ContextBudgetDBKey, tenantDB)
+	renCtx.Set(ContextUserIDKey, userID)
+	renCtx.Set(ContextRoleKey, "EDITOR")
+	renCtx.Set("correlationID", "corr-rename")
+
+	if err := workspaceHandler.RenameGroup(renCtx); err != nil {
+		t.Fatalf("RenameGroup failed: %v", err)
+	}
+	if renRec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 See Other from rename, got %d", renRec.Code)
+	}
+
+	// Verify bucket updated
+	var bucketGroup string
+	err = tenantDB.QueryRow(`SELECT group_name FROM buckets_projection WHERE name = 'Dining Out'`).Scan(&bucketGroup)
+	if err != nil || bucketGroup != "Lifestyle & Fun" {
+		t.Errorf("expected Dining Out bucket group to be 'Lifestyle & Fun', got %q (err: %v)", bucketGroup, err)
+	}
+
+	// 3. Verify BudgetView renders the renamed group in first position
+	bvReq := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/budget", nil)
+	bvRec := httptest.NewRecorder()
+	bvCtx := e.NewContext(bvReq, bvRec)
+	bvCtx.SetParamNames("budgetId")
+	bvCtx.SetParamValues(budgetID)
+	bvCtx.Set(ContextBudgetDBKey, tenantDB)
+	bvCtx.Set(ContextUserIDKey, userID)
+	bvCtx.Set(ContextRoleKey, "OWNER")
+	bvCtx.Set("csrfToken", "token123")
+
+	if err := workspaceHandler.BudgetView(bvCtx); err != nil {
+		t.Fatalf("BudgetView failed: %v", err)
+	}
+	body := bvRec.Body.String()
+	if !strings.Contains(body, "Lifestyle & Fun") {
+		t.Errorf("expected BudgetView to contain 'Lifestyle & Fun'")
+	}
+	// Check group-header position specifically
+	lifestyleHeader := `toggleGroup('Lifestyle___Fun')`
+	needsHeader := `toggleGroup('Needs')`
+	lifestyleIdx := strings.Index(body, lifestyleHeader)
+	needsIdx := strings.Index(body, needsHeader)
+	if lifestyleIdx == -1 || needsIdx == -1 || lifestyleIdx > needsIdx {
+		t.Errorf("expected 'Lifestyle & Fun' group header to appear before 'Needs' in BudgetView html, got indices: lifestyle=%d, needs=%d", lifestyleIdx, needsIdx)
+	}
+}
+
 
 
 

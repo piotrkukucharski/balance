@@ -178,6 +178,16 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     Then the target in bucket "Emergency Fund" with priority 3 should have an empty or null name
     And the budget page for "Family Home" should display priority badge "Mandatory" without target name
 
+  Scenario: Renaming category groups and changing their order
+    Given an open budget "Family Home"
+    When I create a bucket "Rent" in group "Fixed Costs"
+    And I create a bucket "Groceries" in group "Living"
+    And I request to move category group "Living" up
+    Then category group "Living" should precede "Fixed Costs" in budget view
+    When I request to rename category group "Living" to "Daily Life"
+    Then category group "Daily Life" should precede "Fixed Costs" in budget view
+    And bucket "Groceries" in projections should have group "Daily Life"
+
 
 
 
