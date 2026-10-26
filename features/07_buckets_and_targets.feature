@@ -188,6 +188,18 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     Then category group "Daily Life" should precede "Fixed Costs" in budget view
     And bucket "Groceries" in projections should have group "Daily Life"
 
+  Scenario: Datalist of existing category groups for new and edited buckets
+    Given an open budget "Family Home"
+    When I create a bucket "Rent" in group "Housing"
+    And I create a bucket "Groceries" in group "Daily Expenses"
+    And I create a bucket "Savings" in group "Future"
+    And I request the budget view "/budgets/:budgetId/budget"
+    Then the response status should be 200 OK
+    And the new bucket modal should contain a datalist with existing category groups "Housing", "Daily Expenses", "Future"
+    And the new bucket group input should have an empty value and placeholder containing the first categories
+    And the edit bucket group input should be bound to the existing category groups datalist
+
+
 
 
 

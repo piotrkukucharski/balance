@@ -2332,6 +2332,29 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		bucketSelectOptions.WriteString(fmt.Sprintf(`<option value="%s">%s (%s)</option>`, b.ID, html.EscapeString(b.Name), html.EscapeString(b.GroupName)))
 	}
 
+	// Distinct category groups for datalist in bucket modal
+	var distinctGroups []string
+	seenGroups := make(map[string]bool)
+	for _, ge := range groupEntries {
+		gName := strings.TrimSpace(ge.GroupName)
+		if gName != "" && !seenGroups[gName] {
+			seenGroups[gName] = true
+			distinctGroups = append(distinctGroups, gName)
+		}
+	}
+	var categoryDatalistOptions strings.Builder
+	for _, g := range distinctGroups {
+		categoryDatalistOptions.WriteString(fmt.Sprintf(`<option value="%s">`, html.EscapeString(g)))
+	}
+	newBucketGroupPlaceholder := "e.g. Needs, Wants, Savings"
+	if len(distinctGroups) > 0 {
+		count := 3
+		if len(distinctGroups) < count {
+			count = len(distinctGroups)
+		}
+		newBucketGroupPlaceholder = "e.g. " + strings.Join(distinctGroups[:count], ", ")
+	}
+
 	// Query user's other accessible budgets for Structure Import dropdown
 	otherBudgetRows, err := h.mainDB.QueryContext(c.Request().Context(), `
 		SELECT b.id, b.name, b.default_currency
@@ -2649,6 +2672,11 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 
     %s
 
+    <!-- Category Groups Datalist -->
+    <datalist id="existing_category_groups">
+        %s
+    </datalist>
+
     <!-- New Bucket Modal -->
     <dialog id="new_bucket_modal" class="modal modal-bottom sm:modal-middle">
         <div class="modal-box card-border border-base-300 p-6">
@@ -2666,7 +2694,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 </div>
                 <div class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Group / Category</span></label>
-                    <input type="text" name="group_name" value="Needs" required placeholder="e.g. Needs, Wants, Savings" class="input input-bordered w-full input-md focus:input-primary" />
+                    <input type="text" name="group_name" value="" list="existing_category_groups" required placeholder="%s" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
                 <div class="modal-action mt-6 gap-2">
                     <button type="button" class="btn btn-ghost" onclick="new_bucket_modal.close()">Cancel</button>
@@ -2719,7 +2747,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
                 </div>
                 <div class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Group / Category</span></label>
-                    <input type="text" id="edit_bucket_group" name="group_name" required class="input input-bordered w-full input-md focus:input-primary" />
+                    <input type="text" id="edit_bucket_group" name="group_name" required list="existing_category_groups" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
                 <div class="modal-action mt-6 gap-2">
                     <button type="button" class="btn btn-ghost" onclick="edit_bucket_modal.close()">Cancel</button>
@@ -3961,7 +3989,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		mainEnvelopesContent,
 		RenderBottomDock(budgetID, "budget"),
 		structureModalHTML,
-		budgetID, csrfToken, horizonParam, filterParam,
+		categoryDatalistOptions.String(),
+		budgetID, csrfToken, horizonParam, filterParam, newBucketGroupPlaceholder,
 		budgetID, csrfToken, horizonParam, filterParam,
 		csrfToken, horizonParam, filterParam,
 		csrfToken, horizonParam, filterParam, defaultCurr, defaultCurr,

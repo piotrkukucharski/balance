@@ -4692,6 +4692,41 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	ctx.Step(`^the new bucket modal should contain a datalist with existing category groups "([^"]*)", "([^"]*)", "([^"]*)"$`, func(g1, g2, g3 string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, `id="existing_category_groups"`) {
+			return fmt.Errorf("expected datalist with id='existing_category_groups' in response body")
+		}
+		for _, g := range []string{g1, g2, g3} {
+			expectedOption := fmt.Sprintf(`<option value="%s">`, g)
+			if !strings.Contains(body, expectedOption) {
+				return fmt.Errorf("expected datalist to contain option %q in response body", expectedOption)
+			}
+		}
+		return nil
+	})
+
+	ctx.Step(`^the new bucket group input should have an empty value and placeholder containing the first categories$`, func() error {
+		body := tc.lastResponse.Body.String()
+		inputPattern := `name="group_name" value="" list="existing_category_groups"`
+		if !strings.Contains(body, inputPattern) {
+			return fmt.Errorf("expected new bucket group input to have %s", inputPattern)
+		}
+		expectedPlaceholder := `placeholder="e.g. Daily Expenses, Future, Housing"`
+		if !strings.Contains(body, expectedPlaceholder) {
+			return fmt.Errorf("expected placeholder %s in new bucket group input", expectedPlaceholder)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the edit bucket group input should be bound to the existing category groups datalist$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, `id="edit_bucket_group" name="group_name" required list="existing_category_groups"`) {
+			return fmt.Errorf("expected edit bucket group input to have list='existing_category_groups'")
+		}
+		return nil
+	})
+
 	ctx.Step(`^the OpenAPI specification is loaded$`, func() error {
 		swagger, err := openapi.GetSwagger()
 		if err != nil {
