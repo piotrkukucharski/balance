@@ -38,7 +38,8 @@ Feature: Accounts Management, Multi-Currency Balances and Bank Integration Links
     Given an authenticated user "jan@example.com" on budget "Family Home"
     And the application is running in production mode
     When I open the link bank flow modal
-    Then I should see available bank providers "Mock Sandbox" and "GoCardless"
+    Then I should see available bank provider "GoCardless"
+    And I should not see bank provider "Mock Sandbox"
     And I should not see bank provider "GoCardLess Sandbox"
 
   Scenario: Selecting GoCardLess Sandbox directly starts integration flow

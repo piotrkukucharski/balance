@@ -231,8 +231,21 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 
 	devGridCols := ""
 	devSandboxCardHTML := ""
+	mockCardHTML := ""
 	if isDevMode() {
 		devGridCols = "lg:grid-cols-3"
+		mockCardHTML = `
+                    <div onclick="selectProvider('MOCK')" class="card card-border border-base-300 bg-base-100 hover:border-primary cursor-pointer p-4 transition-all hover:shadow-md flex flex-col justify-between gap-3">
+                        <div class="flex items-start gap-3">
+                            <span class="text-3xl">🧪</span>
+                            <div>
+                                <h4 class="font-bold text-sm">Mock Sandbox</h4>
+                                <span class="badge badge-warning badge-xs font-semibold mt-1">Dev & Testing</span>
+                                <p class="text-xs text-base-content/60 mt-1">Deterministic instant simulated accounts (mBank PLN, Savings EUR) with auto-generated test transactions.</p>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-outline btn-primary btn-xs w-full">Select Mock Provider</button>
+                    </div>`
 		devSandboxCardHTML = `
                     <div onclick="selectProvider('GOCARDLESS_SANDBOX')" class="card card-border border-base-300 bg-base-100 hover:border-warning cursor-pointer p-4 transition-all hover:shadow-md flex flex-col justify-between gap-3">
                         <div class="flex items-start gap-3">
@@ -473,18 +486,7 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
             <div id="bank_step_1" class="space-y-4">
                 <p class="text-xs text-base-content/70">Select your bank sync provider to connect accounts and import transactions:</p>
                 <div class="grid grid-cols-1 sm:grid-cols-2 %s gap-4">
-                    <div onclick="selectProvider('MOCK')" class="card card-border border-base-300 bg-base-100 hover:border-primary cursor-pointer p-4 transition-all hover:shadow-md flex flex-col justify-between gap-3">
-                        <div class="flex items-start gap-3">
-                            <span class="text-3xl">🧪</span>
-                            <div>
-                                <h4 class="font-bold text-sm">Mock Sandbox</h4>
-                                <span class="badge badge-warning badge-xs font-semibold mt-1">Dev & Testing</span>
-                                <p class="text-xs text-base-content/60 mt-1">Deterministic instant simulated accounts (mBank PLN, Savings EUR) with auto-generated test transactions.</p>
-                            </div>
-                        </div>
-                        <button type="button" class="btn btn-outline btn-primary btn-xs w-full">Select Mock Provider</button>
-                    </div>
-
+%s
                     <div onclick="selectProvider('GOCARDLESS')" class="card card-border border-base-300 bg-base-100 hover:border-primary cursor-pointer p-4 transition-all hover:shadow-md flex flex-col justify-between gap-3">
                         <div class="flex items-start gap-3">
                             <span class="text-3xl">🇪🇺</span>
@@ -1056,7 +1058,7 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 		accountRows.String(),
 		RenderBottomDock(budgetID, "accounts"),
 		budgetID, csrfToken,
-		devGridCols, devSandboxCardHTML,
+		devGridCols, mockCardHTML, devSandboxCardHTML,
 		csrfToken,
 		budgetID, csrfToken)
 
@@ -1245,6 +1247,10 @@ func (h *AccountsHandler) LinkBankAccount(c echo.Context) error {
 			"name", name,
 		)
 		return echo.NewHTTPError(http.StatusBadRequest, "External account selection and name required")
+	}
+
+	if !isDevMode() {
+		return echo.NewHTTPError(http.StatusForbidden, "Mock bank link is disabled in production environment")
 	}
 
 	// Fetch details from mock adapter
@@ -1546,8 +1552,12 @@ func (h *AccountsHandler) GetInstitutions(c echo.Context) error {
 		}
 	}
 
-	// Always provide MOCK institutions as default or fallback
-	if provider == "MOCK" || len(results) == 0 {
+	if provider == "MOCK" && !isDevMode() {
+		return echo.NewHTTPError(http.StatusForbidden, "Mock bank provider is disabled in production environment")
+	}
+
+	// Always provide MOCK institutions as default or fallback in dev mode
+	if isDevMode() && (provider == "MOCK" || len(results) == 0) {
 		for _, inst := range h.mockAdapter.ListInstitutions(country) {
 			results = append(results, InstitutionItem{
 				ID:        inst.ID,
@@ -1610,7 +1620,16 @@ func (h *AccountsHandler) ConnectBankQueue(c echo.Context) error {
 
 	req.Provider = strings.ToUpper(req.Provider)
 	if req.Provider == "" {
-		req.Provider = "MOCK"
+		if isDevMode() {
+			req.Provider = "MOCK"
+		} else {
+			req.Provider = "GOCARDLESS"
+		}
+	}
+
+	if (req.Provider == "MOCK" || req.Provider == "GOCARDLESS_SANDBOX") && !isDevMode() {
+		logger.Warn(ctx, "Mock bank connection rejected: not allowed in production", "provider", req.Provider)
+		return echo.NewHTTPError(http.StatusForbidden, "Mock and sandbox bank providers are disabled in production environment")
 	}
 
 	now := time.Now().UTC().UnixMicro()
@@ -1831,6 +1850,10 @@ func (h *AccountsHandler) ReconnectAccount(c echo.Context) error {
 	}
 
 	// Mock Provider: Instant re-activation and renewal
+	if !isDevMode() {
+		return echo.NewHTTPError(http.StatusForbidden, "Mock bank reconnection is disabled in production environment")
+	}
+
 	if integrationID != "" {
 		h.mainDB.ExecContext(c.Request().Context(), `
 			UPDATE user_integrations SET status = 'ACTIVE', expires_at = ?, updated_at = ? WHERE id = ?`,

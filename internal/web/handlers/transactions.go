@@ -102,10 +102,12 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 
 	// 2. Fetch user checking/cash accounts with balances for pills & dropdowns
 	acctRows, err := tenantDB.QueryContext(c.Request().Context(), `
-		SELECT a.id, a.name, a.primary_currency, COALESCE(acb.balance_minor, 0) 
+		SELECT a.id, a.name, a.primary_currency, COALESCE(acb.balance_minor, 0),
+		       COALESCE(ail.id, '')
 		FROM accounts_current a
 		JOIN parties_current p ON a.party_id = p.id
 		LEFT JOIN account_currency_balances acb ON a.id = acb.account_id AND a.primary_currency = acb.currency
+		LEFT JOIN account_integration_links ail ON a.id = ail.account_id
 		WHERE p.is_user_owned = 1 AND a.is_closed = 0
 		ORDER BY a.name ASC`)
 	var acctOptions strings.Builder
@@ -113,6 +115,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 	var qaDestAcctOptions strings.Builder
 	var acctCheckboxes strings.Builder
 	var acctPills strings.Builder
+	linkedBankAcctCount := 0
 
 	// All accounts filter pill
 	allActiveCls := "btn-primary font-bold shadow-xs"
@@ -128,9 +131,9 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 	if err == nil {
 		defer acctRows.Close()
 		for acctRows.Next() {
-			var aID, aName, aCurr string
+			var aID, aName, aCurr, ailID string
 			var aBalMinor int64
-			acctRows.Scan(&aID, &aName, &aCurr, &aBalMinor)
+			acctRows.Scan(&aID, &aName, &aCurr, &aBalMinor, &ailID)
 			if firstUserAcctID == "" {
 				firstUserAcctID = aID
 			}
@@ -146,12 +149,15 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 			editAcctOptions.WriteString(opt)
 			qaDestAcctOptions.WriteString(fmt.Sprintf(`<option value="%s">⇄ %s (%s)</option>`, aID, aName, aCurr))
 
-			checkbox := fmt.Sprintf(`
-				<label class="label cursor-pointer justify-start gap-3 py-1.5 px-2 hover:bg-base-200 rounded-lg transition-colors">
-					<input type="checkbox" name="account_ids" value="%s" checked class="checkbox checkbox-primary checkbox-sm" />
-					<span class="label-text font-medium text-sm">%s <span class="text-xs text-base-content/60">(%.2f %s)</span></span>
-				</label>`, aID, aName, aBalMajor, aCurr)
-			acctCheckboxes.WriteString(checkbox)
+			if ailID != "" {
+				linkedBankAcctCount++
+				checkbox := fmt.Sprintf(`
+					<label class="label cursor-pointer justify-start gap-3 py-1.5 px-2 hover:bg-base-200 rounded-lg transition-colors">
+						<input type="checkbox" name="account_ids" value="%s" checked class="checkbox checkbox-primary checkbox-sm" />
+						<span class="label-text font-medium text-sm">%s <span class="text-xs text-base-content/60">(%.2f %s)</span></span>
+					</label>`, aID, aName, aBalMajor, aCurr)
+				acctCheckboxes.WriteString(checkbox)
+			}
 
 			// Account filter pill
 			pillActiveCls := "btn-ghost border border-base-300"
@@ -164,6 +170,36 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 					<span class="font-mono text-xs opacity-75">(%.2f %s)</span>
 				</a>`, budgetID, aID, pillActiveCls, aName, aBalMajor, aCurr))
 		}
+	}
+
+	toolbarSyncBtnHTML := `<button type="button" class="btn btn-secondary btn-sm shadow font-semibold gap-1.5" onclick="bank_sync_modal.showModal()">
+                        <span>🔄</span>
+                        <span>Sync with Bank</span>
+                    </button>`
+	modalSyncBtnHTML := `<button type="submit" class="btn btn-primary font-semibold shadow-md gap-1.5">
+                        <span>🔄</span>
+                        <span>Start Sync</span>
+                    </button>`
+
+	if linkedBankAcctCount == 0 {
+		acctCheckboxes.WriteString(fmt.Sprintf(`
+			<div class="p-4 text-center text-xs text-base-content/60 flex flex-col items-center gap-2">
+				<span>No bank-linked accounts found in this budget.</span>
+				<a href="/budgets/%s/accounts" class="btn btn-outline btn-xs btn-primary gap-1">
+					<span>🔗</span>
+					<span>Connect a Bank Account</span>
+				</a>
+			</div>`, budgetID))
+		toolbarSyncBtnHTML = fmt.Sprintf(`<div class="tooltip tooltip-bottom" data-tip="No bank-linked accounts. Connect an account first.">
+                        <button type="button" class="btn btn-secondary btn-sm shadow font-semibold gap-1.5 btn-disabled opacity-60" disabled>
+                            <span>🔄</span>
+                            <span>Sync with Bank</span>
+                        </button>
+                    </div>`)
+		modalSyncBtnHTML = `<button type="submit" class="btn btn-primary font-semibold shadow-md gap-1.5 btn-disabled opacity-60" disabled>
+                        <span>🔄</span>
+                        <span>Start Sync</span>
+                    </button>`
 	}
 
 	// 3. Fetch external parties for autocomplete suggestions
@@ -545,10 +581,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
                     <p class="text-xs text-base-content/60 mt-0.5">Unified double-entry cashflow workbench and rapid bank reconciliation.</p>
                 </div>
                 <div class="flex items-center gap-2.5">
-                    <button type="button" class="btn btn-secondary btn-sm shadow font-semibold gap-1.5" onclick="bank_sync_modal.showModal()">
-                        <span>🔄</span>
-                        <span>Sync with Bank</span>
-                    </button>
+                    %s
                     <button type="button" class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="focusQuickAdd()">
                         <span>➕</span>
                         <span>Add Transaction <kbd class="kbd kbd-xs bg-primary-content/20 text-primary-content border-none">N</kbd></span>
@@ -984,10 +1017,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 
                 <div class="modal-action mt-6 gap-2">
                     <button type="button" class="btn btn-ghost" onclick="bank_sync_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md gap-1.5">
-                        <span>🔄</span>
-                        <span>Start Sync</span>
-                    </button>
+                    %s
                 </div>
             </form>
         </div>
@@ -1571,6 +1601,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		partySuggestions.String(),
 		budgetName, csrfToken,
 		RenderSidebarNavigation(budgetID, "transactions"),
+		toolbarSyncBtnHTML,
 		acctPills.String(),
 		pendingRawCount, budgetID, csrfToken, matchedRulesCount,
 		rawTxRows.String(),
@@ -1582,7 +1613,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		RenderBottomDock(budgetID, "transactions"),
 		budgetID, csrfToken, acctOptions.String(), bucketOptions.String(),
 		budgetID, csrfToken,
-		budgetID, budgetID, csrfToken, acctCheckboxes.String(), budgetID,
+		budgetID, budgetID, csrfToken, acctCheckboxes.String(), budgetID, modalSyncBtnHTML,
 		csrfToken, editAcctOptions.String(), editBucketOptions.String(),
 		csrfToken, bucketOptions.String(),
 		bucketOptions.String(), budgetID,
@@ -1701,9 +1732,13 @@ func (h *TransactionsHandler) executeAccountSync(ctx context.Context, tenantDB *
 
 	// Check if this account is linked to an integration
 	var integrationID, extAcctID string
-	_ = tenantDB.QueryRowContext(ctx, `
+	err = tenantDB.QueryRowContext(ctx, `
 		SELECT COALESCE(integration_id, ''), COALESCE(external_account_id, '') FROM account_integration_links
 		WHERE account_id = ? LIMIT 1`, userAcctID).Scan(&integrationID, &extAcctID)
+	if err != nil || integrationID == "" {
+		logger.Warn(logCtx, "Bank sync rejected: account is not linked to any bank integration", "account_id", userAcctID)
+		return 0, fmt.Errorf("account is not linked to any bank integration")
+	}
 
 	var provider, institutionID string
 	if integrationID != "" {
@@ -1715,6 +1750,11 @@ func (h *TransactionsHandler) executeAccountSync(ctx context.Context, tenantDB *
 	isMockAccount := false
 	if provider == "MOCK" || strings.HasPrefix(integrationID, "mock_") || strings.HasPrefix(institutionID, "MOCK_") || strings.Contains(strings.ToUpper(institutionID), "SANDBOX") {
 		isMockAccount = true
+	}
+
+	if isMockAccount && !isDevMode() {
+		logger.Warn(logCtx, "Bank sync rejected: mock bank integration not allowed in production", "account_id", userAcctID)
+		return 0, fmt.Errorf("mock bank integrations are disabled in production environment")
 	}
 
 	isGoCardless := provider == "GOCARDLESS" && h.gocardlessClient != nil && extAcctID != "" && !strings.HasPrefix(institutionID, "MOCK_")
@@ -2159,28 +2199,21 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 		}
 	}
 
-	// If still empty, fetch first user-owned checking account
+	// If still empty, fetch first user-owned checking account linked to a bank integration
 	if len(accountIDs) == 0 {
 		var firstAcctID string
 		err := tenantDB.QueryRowContext(c.Request().Context(), `
 			SELECT a.id FROM accounts_current a
 			JOIN parties_current p ON a.party_id = p.id
-			WHERE p.is_user_owned = 1
+			JOIN account_integration_links ail ON a.id = ail.account_id
+			WHERE p.is_user_owned = 1 AND a.is_closed = 0
 			ORDER BY a.name ASC
 			LIMIT 1`).Scan(&firstAcctID)
 		if err == nil {
 			accountIDs = append(accountIDs, firstAcctID)
 		} else {
-			now := time.Now().UTC().UnixMicro()
-			pID := domain.NewUUIDv7()
-			firstAcctID = domain.NewUUIDv7()
-			tenantDB.ExecContext(c.Request().Context(), `
-				INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
-				VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, ?, ?)`, pID, userID, now)
-			tenantDB.ExecContext(c.Request().Context(), `
-				INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
-				VALUES (?, 1, ?, 'Checking Account', 'CHECKING', 'PLN', 0, ?, ?)`, firstAcctID, pID, userID, now)
-			accountIDs = append(accountIDs, firstAcctID)
+			logger.Warn(ctx, "Bank sync rejected: no bank-linked accounts found for synchronization", "budget_id", budgetID)
+			return echo.NewHTTPError(http.StatusBadRequest, "No bank-linked accounts available for synchronization. Please link a bank account first.")
 		}
 	}
 

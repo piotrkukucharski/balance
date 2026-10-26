@@ -160,6 +160,21 @@ func TestAuthAndWorkspaceFlow(t *testing.T) {
 		t.Fatalf("unexpected hardcoded account balances in Accounts Summary")
 	}
 
+	// Link a bank account first so that bank sync has a linked account to pull
+	now := time.Now().UTC().UnixMicro()
+	userPartyID := domain.NewUUIDv7()
+	acctID := domain.NewUUIDv7()
+	intID := "mock_integration_" + userID
+	tenantDB.ExecContext(context.Background(), `
+		INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+		VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, ?, ?)`, userPartyID, userID, now)
+	tenantDB.ExecContext(context.Background(), `
+		INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+		VALUES (?, 1, ?, 'Checking Account', 'CHECKING', 'PLN', 0, ?, ?)`, acctID, userPartyID, userID, now)
+	tenantDB.ExecContext(context.Background(), `
+		INSERT INTO account_integration_links (id, account_id, integration_id, external_account_id, last_synced_at, created_at)
+		VALUES (?, ?, ?, 'mock_acc_1', ?, ?)`, domain.NewUUIDv7(), acctID, intID, now, now)
+
 	// 5. Test Bank Sync (Imports mock transactions)
 	sReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/transactions/sync", nil)
 	sRec := httptest.NewRecorder()

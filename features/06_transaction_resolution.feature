@@ -135,6 +135,30 @@ Feature: Two-Tier Transaction Resolution (Move, Merge, Split) and Deduplication
     When I batch delete the pending raw transactions
     Then the raw transactions should be permanently removed from raw transactions
 
+  Scenario: Attempting to sync an unlinked cash account rejects and creates no mock transactions
+    Given an active cash account "Wallet Cash" with no bank integration
+    When I trigger "Sync with Bank" on budget "Family Home" for account "Wallet Cash"
+    Then the bank sync should fail with an unlinked account error
+    And no raw transactions should be generated for "Wallet Cash"
+
+  Scenario: Bank sync modal lists only accounts linked to a bank feed
+    Given an active checking account "mBank Checking" with 0.00 PLN initial balance
+    And an active cash account "Wallet Cash" with no bank integration
+    When I visit the transactions ledger page
+    Then the bank sync modal should list "mBank Checking"
+    And the bank sync modal should not list "Wallet Cash"
+
+  Scenario: Sync with Bank button is disabled when no bank accounts are linked
+    Given a budget "Empty Budget" with only manual cash accounts
+    When I visit the transactions ledger page on budget "Empty Budget"
+    Then the Sync with Bank button should be disabled with empty state notice
+
+  Scenario: Mock bank synchronization is blocked in production mode
+    Given an active checking account "mBank Checking" with 0.00 PLN initial balance
+    And the application is running in production mode
+    When I trigger "Sync with Bank" on budget "Family Home" for account "mBank Checking"
+    Then the bank sync should fail with a mock disabled in production error
+
 
 
 

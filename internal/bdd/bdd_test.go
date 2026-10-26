@@ -1227,6 +1227,13 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the application is running in production mode$`, func() error {
 		return os.Setenv("APP_ENV", "production")
 	})
+	ctx.Step(`^I should see available bank provider "([^"]*)"$`, func(p string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, p) {
+			return fmt.Errorf("expected provider %s in body", p)
+		}
+		return nil
+	})
 	ctx.Step(`^I should see available bank providers "([^"]*)" and "([^"]*)"$`, func(p1, p2 string) error {
 		body := tc.lastResponse.Body.String()
 		if !strings.Contains(body, p1) || !strings.Contains(body, p2) {
@@ -2291,6 +2298,9 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		bDB.Exec(`
 			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
 			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, acctName, now)
+		bDB.Exec(`
+			INSERT INTO account_integration_links (id, account_id, integration_id, external_account_id, last_synced_at, created_at)
+			VALUES (?, ?, 'mock_integration_user_1', 'ext_acct_1', ?, ?)`, domain.NewUUIDv7(), userAcctID, now, now)
 
 		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
 		tc.activeUserID = "user_1"
@@ -2442,6 +2452,9 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		bDB.Exec(`
 			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
 			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, acctName, now)
+		bDB.Exec(`
+			INSERT INTO account_integration_links (id, account_id, integration_id, external_account_id, last_synced_at, created_at)
+			VALUES (?, ?, 'mock_integration_user_1', 'ext_acct_1', ?, ?)`, domain.NewUUIDv7(), userAcctID, now, now)
 
 		// Insert existing transaction from 3 days ago (plus 1 second)
 		rawID := domain.NewUUIDv7()
@@ -2556,6 +2569,9 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		bDB.Exec(`
 			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
 			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, acctName, now)
+		bDB.Exec(`
+			INSERT INTO account_integration_links (id, account_id, integration_id, external_account_id, last_synced_at, created_at)
+			VALUES (?, ?, 'mock_integration_user_1', 'ext_acct_1', ?, ?)`, domain.NewUUIDv7(), userAcctID, now, now)
 
 		tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
 		tc.activeUserID = "user_1"
@@ -2694,6 +2710,13 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		bDB.Exec(`
 			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
 			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, acctName, now)
+		tc.mainDB.Exec(`
+			INSERT INTO user_integrations (id, user_id, provider, institution_id, external_reference_id, status, created_at, updated_at)
+			VALUES ('gocardless_real_int_1', 'user_1', 'GOCARDLESS', 'REAL_BANK_PL', 'ref_1', 'ACTIVE', ?, ?)
+			ON CONFLICT(id) DO NOTHING`, now, now)
+		bDB.Exec(`
+			INSERT INTO account_integration_links (id, account_id, integration_id, external_account_id, last_synced_at, created_at)
+			VALUES (?, ?, 'gocardless_real_int_1', 'ext_acct_1', ?, ?)`, domain.NewUUIDv7(), userAcctID, now, now)
 
 		bDB.Exec(`
 			CREATE TABLE IF NOT EXISTS account_integration_sync_logs (
@@ -2818,6 +2841,9 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		bDB.Exec(`
 			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
 			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, acctName, now)
+		bDB.Exec(`
+			INSERT INTO account_integration_links (id, account_id, integration_id, external_account_id, last_synced_at, created_at)
+			VALUES (?, ?, 'mock_integration_user_1', 'ext_acct_1', ?, ?)`, domain.NewUUIDv7(), userAcctID, now, now)
 
 		tc.activeUserID = "user_1"
 		return nil
@@ -2928,6 +2954,9 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		bDB.Exec(`
 			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
 			VALUES (?, 1, ?, ?, 'CHECKING', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, acctName, now)
+		bDB.Exec(`
+			INSERT INTO account_integration_links (id, account_id, integration_id, external_account_id, last_synced_at, created_at)
+			VALUES (?, ?, 'mock_integration_user_1', 'ext_acct_1', ?, ?)`, domain.NewUUIDv7(), userAcctID, now, now)
 
 		testPendingRawID = domain.NewUUIDv7()
 		dedup := "pending_dedup_hash"
@@ -3253,7 +3282,149 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	// BALANCE-73 & BALANCE-62 steps
+	ctx.Step(`^an active cash account "([^"]*)" with no bank integration$`, func(acctName string) error {
+		if tc.activeBudgetID == "" {
+			tc.activeBudgetID = "01900000-0000-7000-8000-000000000001"
+		}
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		userAcctID := domain.NewUUIDv7()
 
+		tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, created_at, updated_at)
+			VALUES (?, 'Family Home', 'PLN', ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name`, tc.activeBudgetID, now, now)
+
+		bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, 'user_1', ?)`, pID, now)
+		bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, ?, 'CASH', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, acctName, now)
+
+		tc.activeUserID = "user_1"
+		return nil
+	})
+
+	ctx.Step(`^the bank sync should fail with an unlinked account error$`, func() error {
+		if tc.lastResponse == nil {
+			return fmt.Errorf("expected response from bank sync")
+		}
+		if tc.lastResponse.Code != http.StatusBadRequest && tc.lastResponse.Code != http.StatusInternalServerError {
+			return fmt.Errorf("expected 400 or 500 error code, got %d", tc.lastResponse.Code)
+		}
+		return nil
+	})
+
+	ctx.Step(`^no raw transactions should be generated for "([^"]*)"$`, func(acctName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var acctID string
+		_ = bDB.QueryRow("SELECT id FROM accounts_current WHERE name = ?", acctName).Scan(&acctID)
+		var count int
+		bDB.QueryRow("SELECT count(*) FROM raw_transactions_current WHERE account_id = ?", acctID).Scan(&count)
+		if count > 0 {
+			return fmt.Errorf("expected 0 raw transactions for %s, got %d", acctName, count)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the bank sync modal should list "([^"]*)"$`, func(acctName string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, acctName) {
+			return fmt.Errorf("expected account %q to be listed in sync modal, body: %s", acctName, body)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the bank sync modal should not list "([^"]*)"$`, func(acctName string) error {
+		body := tc.lastResponse.Body.String()
+		// It should not be listed as a checkbox input in modal
+		if strings.Contains(body, fmt.Sprintf(`name="account_ids"`)) && strings.Contains(body, acctName) {
+			// Check if acctName appears within the checkbox list
+			idx := strings.Index(body, "Select Accounts to Synchronize")
+			if idx != -1 {
+				modalPart := body[idx : idx+500]
+				if strings.Contains(modalPart, acctName) {
+					return fmt.Errorf("expected account %q NOT to be listed in sync modal checkboxes", acctName)
+				}
+			}
+		}
+		return nil
+	})
+
+	ctx.Step(`^a budget "([^"]*)" with only manual cash accounts$`, func(budgetName string) error {
+		tc.activeBudgetID = domain.NewUUIDv7()
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		pID := domain.NewUUIDv7()
+		userAcctID := domain.NewUUIDv7()
+
+		tc.mainDB.Exec(`
+			INSERT INTO budgets (id, name, default_currency, created_at, updated_at)
+			VALUES (?, ?, 'PLN', ?, ?)`, tc.activeBudgetID, budgetName, now, now)
+
+		bDB.Exec(`
+			INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+			VALUES (?, 1, 'My Family', 'INDIVIDUAL', 1, 'user_1', ?)`, pID, now)
+		bDB.Exec(`
+			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+			VALUES (?, 1, ?, 'Pocket Cash', 'CASH', 'PLN', 0, 'user_1', ?)`, userAcctID, pID, now)
+
+		tc.activeUserID = "user_1"
+		return nil
+	})
+
+	ctx.Step(`^I visit the transactions ledger page on budget "([^"]*)"$`, func(budgetName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		req := httptest.NewRequest(http.MethodGet, "/budgets/"+tc.activeBudgetID+"/transactions", nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set(handlers.ContextRoleKey, "OWNER")
+		c.Set("csrfToken", "dummy_csrf_token")
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.TransactionsView(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the Sync with Bank button should be disabled with empty state notice$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "btn-disabled") || !strings.Contains(body, "disabled") {
+			return fmt.Errorf("expected disabled sync button in response")
+		}
+		if !strings.Contains(body, "No bank-linked accounts") {
+			return fmt.Errorf("expected 'No bank-linked accounts' notice in response")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the bank sync should fail with a mock disabled in production error$`, func() error {
+		if tc.lastResponse == nil {
+			return fmt.Errorf("expected response from bank sync")
+		}
+		if tc.lastResponse.Code != http.StatusInternalServerError && tc.lastResponse.Code != http.StatusForbidden {
+			return fmt.Errorf("expected error status code, got %d", tc.lastResponse.Code)
+		}
+		return nil
+	})
 	// 07_buckets_and_targets.feature steps
 
 	ctx.Step(`^an open budget "([^"]*)"$`, func(budgetName string) error {
