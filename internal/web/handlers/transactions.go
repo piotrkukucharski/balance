@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"html"
 	"math"
 	"net/http"
 	"os"
@@ -76,6 +77,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 	}
 
 	filterAcctID := c.QueryParam("account_id")
+	filterPartyID := c.QueryParam("party_id")
 
 	// 1. Fetch buckets for dropdowns
 	bucketRows, err := tenantDB.QueryContext(c.Request().Context(), `
@@ -119,13 +121,25 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 
 	// All accounts filter pill
 	allActiveCls := "btn-primary font-bold shadow-xs"
-	if filterAcctID != "" {
+	if filterAcctID != "" || filterPartyID != "" {
 		allActiveCls = "btn-ghost border border-base-300"
 	}
 	acctPills.WriteString(fmt.Sprintf(`
 		<a href="/budgets/%s/transactions" class="btn btn-sm %s">
 			<span>🏦 All Accounts</span>
 		</a>`, budgetID, allActiveCls))
+
+	if filterPartyID != "" {
+		var filteredPartyName string
+		tenantDB.QueryRowContext(c.Request().Context(), `SELECT name FROM parties_current WHERE id = ?`, filterPartyID).Scan(&filteredPartyName)
+		if filteredPartyName != "" {
+			acctPills.WriteString(fmt.Sprintf(`
+				<a href="/budgets/%s/transactions?party_id=%s" class="btn btn-sm btn-primary font-bold shadow-xs flex items-center gap-1.5">
+					<span>🏢 Party: %s</span>
+					<span class="badge badge-xs badge-neutral">Filtered</span>
+				</a>`, budgetID, filterPartyID, html.EscapeString(filteredPartyName)))
+		}
+	}
 
 	firstUserAcctID := ""
 	if err == nil {
@@ -219,7 +233,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		}
 	}
 
-	// 4. Fetch budget transactions (filtered by account if specified)
+	// 4. Fetch budget transactions (filtered by account or party if specified)
 	query := `
 		SELECT bt.id, bt.source_amount_minor, bt.source_currency, bt.transaction_date,
 		       COALESCE(bt.notes, ''), COALESCE(bp.name, 'Unassigned'), COALESCE(bt.bucket_id, ''),
@@ -232,9 +246,17 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		JOIN parties_current sp ON sa.party_id = sp.id
 		JOIN parties_current dp ON da.party_id = dp.id`
 	var queryArgs []any
+	var whereClauses []string
 	if filterAcctID != "" {
-		query += ` WHERE bt.source_account_id = ? OR bt.destination_account_id = ?`
+		whereClauses = append(whereClauses, `(bt.source_account_id = ? OR bt.destination_account_id = ?)`)
 		queryArgs = append(queryArgs, filterAcctID, filterAcctID)
+	}
+	if filterPartyID != "" {
+		whereClauses = append(whereClauses, `(sa.party_id = ? OR da.party_id = ?)`)
+		queryArgs = append(queryArgs, filterPartyID, filterPartyID)
+	}
+	if len(whereClauses) > 0 {
+		query += ` WHERE ` + strings.Join(whereClauses, " AND ")
 	}
 	query += ` ORDER BY bt.transaction_date DESC LIMIT 150`
 

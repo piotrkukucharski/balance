@@ -19,3 +19,13 @@ Feature: External Parties, Counterparties and Auto-Matching Rules
     Given an active matching rule for "ZABKA" mapping to "Żabka Account" and bucket "Groceries"
     When a raw transaction arrives with payee "ZABKA Z1234 WARSZAWA" and amount "-25.40 PLN"
     Then the matching engine should suggest target account "Żabka Account" and default bucket "Groceries"
+
+  Scenario: Merging multiple counterparties and managing party names
+    Given an authenticated user "jan@example.com" on budget "Family Home"
+    When I create an external party "Biedronka Express" of type "ORGANIZATION"
+    And I create an external party "Biedronka Market" of type "ORGANIZATION"
+    And I rename party "Biedronka Express" to "Biedronka Supermarket"
+    Then the party should be stored in "parties_current" with name "Biedronka Supermarket"
+    When I merge parties "Biedronka Supermarket" and "Biedronka Market" into "Biedronka Polska"
+    Then "Biedronka Market" should be soft-deleted and removed from "parties_current"
+    And all accounts of merged counterparties should belong to "Biedronka Polska"

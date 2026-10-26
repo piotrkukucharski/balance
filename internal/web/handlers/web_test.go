@@ -2710,3 +2710,235 @@ func TestMobileResponsiveBudgetViewAndErgonomics(t *testing.T) {
 
 
 
+
+func TestPartiesManagementAndSmartRules(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.db")
+	mainDB, err := db.OpenDB(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tempDir, "budgets")
+	_ = os.MkdirAll(budgetsDir, 0755)
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	userID := domain.NewUUIDv7()
+	_, _ = mainDB.Exec(`INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at) VALUES (?, 'user@test.com', 'h', 'User', 1, 1)`, userID)
+	budgetID := domain.NewUUIDv7()
+	_, _ = mainDB.Exec(`INSERT INTO budgets (id, name, default_currency, created_by_agent_id, created_at, updated_at) VALUES (?, 'Budget', 'PLN', ?, 1, 1)`, budgetID, userID)
+
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e := echo.New()
+	partiesHandler := NewPartiesHandler(mainDB, tenantMgr)
+
+	// 1. Create two parties: "Biedronka" and "Biedronka Market"
+	p1Form := url.Values{"name": {"Biedronka"}, "party_type": {"ORGANIZATION"}}
+	p1Req := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/parties", strings.NewReader(p1Form.Encode()))
+	p1Req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	p1Rec := httptest.NewRecorder()
+	p1Ctx := e.NewContext(p1Req, p1Rec)
+	p1Ctx.SetParamNames("budgetId")
+	p1Ctx.SetParamValues(budgetID)
+	p1Ctx.Set(ContextBudgetDBKey, tenantDB)
+	p1Ctx.Set(ContextUserIDKey, userID)
+	p1Ctx.Set("correlationID", domain.NewUUIDv7())
+	if err := partiesHandler.CreateParty(p1Ctx); err != nil {
+		t.Fatalf("CreateParty 1 failed: %v", err)
+	}
+
+	p2Form := url.Values{"name": {"Biedronka Market"}, "party_type": {"ORGANIZATION"}}
+	p2Req := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/parties", strings.NewReader(p2Form.Encode()))
+	p2Req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	p2Rec := httptest.NewRecorder()
+	p2Ctx := e.NewContext(p2Req, p2Rec)
+	p2Ctx.SetParamNames("budgetId")
+	p2Ctx.SetParamValues(budgetID)
+	p2Ctx.Set(ContextBudgetDBKey, tenantDB)
+	p2Ctx.Set(ContextUserIDKey, userID)
+	p2Ctx.Set("correlationID", domain.NewUUIDv7())
+	if err := partiesHandler.CreateParty(p2Ctx); err != nil {
+		t.Fatalf("CreateParty 2 failed: %v", err)
+	}
+
+	var p1ID, p2ID string
+	_ = tenantDB.QueryRow(`SELECT id FROM parties_current WHERE name = 'Biedronka'`).Scan(&p1ID)
+	_ = tenantDB.QueryRow(`SELECT id FROM parties_current WHERE name = 'Biedronka Market'`).Scan(&p2ID)
+
+	// 2. Test RenameParty
+	renameForm := url.Values{"name": {"Jeronimo Martins Biedronka"}}
+	renameReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/parties/"+p1ID+"/rename", strings.NewReader(renameForm.Encode()))
+	renameReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	renameRec := httptest.NewRecorder()
+	renameCtx := e.NewContext(renameReq, renameRec)
+	renameCtx.SetParamNames("budgetId", "partyId")
+	renameCtx.SetParamValues(budgetID, p1ID)
+	renameCtx.Set(ContextBudgetDBKey, tenantDB)
+	renameCtx.Set(ContextUserIDKey, userID)
+	renameCtx.Set("correlationID", domain.NewUUIDv7())
+	if err := partiesHandler.RenameParty(renameCtx); err != nil {
+		t.Fatalf("RenameParty failed: %v", err)
+	}
+
+	var renamedName string
+	_ = tenantDB.QueryRow(`SELECT name FROM parties_current WHERE id = ?`, p1ID).Scan(&renamedName)
+	if renamedName != "Jeronimo Martins Biedronka" {
+		t.Fatalf("expected renamed party name to be Jeronimo Martins Biedronka, got %s", renamedName)
+	}
+
+	// 3. Test PartiesView - verify absence of "(Żabka)" in subtitle and presence of Accounts & Txns buttons
+	pvReq := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/parties", nil)
+	pvRec := httptest.NewRecorder()
+	pvCtx := e.NewContext(pvReq, pvRec)
+	pvCtx.SetParamNames("budgetId")
+	pvCtx.SetParamValues(budgetID)
+	pvCtx.Set(ContextBudgetDBKey, tenantDB)
+	pvCtx.Set(ContextUserIDKey, userID)
+	pvCtx.Set("correlationID", domain.NewUUIDv7())
+	if err := partiesHandler.PartiesView(pvCtx); err != nil {
+		t.Fatalf("PartiesView failed: %v", err)
+	}
+	pvBody := pvRec.Body.String()
+	if strings.Contains(pvBody, "(Żabka)") {
+		t.Fatalf("PartiesView still contains (Żabka) in subtitle")
+	}
+	if !strings.Contains(pvBody, "Jeronimo Martins Biedronka") || !strings.Contains(pvBody, "/transactions?party_id="+p1ID) {
+		t.Fatalf("PartiesView missing party or transaction filter link")
+	}
+
+	// 4. Test MergeParties
+	mergeForm := url.Values{
+		"target_party_id":  {p1ID},
+		"target_name":      {"Biedronka Polska"},
+		"source_party_ids": {p1ID, p2ID},
+	}
+	mergeReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/parties/merge", strings.NewReader(mergeForm.Encode()))
+	mergeReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	mergeRec := httptest.NewRecorder()
+	mergeCtx := e.NewContext(mergeReq, mergeRec)
+	mergeCtx.SetParamNames("budgetId")
+	mergeCtx.SetParamValues(budgetID)
+	mergeCtx.Set(ContextBudgetDBKey, tenantDB)
+	mergeCtx.Set(ContextUserIDKey, userID)
+	mergeCtx.Set("correlationID", domain.NewUUIDv7())
+	if err := partiesHandler.MergeParties(mergeCtx); err != nil {
+		t.Fatalf("MergeParties failed: %v", err)
+	}
+
+	// Verify p2ID is soft-deleted and removed from parties_current
+	var p2CurrCount, p2HistCount int
+	_ = tenantDB.QueryRow(`SELECT count(*) FROM parties_current WHERE id = ?`, p2ID).Scan(&p2CurrCount)
+	_ = tenantDB.QueryRow(`SELECT count(*) FROM parties WHERE id = ? AND action = 'SOFT_DELETE'`, p2ID).Scan(&p2HistCount)
+	if p2CurrCount != 0 || p2HistCount == 0 {
+		t.Fatalf("expected merged party p2 to be soft deleted, curr=%d, hist=%d", p2CurrCount, p2HistCount)
+	}
+
+	// Verify all accounts now point to p1ID
+	var acctCountForP1 int
+	_ = tenantDB.QueryRow(`SELECT count(*) FROM accounts_current WHERE party_id = ?`, p1ID).Scan(&acctCountForP1)
+	if acctCountForP1 < 2 {
+		t.Fatalf("expected at least 2 accounts for target party after merge, got %d", acctCountForP1)
+	}
+
+	// 5. Test AllRulesView endpoint (/budgets/:budgetId/parties/rules)
+	arReq := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/parties/rules", nil)
+	arRec := httptest.NewRecorder()
+	arCtx := e.NewContext(arReq, arRec)
+	arCtx.SetParamNames("budgetId")
+	arCtx.SetParamValues(budgetID)
+	arCtx.Set(ContextBudgetDBKey, tenantDB)
+	arCtx.Set(ContextUserIDKey, userID)
+	if err := partiesHandler.AllRulesView(arCtx); err != nil {
+		t.Fatalf("AllRulesView failed: %v", err)
+	}
+	arBody := arRec.Body.String()
+	if !strings.Contains(arBody, "Smart new rule") {
+		t.Fatalf("AllRulesView missing 'Smart new rule' button")
+	}
+
+	// 6. Test SmartSuggestRules & SmartTestRules & SmartSaveRules
+	// Insert unassigned raw transaction
+	rawTxID := domain.NewUUIDv7()
+	acctID := domain.NewUUIDv7()
+	now := time.Now().UTC().UnixMicro()
+	_, _ = tenantDB.Exec(`INSERT INTO raw_transactions_current (id, version, account_id, dedup_hash, booking_date, amount_minor, currency, raw_payee, status, updated_at) VALUES (?, 1, ?, 'h1', ?, -4520, 'PLN', 'BIEDRONKA 1234 WROCLAW', 'PENDING', ?)`, rawTxID, acctID, now, now)
+
+	suggestReq := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/parties/rules/smart-suggest", nil)
+	suggestRec := httptest.NewRecorder()
+	suggestCtx := e.NewContext(suggestReq, suggestRec)
+	suggestCtx.SetParamNames("budgetId")
+	suggestCtx.SetParamValues(budgetID)
+	suggestCtx.Set(ContextBudgetDBKey, tenantDB)
+	suggestCtx.Set(ContextUserIDKey, userID)
+	if err := partiesHandler.SmartSuggestRules(suggestCtx); err != nil {
+		t.Fatalf("SmartSuggestRules failed: %v", err)
+	}
+	var suggestResp SmartRuleSuggestResponse
+	if err := json.Unmarshal(suggestRec.Body.Bytes(), &suggestResp); err != nil {
+		t.Fatalf("failed decoding smart suggest json: %v", err)
+	}
+	if len(suggestResp.ProposedRules) == 0 {
+		t.Fatalf("expected proposed rules from mock AI, got 0")
+	}
+
+	// Test simulation
+	testReqBody, _ := json.Marshal(map[string]any{"rules": suggestResp.ProposedRules})
+	testReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/parties/rules/smart-test", strings.NewReader(string(testReqBody)))
+	testReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	testRec := httptest.NewRecorder()
+	testCtx := e.NewContext(testReq, testRec)
+	testCtx.SetParamNames("budgetId")
+	testCtx.SetParamValues(budgetID)
+	testCtx.Set(ContextBudgetDBKey, tenantDB)
+	testCtx.Set(ContextUserIDKey, userID)
+	if err := partiesHandler.SmartTestRules(testCtx); err != nil {
+		t.Fatalf("SmartTestRules failed: %v", err)
+	}
+	var simResp map[string]int
+	_ = json.Unmarshal(testRec.Body.Bytes(), &simResp)
+	if simResp["matched_count"] != 1 {
+		t.Fatalf("expected simulation to match 1 transaction, got %d", simResp["matched_count"])
+	}
+
+	// Test saving smart rules
+	saveForm := url.Values{
+		"selected_rules":            {"0"},
+		"rule_0_name":               {suggestResp.ProposedRules[0].Name},
+		"rule_0_target_party":       {suggestResp.ProposedRules[0].TargetPartyName},
+		"rule_0_pattern":            {suggestResp.ProposedRules[0].MatchPattern},
+		"rule_0_field":              {suggestResp.ProposedRules[0].MatchField},
+		"rule_0_operator":           {suggestResp.ProposedRules[0].MatchOperator},
+	}
+	saveReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/parties/rules/smart-save", strings.NewReader(saveForm.Encode()))
+	saveReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	saveRec := httptest.NewRecorder()
+	saveCtx := e.NewContext(saveReq, saveRec)
+	saveCtx.SetParamNames("budgetId")
+	saveCtx.SetParamValues(budgetID)
+	saveCtx.Set(ContextBudgetDBKey, tenantDB)
+	saveCtx.Set(ContextUserIDKey, userID)
+	saveCtx.Set("correlationID", domain.NewUUIDv7())
+	if err := partiesHandler.SmartSaveRules(saveCtx); err != nil {
+		t.Fatalf("SmartSaveRules failed: %v", err)
+	}
+
+	// Verify rule was saved
+	var savedRuleCount int
+	_ = tenantDB.QueryRow(`SELECT count(*) FROM matching_rules_current WHERE match_pattern = ?`, suggestResp.ProposedRules[0].MatchPattern).Scan(&savedRuleCount)
+	if savedRuleCount != 1 {
+		t.Fatalf("expected smart rule to be saved in matching_rules_current, got %d", savedRuleCount)
+	}
+}
