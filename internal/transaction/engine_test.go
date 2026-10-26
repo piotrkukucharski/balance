@@ -165,3 +165,62 @@ func TestExecuteResolutionMerge(t *testing.T) {
 		t.Fatalf("expected bucket balance -10000, got %d", bucketBal)
 	}
 }
+
+func TestDeleteRawTransactions(t *testing.T) {
+	logger.BindTestLogger(t)
+
+	tmpDir, err := os.MkdirTemp("", "balance_tx_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "tenant.db")
+	tenantDB, err := db.OpenDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantDB.Close()
+
+	if err := db.ApplyMigrations(tenantDB, "migrations/tenant"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	userAcctID := "01900000-0000-7000-8000-000000000010"
+	rawID := "01900000-0000-7000-8000-000000000099"
+
+	_, err = tenantDB.Exec(`
+		INSERT INTO raw_transactions_current (id, version, account_id, dedup_hash, booking_date, raw_payee, amount_minor, currency, status, booking_status, updated_at)
+		VALUES (?, 1, ?, 'hash99', 1700000000, 'Test Payee', -5000, 'PLN', 'PENDING', 'BOOKED', 1000)`, rawID, userAcctID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tenantDB.Exec(`
+		INSERT INTO raw_transactions (id, version, account_id, dedup_hash, booking_date, raw_payee, amount_minor, currency, status, booking_status, action, agent_id, correlation_id, created_at)
+		VALUES (?, 1, ?, 'hash99', 1700000000, 'Test Payee', -5000, 'PLN', 'PENDING', 'BOOKED', 'CREATE', 'agent1', 'corr1', 1000)`, rawID, userAcctID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify exists
+	var count int
+	if err := tenantDB.QueryRow(`SELECT count(*) FROM raw_transactions_current WHERE id = ?`, rawID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("expected 1 raw transaction before delete, got %d", count)
+	}
+
+	// Hard delete
+	if err := DeleteRawTransaction(ctx, tenantDB, rawID); err != nil {
+		t.Fatalf("DeleteRawTransaction failed: %v", err)
+	}
+
+	// Verify completely gone
+	if err := tenantDB.QueryRow(`SELECT count(*) FROM raw_transactions_current WHERE id = ?`, rawID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("expected 0 in raw_transactions_current, got %d", count)
+	}
+	if err := tenantDB.QueryRow(`SELECT count(*) FROM raw_transactions WHERE id = ?`, rawID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("expected 0 in raw_transactions history, got %d", count)
+	}
+}
+

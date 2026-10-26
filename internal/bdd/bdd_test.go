@@ -3128,6 +3128,132 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return err
 	})
 
+	var batchRawIDs []string
+
+	ctx.Step(`^(\d+) pending raw transactions recorded:$`, func(count int, table *godog.Table) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC().UnixMicro()
+		batchRawIDs = nil
+
+		var acctID string
+		err = bDB.QueryRow(`SELECT id FROM accounts_current LIMIT 1`).Scan(&acctID)
+		if err != nil {
+			return fmt.Errorf("no active account found: %w", err)
+		}
+
+		for i := 1; i < len(table.Rows); i++ {
+			payee := table.Rows[i].Cells[0].Value
+			amountStr := table.Rows[i].Cells[1].Value
+			cleaned := strings.TrimSuffix(amountStr, " PLN")
+			var f float64
+			fmt.Sscanf(cleaned, "%f", &f)
+			amtMinor := int64(f * 100)
+
+			rID := domain.NewUUIDv7()
+			dedup := transaction.ComputeCanonicalDedupHash(acctID, rID, now, amtMinor, "PLN", payee, "Ref")
+
+			_, err = bDB.Exec(`
+				INSERT INTO raw_transactions_current (
+					id, version, account_id, external_transaction_id, dedup_hash, booking_date,
+					amount_minor, currency, raw_payee, reference, status, booking_status, updated_at
+				) VALUES (?, 1, ?, ?, ?, ?, ?, 'PLN', ?, 'Ref', 'PENDING', 'BOOKED', ?)`,
+				rID, acctID, rID, dedup, now, amtMinor, payee, now,
+			)
+			if err != nil {
+				return err
+			}
+			_, err = bDB.Exec(`
+				INSERT INTO raw_transactions (
+					id, version, account_id, external_transaction_id, dedup_hash, booking_date,
+					amount_minor, currency, raw_payee, reference, status, booking_status, action, agent_id, correlation_id, created_at
+				) VALUES (?, 1, ?, ?, ?, ?, ?, 'PLN', ?, 'Ref', 'PENDING', 'BOOKED', 'CREATE', 'user_1', 'corr_1', ?)`,
+				rID, acctID, rID, dedup, now, amtMinor, payee, now,
+			)
+			if err != nil {
+				return err
+			}
+			batchRawIDs = append(batchRawIDs, rID)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I delete the pending raw transaction$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/transactions/raw/%s/delete", tc.activeBudgetID, activeRawID), nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "rawId")
+		c.SetParamValues(tc.activeBudgetID, activeRawID)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.DeleteRawTransaction(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^I batch delete the pending raw transactions$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		form := url.Values{}
+		for _, id := range batchRawIDs {
+			form.Add("raw_ids", id)
+		}
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/transactions/raw/batch-delete", tc.activeBudgetID), strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, "user_1")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.txHandler.BatchDeleteRawTransactions(c)
+		tc.lastResponse = rec
+		return err
+	})
+
+	ctx.Step(`^the raw transaction should be permanently removed from raw transactions$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var countCurr, countHist int
+		_ = bDB.QueryRow(`SELECT count(*) FROM raw_transactions_current WHERE id = ?`, activeRawID).Scan(&countCurr)
+		_ = bDB.QueryRow(`SELECT count(*) FROM raw_transactions WHERE id = ?`, activeRawID).Scan(&countHist)
+		if countCurr != 0 || countHist != 0 {
+			return fmt.Errorf("expected raw transaction %s to be permanently removed, got current: %d, history: %d", activeRawID, countCurr, countHist)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the raw transactions should be permanently removed from raw transactions$`, func() error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		for _, id := range batchRawIDs {
+			var countCurr, countHist int
+			_ = bDB.QueryRow(`SELECT count(*) FROM raw_transactions_current WHERE id = ?`, id).Scan(&countCurr)
+			_ = bDB.QueryRow(`SELECT count(*) FROM raw_transactions WHERE id = ?`, id).Scan(&countHist)
+			if countCurr != 0 || countHist != 0 {
+				return fmt.Errorf("expected raw transaction %s to be permanently removed, got current: %d, history: %d", id, countCurr, countHist)
+			}
+		}
+		return nil
+	})
+
+
 	// 07_buckets_and_targets.feature steps
 
 	ctx.Step(`^an open budget "([^"]*)"$`, func(budgetName string) error {

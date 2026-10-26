@@ -386,11 +386,11 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 						HXGet: fmt.Sprintf("/budgets/%s/history/raw_transactions/%s", budgetID, rID),
 					},
 					{
-						Label:      "🚫 Ignore Feed",
-						FormAction: fmt.Sprintf("/budgets/%s/transactions/raw/%s/ignore", budgetID, rID),
+						Label:      "🗑️ Delete",
+						FormAction: fmt.Sprintf("/budgets/%s/transactions/raw/%s/delete", budgetID, rID),
 						CSRFToken:  csrfToken,
 						IsDanger:   true,
-						ConfirmMsg: "Ignore this bank transaction feed?",
+						ConfirmMsg: "Permanently delete this bank transaction feed?",
 					},
 				}
 			} else {
@@ -404,11 +404,11 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 						OnClick: fmt.Sprintf("openResolveRawModal('%s', '%s', '%.2f', '%s', '%s', '%s')", rID, rAcctID, rAmountMajor, rCurrency, escapedPayee, suggestedBucketID),
 					},
 					{
-						Label:      "🚫 Ignore Feed",
-						FormAction: fmt.Sprintf("/budgets/%s/transactions/raw/%s/ignore", budgetID, rID),
+						Label:      "🗑️ Delete",
+						FormAction: fmt.Sprintf("/budgets/%s/transactions/raw/%s/delete", budgetID, rID),
 						CSRFToken:  csrfToken,
 						IsDanger:   true,
-						ConfirmMsg: "Ignore this bank transaction feed?",
+						ConfirmMsg: "Permanently delete this bank transaction feed?",
 					},
 				}
 			}
@@ -726,12 +726,12 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
                 <span>✂️</span>
                 <span>Split Receipt</span>
             </button>
-            <form method="POST" action="/budgets/%s/transactions/raw/batch-ignore" id="fab-batch-ignore-form" onsubmit="return confirm('Ignore selected bank feeds?')">
+            <form method="POST" action="/budgets/%s/transactions/raw/batch-delete" id="fab-batch-delete-form" onsubmit="return confirm('Permanently delete selected bank feeds?')">
                 <input type="hidden" name="csrf_token" value="%s" />
-                <div id="fab-ignore-inputs"></div>
+                <div id="fab-delete-inputs"></div>
                 <button type="submit" class="btn btn-ghost btn-sm text-error font-semibold">
-                    <span>🚫</span>
-                    <span>Ignore</span>
+                    <span>🗑️</span>
+                    <span>Delete</span>
                 </button>
             </form>
             <button type="button" class="btn btn-ghost btn-sm btn-circle" onclick="clearAllSelections()" title="Clear selection">✕</button>
@@ -1169,7 +1169,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
             const countLabel = document.getElementById('fab-count');
             const netDisplay = document.getElementById('fab-net-display');
             const splitBtn = document.getElementById('fab-split-btn');
-            const ignoreInputs = document.getElementById('fab-ignore-inputs');
+            const deleteInputs = document.getElementById('fab-delete-inputs');
             const approveInputs = document.getElementById('fab-approve-inputs');
 
             if (!bar) return;
@@ -1184,7 +1184,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 
             let netMinor = 0;
             let currency = 'PLN';
-            if (ignoreInputs) ignoreInputs.innerHTML = '';
+            if (deleteInputs) deleteInputs.innerHTML = '';
             if (approveInputs) approveInputs.innerHTML = '';
 
             checkedBoxes.forEach(cb => {
@@ -1192,12 +1192,12 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
                 currency = cb.dataset.currency || currency;
                 netMinor += amt;
 
-                if (ignoreInputs) {
+                if (deleteInputs) {
                     const inp = document.createElement('input');
                     inp.type = 'hidden';
                     inp.name = 'raw_ids';
                     inp.value = cb.value;
-                    ignoreInputs.appendChild(inp);
+                    deleteInputs.appendChild(inp);
                 }
 
                 if (approveInputs) {
@@ -2742,6 +2742,24 @@ func (h *TransactionsHandler) ResolveRawTransaction(c echo.Context) error {
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
 }
 
+// DeleteRawTransaction permanently hard deletes a single raw bank transaction.
+func (h *TransactionsHandler) DeleteRawTransaction(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:transaction:raw:delete")
+
+	budgetID := c.Param("budgetId")
+	rawID := c.Param("rawId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+
+	err := transaction.DeleteRawTransaction(c.Request().Context(), tenantDB, rawID)
+	if err != nil {
+		logger.Error(ctx, "Failed deleting raw transaction", "raw_id", rawID, "error", err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to delete raw transaction: %v", err))
+	}
+
+	logger.Info(ctx, "Raw transaction deleted permanently", "budget_id", budgetID, "raw_id", rawID)
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
+}
+
 // IgnoreRawTransaction marks a raw bank transaction as IGNORED.
 func (h *TransactionsHandler) IgnoreRawTransaction(c echo.Context) error {
 	ctx := logger.WithComponent(c.Request().Context(), "biz:transaction:raw:ignore")
@@ -3223,6 +3241,28 @@ func (h *TransactionsHandler) BatchResolveRawTransactions(c echo.Context) error 
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Unsupported operation type: %s", opType))
 	}
 
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
+}
+
+// BatchDeleteRawTransactions permanently deletes multiple raw bank transactions.
+func (h *TransactionsHandler) BatchDeleteRawTransactions(c echo.Context) error {
+	ctx := logger.WithComponent(c.Request().Context(), "biz:transaction:raw:batch_delete")
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+
+	formParams, _ := c.FormParams()
+	rawIDs := formParams["raw_ids"]
+	if len(rawIDs) == 0 {
+		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
+	}
+
+	err := transaction.BatchDeleteRawTransactions(c.Request().Context(), tenantDB, rawIDs)
+	if err != nil {
+		logger.Error(ctx, "Failed batch deleting raw transactions", "count", len(rawIDs), "error", err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to delete raw transactions: %v", err))
+	}
+
+	logger.Info(ctx, "Batch deleted raw transactions", "count", len(rawIDs))
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
 }
 

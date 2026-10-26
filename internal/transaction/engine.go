@@ -551,3 +551,42 @@ func BatchDeleteBudgetTransactions(ctx context.Context, tenantDB *sql.DB, txIDs 
 	return tx.Commit()
 }
 
+// DeleteRawTransaction permanently hard deletes a single raw transaction.
+func DeleteRawTransaction(ctx context.Context, tenantDB *sql.DB, rawID string) error {
+	return BatchDeleteRawTransactions(ctx, tenantDB, []string{rawID})
+}
+
+// BatchDeleteRawTransactions permanently hard deletes raw transactions from raw_transactions_current,
+// raw_transactions history, and transaction_links.
+func BatchDeleteRawTransactions(ctx context.Context, tenantDB *sql.DB, rawIDs []string) error {
+	if len(rawIDs) == 0 {
+		return nil
+	}
+
+	tx, err := tenantDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, rawID := range rawIDs {
+		// 1. Remove from transaction_links if any
+		if _, err := tx.ExecContext(ctx, `DELETE FROM transaction_links WHERE raw_transaction_id = ?`, rawID); err != nil {
+			return fmt.Errorf("failed deleting raw transaction links: %w", err)
+		}
+
+		// 2. Remove from raw_transactions audit history
+		if _, err := tx.ExecContext(ctx, `DELETE FROM raw_transactions WHERE id = ?`, rawID); err != nil {
+			return fmt.Errorf("failed deleting raw_transactions history: %w", err)
+		}
+
+		// 3. Remove from raw_transactions_current projection
+		if _, err := tx.ExecContext(ctx, `DELETE FROM raw_transactions_current WHERE id = ?`, rawID); err != nil {
+			return fmt.Errorf("failed deleting from raw_transactions_current: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+

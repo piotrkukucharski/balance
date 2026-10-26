@@ -120,5 +120,21 @@ Feature: Two-Tier Transaction Resolution (Move, Merge, Split) and Deduplication
     Then the raw transaction status should change to "PROCESSED"
     And a budget transaction of "50.00 PLN" should appear in the budget transactions ledger
 
+  Scenario: Permanently delete a pending raw transaction feed
+    Given an active checking account in "Family Home"
+    And a pending raw transaction of "-42.00 PLN" from "Bookstore" in account "Family Checking"
+    When I delete the pending raw transaction
+    Then the raw transaction should be permanently removed from raw transactions
+
+  Scenario: Batch delete multiple pending raw transaction feeds
+    Given an active checking account in "Family Home"
+    And 2 pending raw transactions recorded:
+      | Payee      | Amount     | Account         |
+      | Coffee Shop| -15.00 PLN | Family Checking |
+      | Bakery     | -25.00 PLN | Family Checking |
+    When I batch delete the pending raw transactions
+    Then the raw transactions should be permanently removed from raw transactions
+
+
 
 

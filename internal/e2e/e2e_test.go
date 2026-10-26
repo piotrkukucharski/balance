@@ -231,6 +231,8 @@ func (tc *e2eScenarioContext) setup() error {
 	tenantEditor.POST("/reports/saved", reportsHandler.SaveReportConfig)
 	tenantEditor.POST("/reports/saved/:reportId/toggle-pin", reportsHandler.TogglePinReport)
 	tenantEditor.POST("/reports/saved/:reportId/delete", reportsHandler.DeleteSavedReport)
+	tenantEditor.POST("/transactions/raw/:rawId/delete", txHandler.DeleteRawTransaction)
+	tenantEditor.POST("/transactions/raw/batch-delete", txHandler.BatchDeleteRawTransactions)
 	tenantEditor.POST("/transactions/raw/:rawId/ignore", txHandler.IgnoreRawTransaction)
 	tenantEditor.POST("/transactions/raw/batch-ignore", txHandler.BatchIgnoreRawTransactions)
 	tenantEditor.POST("/transactions/resolve/batch", txHandler.BatchResolveRawTransactions)
