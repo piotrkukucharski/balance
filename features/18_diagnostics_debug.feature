@@ -23,7 +23,6 @@ Feature: Diagnostic and Audit Tools for Budget Owner
     When I request the debug view "/budgets/:budgetId/debug"
     Then the response status should be 200 OK
     And the page should contain "Diagnostic Tools (Debug)"
-    And the sidebar should include a link to the debug page
 
   Scenario: Non-owner member is forbidden from accessing the debug dashboard
     Given an authenticated user "editor@example.com" with "EDITOR" role on budget "Integrity Test"
