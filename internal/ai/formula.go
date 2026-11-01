@@ -448,15 +448,20 @@ func (g *GeminiDirectHTTPProvider) GenerateLuaFormula(ctx context.Context, req F
 	}
 	defer resp.Body.Close()
 
+	corrID := logger.CorrelationIDFromContext(ctx)
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
+		rawStr := string(respBody)
+		apiErr := ParseGeminiError(resp.StatusCode, rawStr, corrID)
 		logger.Error(ctx, "Gemini Lua formula API returned error status",
 			"model", g.model,
 			"status", resp.StatusCode,
-			"body", string(respBody),
+			"error_code", apiErr.ErrorCode,
+			"body", rawStr,
+			"correlation_id", corrID,
 			"duration_ms", durationMs,
 		)
-		return nil, fmt.Errorf("gemini API returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, apiErr
 	}
 
 	var geminiResp struct {

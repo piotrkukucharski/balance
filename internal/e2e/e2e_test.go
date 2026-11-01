@@ -277,6 +277,8 @@ func (tc *e2eScenarioContext) setup() error {
 	tenantOwner.POST("/debug/actions/resurrect-account", debugHandler.ResurrectAccountAction)
 	tenantOwner.POST("/debug/actions/delete-orphaned-transactions", debugHandler.DeleteOrphanedTransactionsAction)
 	tenantOwner.POST("/debug/actions/reconcile-discrepancies", debugHandler.ReconcileDiscrepanciesAction)
+	tenantOwner.POST("/debug/integrations/ai/audit", debugHandler.AuditAIAgentAction)
+	tenantOwner.POST("/debug/integrations/gocardless/audit", debugHandler.AuditGoCardlessAction)
 
 	apiServer := openapi.NewServer(mainDB, tenantMgr, appService)
 	apiGroup := e.Group("/api/v1", func(next echo.HandlerFunc) echo.HandlerFunc {

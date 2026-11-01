@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -81,13 +82,17 @@ type Client struct {
 }
 
 func NewClient(secretID, secretKey, redirectURL string) *Client {
+	baseURL := os.Getenv("GOCARDLESS_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://bankaccountdata.gocardless.com/api/v2"
+	}
 	if redirectURL == "" {
 		redirectURL = "http://localhost:8080/budgets/integrations/gocardless/callback"
 	}
 	return &Client{
 		secretID:    secretID,
 		secretKey:   secretKey,
-		baseURL:     "https://bankaccountdata.gocardless.com/api/v2",
+		baseURL:     baseURL,
 		redirectURL: redirectURL,
 		httpClient:  &http.Client{Timeout: 30 * time.Second},
 	}

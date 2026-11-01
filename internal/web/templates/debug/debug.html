@@ -41,6 +41,65 @@
             <div id="audit-card-container">
                 {{.AuditCardHTML}}
             </div>
+
+            <!-- Integracje (AI & GoCardless) -->
+            <div class="card card-border bg-base-100 border-base-300 shadow-md mt-6">
+                <div class="card-body p-6 space-y-6">
+                    <div class="border-b border-base-200 pb-4">
+                        <h2 class="card-title text-base font-bold flex items-center gap-2">
+                            <span>🔌</span>
+                            <span>Integracje (AI & GoCardless)</span>
+                        </h2>
+                        <p class="text-xs text-base-content/60 mt-0.5">Weryfikacja autoryzacji, łączności i statusu zewnętrznych dostawców usług.</p>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <!-- AI (Google Gemini) -->
+                        <div class="p-4 rounded-xl border border-base-300 bg-base-200/40 flex flex-col justify-between">
+                            <div>
+                                <div class="flex items-center justify-between mb-2">
+                                    <h3 class="font-bold text-sm flex items-center gap-2">
+                                        <span>✨</span>
+                                        <span>Google Gemini API</span>
+                                    </h3>
+                                    <span id="ai-status-badge" class="badge badge-ghost text-xs">Nie sprawdzono</span>
+                                </div>
+                                <p class="text-xs text-base-content/70 mb-4">Weryfikacja komunikacji z modelem LLM na teście promptu <code class="bg-base-300/80 px-1 py-0.5 rounded text-[11px]">"2 + 2 ="</code>.</p>
+                            </div>
+
+                            <div>
+                                <div id="ai-audit-output" class="hidden mb-3 p-2.5 rounded-lg text-xs font-mono break-all whitespace-pre-wrap max-h-48 overflow-y-auto"></div>
+                                <button type="button" id="btn-audit-ai" class="btn btn-sm btn-outline btn-primary w-full gap-2" onclick="runIntegrationAudit('ai')">
+                                    <span>🔍</span>
+                                    <span>Audyt AI</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- GoCardless (Open Banking) -->
+                        <div class="p-4 rounded-xl border border-base-300 bg-base-200/40 flex flex-col justify-between">
+                            <div>
+                                <div class="flex items-center justify-between mb-2">
+                                    <h3 class="font-bold text-sm flex items-center gap-2">
+                                        <span>🏦</span>
+                                        <span>GoCardless (Open Banking)</span>
+                                    </h3>
+                                    <span id="gc-status-badge" class="badge badge-ghost text-xs">Nie sprawdzono</span>
+                                </div>
+                                <p class="text-xs text-base-content/70 mb-4">Weryfikacja autoryzacji tokenu OAuth i pobierania instytucji bankowych z API.</p>
+                            </div>
+
+                            <div>
+                                <div id="gc-audit-output" class="hidden mb-3 p-2.5 rounded-lg text-xs font-mono break-all whitespace-pre-wrap max-h-48 overflow-y-auto"></div>
+                                <button type="button" id="btn-audit-gc" class="btn btn-sm btn-outline btn-primary w-full gap-2" onclick="runIntegrationAudit('gocardless')">
+                                    <span>🔍</span>
+                                    <span>Audyt GoCardless</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
 {{- end -}}
 

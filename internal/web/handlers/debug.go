@@ -1,18 +1,24 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/balance/balance/internal/ai"
 	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/integration/gocardless"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/web/templates"
 	"github.com/labstack/echo/v4"
@@ -20,16 +26,42 @@ import (
 
 // DebugHandler handles diagnostic audit and corrective actions for budget owners.
 type DebugHandler struct {
-	mainDB    *sql.DB
-	tenantMgr *db.TenantDBManager
+	mainDB           *sql.DB
+	tenantMgr        *db.TenantDBManager
+	gocardlessClient *gocardless.Client
+	httpClient       *http.Client
 }
 
 // NewDebugHandler initializes a new DebugHandler.
 func NewDebugHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *DebugHandler {
-	return &DebugHandler{
-		mainDB:    mainDB,
-		tenantMgr: tenantMgr,
+	secretID := os.Getenv("GOCARDLESS_SECRET_ID")
+	secretKey := os.Getenv("GOCARDLESS_SECRET_KEY")
+	redirectURL := os.Getenv("GOCARDLESS_REDIRECT_URL")
+	var gcClient *gocardless.Client
+	if secretID != "" && secretKey != "" {
+		gcClient = gocardless.NewClient(secretID, secretKey, redirectURL)
 	}
+
+	return &DebugHandler{
+		mainDB:           mainDB,
+		tenantMgr:        tenantMgr,
+		gocardlessClient: gcClient,
+		httpClient:       &http.Client{Timeout: 15 * time.Second},
+	}
+}
+
+// SetGoCardlessClient sets the GoCardless client (used in testing).
+func (h *DebugHandler) SetGoCardlessClient(gc *gocardless.Client) {
+	h.gocardlessClient = gc
+}
+
+// IntegrationAuditResult represents the standard diagnostic response for an external integration.
+type IntegrationAuditResult struct {
+	Success       bool   `json:"success"`
+	StatusCode    int    `json:"status_code"`
+	RawResponse   string `json:"raw_response"`
+	Message       string `json:"message"`
+	CorrelationID string `json:"correlation_id"`
 }
 
 // OrphanedBalanceItem represents a record in account_currency_balances with no active account.
@@ -828,4 +860,196 @@ func templateEscape(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
 	return s
+}
+
+// AuditAIAgentAction handles POST /budgets/:budgetId/debug/integrations/ai/audit.
+// Sends a simple "2 + 2 =" prompt to the Gemini API and returns structured status, HTTP code, raw body and correlationId.
+func (h *DebugHandler) AuditAIAgentAction(c echo.Context) error {
+	role, _ := c.Get(ContextRoleKey).(string)
+	if role != "OWNER" {
+		return echo.NewHTTPError(http.StatusForbidden, "Restricted to budget OWNER")
+	}
+
+	corrID := logger.CorrelationIDFromContext(c.Request().Context())
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	model := os.Getenv("GEMINI_MODEL")
+	if model == "" {
+		model = os.Getenv("AI_GEMINI_MODEL")
+	}
+	if model == "" {
+		model = "gemini-3.8-flash"
+	}
+
+	if apiKey == "" {
+		return c.JSON(http.StatusOK, IntegrationAuditResult{
+			Success:       false,
+			StatusCode:    http.StatusUnauthorized,
+			RawResponse:   `{"error": {"code": 401, "message": "GEMINI_API_KEY environment variable is not set"}}`,
+			Message:       "Brak skonfigurowanego klucza GEMINI_API_KEY w środowisku",
+			CorrelationID: corrID,
+		})
+	}
+
+	baseURL := os.Getenv("GEMINI_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://generativelanguage.googleapis.com"
+	}
+	url := fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s", strings.TrimRight(baseURL, "/"), model, apiKey)
+
+	payload := map[string]any{
+		"contents": []map[string]any{
+			{
+				"role": "user",
+				"parts": []map[string]any{
+					{"text": "2 + 2 ="},
+				},
+			},
+		},
+		"generationConfig": map[string]any{
+			"temperature":     0.1,
+			"maxOutputTokens": 32,
+		},
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return c.JSON(http.StatusOK, IntegrationAuditResult{
+			Success:       false,
+			StatusCode:    http.StatusInternalServerError,
+			RawResponse:   err.Error(),
+			Message:       "Failed encoding Gemini audit payload: " + err.Error(),
+			CorrelationID: corrID,
+		})
+	}
+
+	req, err := http.NewRequestWithContext(c.Request().Context(), http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return c.JSON(http.StatusOK, IntegrationAuditResult{
+			Success:       false,
+			StatusCode:    http.StatusInternalServerError,
+			RawResponse:   err.Error(),
+			Message:       "Failed creating Gemini HTTP request: " + err.Error(),
+			CorrelationID: corrID,
+		})
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := h.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	duration := time.Since(start)
+	if err != nil {
+		logger.Error(c.Request().Context(), "Gemini audit HTTP request failed", "error", err.Error(), "correlation_id", corrID, "duration_ms", duration.Milliseconds())
+		return c.JSON(http.StatusOK, IntegrationAuditResult{
+			Success:       false,
+			StatusCode:    http.StatusBadGateway,
+			RawResponse:   err.Error(),
+			Message:       "Błąd połączenia z API Gemini: " + err.Error(),
+			CorrelationID: corrID,
+		})
+	}
+	defer resp.Body.Close()
+
+	respBytes, _ := io.ReadAll(resp.Body)
+	rawBody := string(respBytes)
+
+	if resp.StatusCode != http.StatusOK {
+		apiErr := ai.ParseGeminiError(resp.StatusCode, rawBody, corrID)
+		logger.Error(c.Request().Context(), "Gemini audit API returned error",
+			"status", resp.StatusCode,
+			"error_code", apiErr.ErrorCode,
+			"raw", rawBody,
+			"correlation_id", corrID,
+		)
+		return c.JSON(http.StatusOK, IntegrationAuditResult{
+			Success:       false,
+			StatusCode:    resp.StatusCode,
+			RawResponse:   rawBody,
+			Message:       apiErr.Message,
+			CorrelationID: corrID,
+		})
+	}
+
+	var parsed struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	replyText := ""
+	if err := json.Unmarshal(respBytes, &parsed); err == nil && len(parsed.Candidates) > 0 && len(parsed.Candidates[0].Content.Parts) > 0 {
+		replyText = strings.TrimSpace(parsed.Candidates[0].Content.Parts[0].Text)
+	}
+
+	return c.JSON(http.StatusOK, IntegrationAuditResult{
+		Success:       true,
+		StatusCode:    http.StatusOK,
+		RawResponse:   rawBody,
+		Message:       fmt.Sprintf("Połączenie z Google Gemini API (%s) działa poprawnie. Odpowiedź na '2 + 2 =': %q", model, replyText),
+		CorrelationID: corrID,
+	})
+}
+
+// AuditGoCardlessAction handles POST /budgets/:budgetId/debug/integrations/gocardless/audit.
+// Verifies connectivity and authorization by querying GoCardless /institutions.
+func (h *DebugHandler) AuditGoCardlessAction(c echo.Context) error {
+	role, _ := c.Get(ContextRoleKey).(string)
+	if role != "OWNER" {
+		return echo.NewHTTPError(http.StatusForbidden, "Restricted to budget OWNER")
+	}
+
+	corrID := logger.CorrelationIDFromContext(c.Request().Context())
+	secretID := os.Getenv("GOCARDLESS_SECRET_ID")
+	secretKey := os.Getenv("GOCARDLESS_SECRET_KEY")
+
+	if secretID == "" || secretKey == "" {
+		return c.JSON(http.StatusOK, IntegrationAuditResult{
+			Success:       false,
+			StatusCode:    http.StatusUnauthorized,
+			RawResponse:   `{"error": {"code": 401, "message": "GOCARDLESS_SECRET_ID or GOCARDLESS_SECRET_KEY is not configured"}}`,
+			Message:       "Brak skonfigurowanych kluczy GOCARDLESS_SECRET_ID / GOCARDLESS_SECRET_KEY w środowisku",
+			CorrelationID: corrID,
+		})
+	}
+
+	gcClient := h.gocardlessClient
+	if gcClient == nil {
+		redirectURL := os.Getenv("GOCARDLESS_REDIRECT_URL")
+		gcClient = gocardless.NewClient(secretID, secretKey, redirectURL)
+	}
+
+	institutions, err := gcClient.ListInstitutions(c.Request().Context(), "PL")
+	if err != nil {
+		logger.Error(c.Request().Context(), "GoCardless audit failed", "error", err.Error(), "correlation_id", corrID)
+		statusCode := http.StatusBadGateway
+		rawMsg := err.Error()
+		if strings.Contains(rawMsg, "status 401") || strings.Contains(rawMsg, "401") {
+			statusCode = http.StatusUnauthorized
+		} else if strings.Contains(rawMsg, "status 400") {
+			statusCode = http.StatusBadRequest
+		}
+
+		return c.JSON(http.StatusOK, IntegrationAuditResult{
+			Success:       false,
+			StatusCode:    statusCode,
+			RawResponse:   rawMsg,
+			Message:       "Błąd komunikacji z GoCardless API: " + rawMsg,
+			CorrelationID: corrID,
+		})
+	}
+
+	return c.JSON(http.StatusOK, IntegrationAuditResult{
+		Success:       true,
+		StatusCode:    http.StatusOK,
+		RawResponse:   fmt.Sprintf(`{"institutions_count": %d}`, len(institutions)),
+		Message:       fmt.Sprintf("Połączenie z GoCardless API poprawne. Pobrano %d instytucji bankowych dla kraju PL.", len(institutions)),
+		CorrelationID: corrID,
+	})
 }

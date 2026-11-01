@@ -822,6 +822,115 @@ func ApplyAutomationsInTx(ctx context.Context, tx *sql.Tx, createdTxIDs []string
 
 				currentTx = upTx
 			}
+
+			if outcome.AccountReassign != nil {
+				if err := applyAccountPartyReassignmentInTx(ctx, tx, outcome.AccountReassign.AccountID, outcome.AccountReassign.TargetPartyID, agentID, correlationID, now, snap); err != nil {
+					return fmt.Errorf("account party reassignment in tx failed: %w", err)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func applyAccountPartyReassignmentInTx(ctx context.Context, tx *sql.Tx, accountID, targetPartyID, agentID, correlationID string, now int64, snap *lua.InMemoryBudgetSnapshot) error {
+	if accountID == "" || targetPartyID == "" {
+		return nil
+	}
+
+	// 1. Get current account details
+	var curAcctVer int
+	var oldPartyID, acctName, acctType, primCurr string
+	var iban, favVal sql.NullString
+	var favType string
+	var isClosed int
+
+	err := tx.QueryRowContext(ctx, `
+		SELECT version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed
+		FROM accounts_current
+		WHERE id = ?`, accountID,
+	).Scan(&curAcctVer, &oldPartyID, &acctName, &acctType, &primCurr, &iban, &favType, &favVal, &isClosed)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("account %s not found for reassignment", accountID)
+		}
+		return fmt.Errorf("query account %s: %w", accountID, err)
+	}
+
+	if oldPartyID == targetPartyID {
+		return nil
+	}
+
+	// 2. Append new account version in accounts
+	newAcctVer := curAcctVer + 1
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO accounts (
+			id, version, party_id, name, account_type, primary_currency, iban, favicon_type, favicon_value, is_closed,
+			action, agent_id, correlation_id, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'UPDATE', ?, ?, ?)`,
+		accountID, newAcctVer, targetPartyID, acctName, acctType, primCurr, iban, favType, favVal, isClosed,
+		agentID, correlationID, now,
+	)
+	if err != nil {
+		return fmt.Errorf("append account update for reassignment: %w", err)
+	}
+
+	// 3. Update accounts_current
+	_, err = tx.ExecContext(ctx, `
+		UPDATE accounts_current
+		SET version = ?, party_id = ?, updated_at = ?
+		WHERE id = ?`,
+		newAcctVer, targetPartyID, now, accountID,
+	)
+	if err != nil {
+		return fmt.Errorf("update accounts_current for reassignment: %w", err)
+	}
+
+	// Update in-memory snapshot if available
+	if snap != nil && snap.Accounts != nil {
+		if a := snap.Accounts[accountID]; a != nil {
+			a.PartyID = targetPartyID
+		}
+	}
+
+	// 4. Check if oldPartyID has any other active accounts left in accounts_current
+	var remainingAccounts int
+	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM accounts_current WHERE party_id = ?`, oldPartyID).Scan(&remainingAccounts)
+	if err != nil {
+		return fmt.Errorf("check remaining accounts for party %s: %w", oldPartyID, err)
+	}
+
+	if remainingAccounts == 0 {
+		// Soft-delete the orphaned old party
+		var pVer, pOwned int
+		var pName, pType string
+		var pNotes sql.NullString
+		err := tx.QueryRowContext(ctx, `
+			SELECT version, name, party_type, is_user_owned, notes
+			FROM parties_current
+			WHERE id = ?`, oldPartyID,
+		).Scan(&pVer, &pName, &pType, &pOwned, &pNotes)
+		if err == nil {
+			pNextVer := pVer + 1
+			_, err = tx.ExecContext(ctx, `
+				INSERT INTO parties (id, version, name, party_type, is_user_owned, notes, action, agent_id, correlation_id, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, 'SOFT_DELETE', ?, ?, ?)`,
+				oldPartyID, pNextVer, pName, pType, pOwned, pNotes.String, agentID, correlationID, now,
+			)
+			if err != nil {
+				return fmt.Errorf("soft delete orphaned party append: %w", err)
+			}
+
+			_, err = tx.ExecContext(ctx, `DELETE FROM parties_current WHERE id = ?`, oldPartyID)
+			if err != nil {
+				return fmt.Errorf("delete orphaned party from projection: %w", err)
+			}
+
+			if snap != nil && snap.Parties != nil {
+				delete(snap.Parties, oldPartyID)
+				delete(snap.Parties, strings.ToLower(pName))
+			}
 		}
 	}
 
@@ -1061,6 +1170,7 @@ func RunAutomationsBatch(
 		currentTx := *txCtx
 		isDeleted := false
 		var splits []lua.SplitItem
+		var pendingReassign *lua.AccountPartyReassignment
 
 		for _, a := range activeAutomations {
 			matched, err := lua.EvaluateAutomationJudge(ctx, a.JudgeScript, currentTx, snap)
@@ -1074,6 +1184,10 @@ func RunAutomationsBatch(
 			outcome, err := lua.EvaluateAutomationExecutor(ctx, a.ExecutorScript, currentTx, snap)
 			if err != nil {
 				return nil, fmt.Errorf("automation %q [%s] executor failed: %w", a.Name, a.ID, err)
+			}
+
+			if outcome.AccountReassign != nil {
+				pendingReassign = outcome.AccountReassign
 			}
 
 			if outcome.Deleted {
@@ -1228,6 +1342,21 @@ func RunAutomationsBatch(
 				if err := transaction.UpdateBudgetTransaction(ctx, tenantDB, updateInput); err != nil {
 					return nil, fmt.Errorf("update transaction %s: %w", txID, err)
 				}
+			}
+		}
+
+		if pendingReassign != nil && !dryRun {
+			now := time.Now().UTC().UnixMicro()
+			rTx, err := tenantDB.BeginTx(ctx, nil)
+			if err != nil {
+				return nil, fmt.Errorf("begin tx for account party reassignment: %w", err)
+			}
+			if err := applyAccountPartyReassignmentInTx(ctx, rTx, pendingReassign.AccountID, pendingReassign.TargetPartyID, agentID, correlationID, now, snap); err != nil {
+				_ = rTx.Rollback()
+				return nil, fmt.Errorf("batch account party reassignment: %w", err)
+			}
+			if err := rTx.Commit(); err != nil {
+				return nil, fmt.Errorf("commit account party reassignment: %w", err)
 			}
 		}
 	}

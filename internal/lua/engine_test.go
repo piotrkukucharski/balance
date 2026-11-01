@@ -114,7 +114,8 @@ func TestEvaluateAutomationJudgeAndExecutor(t *testing.T) {
 			"t-metro":    {ID: "t-metro", Name: "Metro Pass", BucketID: "b-trans"},
 		},
 		Parties: map[string]*PartyMeta{
-			"uber": {ID: "p-uber", Name: "Uber", IsUserOwned: false},
+			"uber":   {ID: "p-uber", Name: "Uber", IsUserOwned: false},
+			"p-uber": {ID: "p-uber", Name: "Uber", IsUserOwned: false},
 		},
 	}
 
@@ -152,9 +153,9 @@ func TestEvaluateAutomationJudgeAndExecutor(t *testing.T) {
 		t.Fatalf("expected judge not to match")
 	}
 
-	// 3. Executor test: set_target (auto sets bucket), set_notes
+	// 3. Executor test: set_target_by_name (auto sets bucket), set_notes
 	execScript := `
-	tx.set_target("Metro Pass")
+	tx.set_target_by_name("Metro Pass")
 	tx.set_notes("Subsidized ride")
 	`
 	outcome, err := EvaluateAutomationExecutor(ctx, execScript, tx, snap)
@@ -215,6 +216,91 @@ func TestEvaluateAutomationJudgeAndExecutor(t *testing.T) {
 	}
 	if !outcome.Deleted {
 		t.Fatalf("expected deleted = true")
+	}
+
+	// 7. Test tx.set_* (by ID) vs tx.set_*_by_name and error handling
+	setByIDScript := `
+	tx.set_target("t-metro")
+	tx.set_bucket("b-groc")
+	tx.set_party("p-uber")
+	`
+	outcome, err = EvaluateAutomationExecutor(ctx, setByIDScript, tx, snap)
+	if err != nil {
+		t.Fatalf("set by ID failed: %v", err)
+	}
+	if *outcome.UpdatedTx.BucketID != "b-groc" || outcome.UpdatedTx.BucketName != "Groceries" {
+		t.Fatalf("unexpected bucket: %v", outcome.UpdatedTx.BucketID)
+	}
+	if *outcome.UpdatedTx.TargetID != "t-metro" || outcome.UpdatedTx.TargetName != "Metro Pass" {
+		t.Fatalf("unexpected target: %v", outcome.UpdatedTx.TargetID)
+	}
+	if outcome.UpdatedTx.PartyID != "p-uber" || outcome.UpdatedTx.PartyName != "Uber" {
+		t.Fatalf("unexpected party: %v", outcome.UpdatedTx.PartyID)
+	}
+
+	// Missing ID should fail with error
+	badIDScript := `tx.set_bucket("non-existent-id")`
+	_, err = EvaluateAutomationExecutor(ctx, badIDScript, tx, snap)
+	if err == nil {
+		t.Fatalf("expected error on non-existent bucket ID")
+	}
+
+	badNameScript := `tx.set_bucket_by_name("NonExistentBucket")`
+	_, err = EvaluateAutomationExecutor(ctx, badNameScript, tx, snap)
+	if err == nil {
+		t.Fatalf("expected error on non-existent bucket name")
+	}
+
+	// 8. Test account object and account.set_party / account.set_party_by_name
+	if snap.Accounts == nil {
+		snap.Accounts = make(map[string]*AccountMeta)
+	}
+	snap.Parties["p-zabka"] = &PartyMeta{ID: "p-zabka", Name: "Żabka", IsUserOwned: false}
+	snap.Parties["żabka"] = snap.Parties["p-zabka"]
+	snap.Accounts["acct-pos"] = &AccountMeta{ID: "acct-pos", Name: "ZABKA Z4508 K.1", PartyID: "p-temp", Currency: "PLN", IsUserOwned: false}
+
+	txWithExtAcct := tx
+	txWithExtAcct.DestinationAccountID = "acct-pos"
+	txWithExtAcct.DestAccountName = "ZABKA Z4508 K.1"
+
+	// Read-only in judge
+	judgeAcctScript := `account.name == "ZABKA Z4508 K.1"`
+	matched, err = EvaluateAutomationJudge(ctx, judgeAcctScript, txWithExtAcct, snap)
+	if err != nil || !matched {
+		t.Fatalf("expected judge on account.name to match, got matched=%v, err=%v", matched, err)
+	}
+
+	// Executor: account.set_party_by_name
+	execAcctScript := `account.set_party_by_name("Żabka")`
+	outcome, err = EvaluateAutomationExecutor(ctx, execAcctScript, txWithExtAcct, snap)
+	if err != nil {
+		t.Fatalf("account.set_party_by_name failed: %v", err)
+	}
+	if outcome.AccountReassign == nil {
+		t.Fatalf("expected AccountReassign to be populated")
+	}
+	if outcome.AccountReassign.AccountID != "acct-pos" || outcome.AccountReassign.TargetPartyID != "p-zabka" {
+		t.Fatalf("unexpected AccountReassign: %+v", outcome.AccountReassign)
+	}
+	if outcome.UpdatedTx.PartyID != "p-zabka" || outcome.UpdatedTx.PartyName != "Żabka" {
+		t.Fatalf("unexpected updated tx party: %s (%s)", outcome.UpdatedTx.PartyName, outcome.UpdatedTx.PartyID)
+	}
+
+	// Executor: account.set_party with ID
+	execAcctIDScript := `account.set_party("p-zabka")`
+	outcome, err = EvaluateAutomationExecutor(ctx, execAcctIDScript, txWithExtAcct, snap)
+	if err != nil {
+		t.Fatalf("account.set_party failed: %v", err)
+	}
+	if outcome.AccountReassign == nil || outcome.AccountReassign.TargetPartyID != "p-zabka" {
+		t.Fatalf("unexpected AccountReassign with ID: %+v", outcome.AccountReassign)
+	}
+
+	// Non-existent target party
+	badPartyScript := `account.set_party_by_name("UnknownMerchant")`
+	_, err = EvaluateAutomationExecutor(ctx, badPartyScript, txWithExtAcct, snap)
+	if err == nil {
+		t.Fatalf("expected error on non-existent party name in account.set_party_by_name")
 	}
 }
 

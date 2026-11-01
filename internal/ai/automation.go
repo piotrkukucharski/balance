@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/lua"
 )
 
@@ -235,6 +236,52 @@ func buildUserPromptWithContext(genCtx GenerateContext) string {
 	return strings.TrimSpace(sb.String())
 }
 
+func formatBudgetSnapshotContext(snap *lua.InMemoryBudgetSnapshot) string {
+	if snap == nil {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("\nAvailable Entities in User's Budget:\n")
+
+	// Buckets
+	if len(snap.Buckets) > 0 {
+		sb.WriteString("Buckets:\n")
+		seenB := make(map[string]bool)
+		for _, b := range snap.Buckets {
+			if !seenB[b.ID] {
+				seenB[b.ID] = true
+				sb.WriteString(fmt.Sprintf("- Name: %q (ID: %s)\n", b.Name, b.ID))
+			}
+		}
+	}
+
+	// Targets
+	if len(snap.Targets) > 0 {
+		sb.WriteString("Targets:\n")
+		seenT := make(map[string]bool)
+		for _, t := range snap.Targets {
+			if !seenT[t.ID] {
+				seenT[t.ID] = true
+				sb.WriteString(fmt.Sprintf("- Name: %q (ID: %s, BucketID: %s)\n", t.Name, t.ID, t.BucketID))
+			}
+		}
+	}
+
+	// Parties
+	if len(snap.Parties) > 0 {
+		sb.WriteString("Parties (Counterparties & Merchants):\n")
+		seenP := make(map[string]bool)
+		for _, p := range snap.Parties {
+			if !seenP[p.ID] {
+				seenP[p.ID] = true
+				sb.WriteString(fmt.Sprintf("- Name: %q (ID: %s)\n", p.Name, p.ID))
+			}
+		}
+	}
+
+	return sb.String()
+}
+
 func (g *GeminiAutomationProvider) GenerateJudge(ctx context.Context, genCtx GenerateContext, snap *lua.InMemoryBudgetSnapshot) (string, error) {
 	sysPrompt := `You are a Lua script assistant for Balance financial automation.
 Your task is to write ONLY a Lua conditional expression or snippet (Judge script).
@@ -249,6 +296,7 @@ Available variables:
 - tx.dest_account (string)
 - tx.bucket (string)
 - tx.is_outflow, tx.is_inflow, tx.is_transfer (booleans)
+- account.id, account.name, account.party_id, account.party (details of external counterparty account)
 - text.contains(str, substr) -- checks if str contains substr (case-sensitive)
 - text.starts_with(str, prefix) -- checks if str starts with prefix
 - text.ends_with(str, suffix) -- checks if str ends with suffix
@@ -258,14 +306,14 @@ Available variables:
 Strict restrictions: NO loops (while, for), NO function declarations, NO '..' concat operator.
 Output ONLY raw Lua code, without markdown formatting or code blocks.`
 
-	userPrompt := buildUserPromptWithContext(genCtx)
+	userPrompt := buildUserPromptWithContext(genCtx) + formatBudgetSnapshotContext(snap)
 	raw, err := g.callGemini(ctx, sysPrompt, userPrompt)
 	if err != nil {
-		return NewMockAutomationAIProvider().GenerateJudge(ctx, genCtx, snap)
+		return "", err
 	}
 	clean := sanitizeLuaOutput(raw)
 	if err := lua.ValidateJudgeScript(clean); err != nil {
-		return NewMockAutomationAIProvider().GenerateJudge(ctx, genCtx, snap)
+		return "", fmt.Errorf("generated judge script validation error: %w", err)
 	}
 	return clean, nil
 }
@@ -274,9 +322,12 @@ func (g *GeminiAutomationProvider) GenerateExecutor(ctx context.Context, genCtx 
 	sysPrompt := `You are a Lua script assistant for Balance financial automation.
 Your task is to write ONLY a Lua script (Executor script) executed when the Judge returns true.
 Available mutators:
-- tx.set_bucket("Bucket Name")
-- tx.set_target("Target Name") (also assigns parent bucket automatically)
-- tx.set_party("Party Name")
+- tx.set_bucket(bucket_id) or tx.set_bucket_by_name("Bucket Name")
+- tx.set_target(target_id) or tx.set_target_by_name("Target Name") (also assigns parent bucket automatically)
+- tx.set_party(party_id) or tx.set_party_by_name("Party Name")
+- tx.set_source_account(account_id) or tx.set_source_account_by_name("Account Name")
+- tx.set_dest_account(account_id) or tx.set_dest_account_by_name("Account Name")
+- account.set_party(party_id) or account.set_party_by_name("Target Party Name") (reassigns external merchant account to target party)
 - tx.set_notes("Notes text")
 - tx.set_amount(money(50.00)) or tx.set_amount(5000)
 - tx.split({ { amount = money(20), bucket = "A" }, { amount = money(30), bucket = "B" } })
@@ -284,14 +335,14 @@ Available mutators:
 Strict restrictions: NO loops (while, for), NO function declarations, NO '..' concat operator.
 Output ONLY raw Lua code, without markdown formatting or code blocks.`
 
-	userPrompt := buildUserPromptWithContext(genCtx)
+	userPrompt := buildUserPromptWithContext(genCtx) + formatBudgetSnapshotContext(snap)
 	raw, err := g.callGemini(ctx, sysPrompt, userPrompt)
 	if err != nil {
-		return NewMockAutomationAIProvider().GenerateExecutor(ctx, genCtx, snap)
+		return "", err
 	}
 	clean := sanitizeLuaOutput(raw)
 	if err := lua.ValidateLuaScript(clean); err != nil {
-		return NewMockAutomationAIProvider().GenerateExecutor(ctx, genCtx, snap)
+		return "", fmt.Errorf("generated executor script validation error: %w", err)
 	}
 	return clean, nil
 }
@@ -304,7 +355,7 @@ From the user's rule description, return a JSON object with:
   "executor_script": "valid lua executor code",
   "explanation": "concise explanation"
 }
-Available: tx.notes, tx.amount, tx.party, tx.bucket, tx.is_outflow, date.*, tx.set_bucket, tx.set_target, tx.set_notes, tx.split, tx.delete.
+Available: tx.notes, tx.amount, tx.party, tx.bucket, tx.is_outflow, date.*, tx.set_bucket(id), tx.set_bucket_by_name(name), tx.set_target(id), tx.set_target_by_name(name), tx.set_party(id), tx.set_party_by_name(name), account.set_party(id), account.set_party_by_name(name), tx.set_notes, tx.split, tx.delete.
 String helper functions in text module:
 - text.contains(str, substr)
 - text.starts_with(str, prefix)
@@ -314,21 +365,21 @@ String helper functions in text module:
 Strict restrictions: NO loops, NO function declarations, NO '..' concat operator.
 Return ONLY valid JSON.`
 
-	userPrompt := buildUserPromptWithContext(genCtx)
+	userPrompt := buildUserPromptWithContext(genCtx) + formatBudgetSnapshotContext(snap)
 	raw, err := g.callGemini(ctx, sysPrompt, userPrompt)
 	if err != nil {
-		return NewMockAutomationAIProvider().GeneratePair(ctx, genCtx, snap)
+		return nil, err
 	}
 	clean := sanitizeJSONOutput(raw)
 	var res AutomationAIPairResult
 	if err := json.Unmarshal([]byte(clean), &res); err != nil {
-		return NewMockAutomationAIProvider().GeneratePair(ctx, genCtx, snap)
+		return nil, fmt.Errorf("failed unmarshaling Gemini pair JSON: %w", err)
 	}
 	if err := lua.ValidateJudgeScript(res.JudgeScript); err != nil {
-		return NewMockAutomationAIProvider().GeneratePair(ctx, genCtx, snap)
+		return nil, fmt.Errorf("generated pair judge script validation error: %w", err)
 	}
 	if err := lua.ValidateLuaScript(res.ExecutorScript); err != nil {
-		return NewMockAutomationAIProvider().GeneratePair(ctx, genCtx, snap)
+		return nil, fmt.Errorf("generated pair executor script validation error: %w", err)
 	}
 	return &res, nil
 }
@@ -341,7 +392,7 @@ Return ONLY the comment text.`
 	userMsg, _ := json.Marshal(req)
 	raw, err := g.callGemini(ctx, sysPrompt, string(userMsg))
 	if err != nil {
-		return NewMockAutomationAIProvider().GenerateComment(ctx, req)
+		return "", err
 	}
 	clean := strings.TrimSpace(raw)
 	clean = strings.Trim(clean, `"'`)
@@ -359,7 +410,7 @@ Return ONLY the comment text.`
 	userMsg, _ := json.Marshal(req)
 	raw, err := g.callGemini(ctx, sysPrompt, string(userMsg))
 	if err != nil {
-		return NewMockAutomationAIProvider().GenerateMultiVersionComment(ctx, req)
+		return "", err
 	}
 	clean := strings.TrimSpace(raw)
 	clean = strings.Trim(clean, `"'`)
@@ -370,6 +421,9 @@ Return ONLY the comment text.`
 }
 
 func (g *GeminiAutomationProvider) callGemini(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
+	corrID := logger.CorrelationIDFromContext(ctx)
+	ctx = logger.WithComponent(ctx, "ai:gemini")
+
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", g.model, g.apiKey)
 
 	reqPayload := map[string]any{
@@ -402,36 +456,102 @@ func (g *GeminiAutomationProvider) callGemini(ctx context.Context, systemPrompt,
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	start := time.Now()
 	resp, err := g.httpClient.Do(httpReq)
+	duration := time.Since(start)
 	if err != nil {
+		logger.Error(ctx, "Gemini API HTTP request failed",
+			"model", g.model,
+			"error", err.Error(),
+			"duration_ms", duration.Milliseconds(),
+			"correlation_id", corrID,
+		)
 		return "", err
 	}
 	defer resp.Body.Close()
 
+	respBody, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("gemini api returned status %d: %s", resp.StatusCode, string(respBody))
+		rawStr := string(respBody)
+		apiErr := ParseGeminiError(resp.StatusCode, rawStr, corrID)
+		logger.Error(ctx, "Gemini API returned error status",
+			"status", resp.StatusCode,
+			"error_code", apiErr.ErrorCode,
+			"message", apiErr.Message,
+			"raw_response", rawStr,
+			"correlation_id", corrID,
+			"duration_ms", duration.Milliseconds(),
+		)
+		return "", apiErr
 	}
 
 	var geminiResp struct {
 		Candidates []struct {
-			Content struct {
+			FinishReason string `json:"finishReason"`
+			Content      struct {
 				Parts []struct {
 					Text string `json:"text"`
 				} `json:"parts"`
 			} `json:"content"`
 		} `json:"candidates"`
+		PromptFeedback struct {
+			BlockReason string `json:"blockReason"`
+		} `json:"promptFeedback"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
+	if err := json.Unmarshal(respBody, &geminiResp); err != nil {
+		logger.Error(ctx, "Failed decoding Gemini response", "error", err.Error(), "correlation_id", corrID)
 		return "", err
 	}
 
-	if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
-		return "", fmt.Errorf("no response candidates from gemini")
+	if geminiResp.PromptFeedback.BlockReason != "" {
+		code := MapFinishReasonToErrorCode("", geminiResp.PromptFeedback.BlockReason)
+		apiErr := &GeminiAPIError{
+			StatusCode:    http.StatusBadRequest,
+			ErrorCode:     code,
+			Message:       fmt.Sprintf("Generation blocked by safety filter (%s)", geminiResp.PromptFeedback.BlockReason),
+			RawResponse:   string(respBody),
+			CorrelationID: corrID,
+		}
+		logger.Error(ctx, "Gemini generation blocked", "error_code", code, "block_reason", geminiResp.PromptFeedback.BlockReason, "correlation_id", corrID)
+		return "", apiErr
 	}
 
-	return strings.TrimSpace(geminiResp.Candidates[0].Content.Parts[0].Text), nil
+	if len(geminiResp.Candidates) == 0 {
+		return "", &GeminiAPIError{
+			StatusCode:    http.StatusInternalServerError,
+			ErrorCode:     "api_error",
+			Message:       "No response candidates from Gemini API",
+			RawResponse:   string(respBody),
+			CorrelationID: corrID,
+		}
+	}
+
+	candidate := geminiResp.Candidates[0]
+	if code := MapFinishReasonToErrorCode(candidate.FinishReason, ""); code != "" {
+		apiErr := &GeminiAPIError{
+			StatusCode:    http.StatusBadRequest,
+			ErrorCode:     code,
+			Message:       fmt.Sprintf("Generation ended with finishReason: %s", candidate.FinishReason),
+			RawResponse:   string(respBody),
+			CorrelationID: corrID,
+		}
+		logger.Error(ctx, "Gemini candidate finished with error code", "error_code", code, "finish_reason", candidate.FinishReason, "correlation_id", corrID)
+		return "", apiErr
+	}
+
+	if len(candidate.Content.Parts) == 0 {
+		return "", &GeminiAPIError{
+			StatusCode:    http.StatusInternalServerError,
+			ErrorCode:     "api_error",
+			Message:       "Candidate parts are empty",
+			RawResponse:   string(respBody),
+			CorrelationID: corrID,
+		}
+	}
+
+	return strings.TrimSpace(candidate.Content.Parts[0].Text), nil
 }
 
 func sanitizeLuaOutput(raw string) string {

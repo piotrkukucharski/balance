@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -264,7 +265,17 @@ Unclassified transactions:
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gemini api returned status %d", resp.StatusCode)
+		respBody, _ := io.ReadAll(resp.Body)
+		rawStr := string(respBody)
+		corrID := logger.CorrelationIDFromContext(ctx)
+		apiErr := ParseGeminiError(resp.StatusCode, rawStr, corrID)
+		logger.Error(ctx, "Gemini smart rules API returned error status",
+			"status", resp.StatusCode,
+			"error_code", apiErr.ErrorCode,
+			"body", rawStr,
+			"correlation_id", corrID,
+		)
+		return nil, apiErr
 	}
 
 	var geminiResp geminiResponse

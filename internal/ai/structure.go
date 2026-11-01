@@ -556,13 +556,18 @@ Return JSON strictly matching the BudgetStructure schema.`
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
+		rawStr := string(respBody)
+		corrID := logger.CorrelationIDFromContext(ctx)
+		apiErr := ParseGeminiError(resp.StatusCode, rawStr, corrID)
 		logger.Error(ctx, "Gemini budget structure API returned error status",
 			"model", g.model,
 			"status", resp.StatusCode,
-			"body", string(respBody),
+			"error_code", apiErr.ErrorCode,
+			"body", rawStr,
+			"correlation_id", corrID,
 			"duration_ms", durationMs,
 		)
-		return nil, fmt.Errorf("gemini API returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, apiErr
 	}
 
 	var geminiResp struct {

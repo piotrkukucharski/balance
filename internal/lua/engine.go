@@ -113,12 +113,19 @@ type SplitItem struct {
 	Notes       *string
 }
 
+// AccountPartyReassignment defines reassignment of an external account to a target party.
+type AccountPartyReassignment struct {
+	AccountID     string
+	TargetPartyID string
+}
+
 // AutomationOutcome records the side-effects of an executor script.
 type AutomationOutcome struct {
-	Deleted   bool
-	Modified  bool
-	Splits    []SplitItem
-	UpdatedTx AutomationTxContext
+	Deleted            bool
+	Modified           bool
+	Splits             []SplitItem
+	UpdatedTx          AutomationTxContext
+	AccountReassign    *AccountPartyReassignment
 }
 
 // InMemoryBudgetSnapshot provides O(1) in-memory financial data to the VM without database I/O.
@@ -995,16 +1002,42 @@ func registerAutomationTx(
 					found = snap.Buckets[strings.ToLower(val)]
 				}
 			}
-			if found != nil {
-				outcome.UpdatedTx.BucketID = &found.ID
-				outcome.UpdatedTx.BucketName = found.Name
-				outcome.Modified = true
-			} else {
-				// Accept direct UUID if valid
-				outcome.UpdatedTx.BucketID = &val
-				outcome.UpdatedTx.BucketName = val
-				outcome.Modified = true
+			if found == nil {
+				state.RaiseError("bucket with id or name %q not found in budget", val)
+				return 0
 			}
+			outcome.UpdatedTx.BucketID = &found.ID
+			outcome.UpdatedTx.BucketName = found.Name
+			outcome.Modified = true
+			return 0
+		}))
+
+		L.SetField(txTable, "set_bucket_by_name", L.NewFunction(func(state *glua.LState) int {
+			if err := checkCall(); err != nil {
+				state.RaiseError("%s", err.Error())
+				return 0
+			}
+			val := strings.TrimSpace(state.OptString(1, ""))
+			if val == "" {
+				outcome.UpdatedTx.BucketID = nil
+				outcome.UpdatedTx.BucketName = ""
+				outcome.Modified = true
+				return 0
+			}
+			var found *BucketMeta
+			if snap != nil && snap.Buckets != nil {
+				found = snap.Buckets[strings.ToLower(val)]
+				if found == nil {
+					found = snap.Buckets[val]
+				}
+			}
+			if found == nil {
+				state.RaiseError("bucket with name %q not found in budget", val)
+				return 0
+			}
+			outcome.UpdatedTx.BucketID = &found.ID
+			outcome.UpdatedTx.BucketName = found.Name
+			outcome.Modified = true
 			return 0
 		}))
 
@@ -1027,22 +1060,57 @@ func registerAutomationTx(
 					found = snap.Targets[strings.ToLower(val)]
 				}
 			}
-			if found != nil {
-				outcome.UpdatedTx.TargetID = &found.ID
-				outcome.UpdatedTx.TargetName = found.Name
-				outcome.Modified = true
-				if found.BucketID != "" {
-					outcome.UpdatedTx.BucketID = &found.BucketID
-					if snap != nil && snap.Buckets != nil {
-						if b, ok := snap.Buckets[found.BucketID]; ok {
-							outcome.UpdatedTx.BucketName = b.Name
-						}
+			if found == nil {
+				state.RaiseError("target with id or name %q not found in budget", val)
+				return 0
+			}
+			outcome.UpdatedTx.TargetID = &found.ID
+			outcome.UpdatedTx.TargetName = found.Name
+			outcome.Modified = true
+			if found.BucketID != "" {
+				outcome.UpdatedTx.BucketID = &found.BucketID
+				if snap != nil && snap.Buckets != nil {
+					if b, ok := snap.Buckets[found.BucketID]; ok {
+						outcome.UpdatedTx.BucketName = b.Name
 					}
 				}
-			} else {
-				outcome.UpdatedTx.TargetID = &val
-				outcome.UpdatedTx.TargetName = val
+			}
+			return 0
+		}))
+
+		L.SetField(txTable, "set_target_by_name", L.NewFunction(func(state *glua.LState) int {
+			if err := checkCall(); err != nil {
+				state.RaiseError("%s", err.Error())
+				return 0
+			}
+			val := strings.TrimSpace(state.OptString(1, ""))
+			if val == "" {
+				outcome.UpdatedTx.TargetID = nil
+				outcome.UpdatedTx.TargetName = ""
 				outcome.Modified = true
+				return 0
+			}
+			var found *TargetMeta
+			if snap != nil && snap.Targets != nil {
+				found = snap.Targets[strings.ToLower(val)]
+				if found == nil {
+					found = snap.Targets[val]
+				}
+			}
+			if found == nil {
+				state.RaiseError("target with name %q not found in budget", val)
+				return 0
+			}
+			outcome.UpdatedTx.TargetID = &found.ID
+			outcome.UpdatedTx.TargetName = found.Name
+			outcome.Modified = true
+			if found.BucketID != "" {
+				outcome.UpdatedTx.BucketID = &found.BucketID
+				if snap != nil && snap.Buckets != nil {
+					if b, ok := snap.Buckets[found.BucketID]; ok {
+						outcome.UpdatedTx.BucketName = b.Name
+					}
+				}
 			}
 			return 0
 		}))
@@ -1066,15 +1134,42 @@ func registerAutomationTx(
 					found = snap.Parties[strings.ToLower(val)]
 				}
 			}
-			if found != nil {
-				outcome.UpdatedTx.PartyID = found.ID
-				outcome.UpdatedTx.PartyName = found.Name
-				outcome.Modified = true
-			} else {
-				outcome.UpdatedTx.PartyID = val
-				outcome.UpdatedTx.PartyName = val
-				outcome.Modified = true
+			if found == nil {
+				state.RaiseError("party with id or name %q not found in budget", val)
+				return 0
 			}
+			outcome.UpdatedTx.PartyID = found.ID
+			outcome.UpdatedTx.PartyName = found.Name
+			outcome.Modified = true
+			return 0
+		}))
+
+		L.SetField(txTable, "set_party_by_name", L.NewFunction(func(state *glua.LState) int {
+			if err := checkCall(); err != nil {
+				state.RaiseError("%s", err.Error())
+				return 0
+			}
+			val := strings.TrimSpace(state.OptString(1, ""))
+			if val == "" {
+				outcome.UpdatedTx.PartyID = ""
+				outcome.UpdatedTx.PartyName = ""
+				outcome.Modified = true
+				return 0
+			}
+			var found *PartyMeta
+			if snap != nil && snap.Parties != nil {
+				found = snap.Parties[strings.ToLower(val)]
+				if found == nil {
+					found = snap.Parties[val]
+				}
+			}
+			if found == nil {
+				state.RaiseError("party with name %q not found in budget", val)
+				return 0
+			}
+			outcome.UpdatedTx.PartyID = found.ID
+			outcome.UpdatedTx.PartyName = found.Name
+			outcome.Modified = true
 			return 0
 		}))
 
@@ -1091,16 +1186,38 @@ func registerAutomationTx(
 					found = snap.Accounts[strings.ToLower(val)]
 				}
 			}
-			if found != nil {
-				outcome.UpdatedTx.SourceAccountID = found.ID
-				outcome.UpdatedTx.SourceAccountName = found.Name
-				outcome.UpdatedTx.IsUserOwnedSource = found.IsUserOwned
-				outcome.Modified = true
-			} else {
-				outcome.UpdatedTx.SourceAccountID = val
-				outcome.UpdatedTx.SourceAccountName = val
-				outcome.Modified = true
+			if found == nil {
+				state.RaiseError("account with id or name %q not found in budget", val)
+				return 0
 			}
+			outcome.UpdatedTx.SourceAccountID = found.ID
+			outcome.UpdatedTx.SourceAccountName = found.Name
+			outcome.UpdatedTx.IsUserOwnedSource = found.IsUserOwned
+			outcome.Modified = true
+			return 0
+		}))
+
+		L.SetField(txTable, "set_source_account_by_name", L.NewFunction(func(state *glua.LState) int {
+			if err := checkCall(); err != nil {
+				state.RaiseError("%s", err.Error())
+				return 0
+			}
+			val := strings.TrimSpace(state.CheckString(1))
+			var found *AccountMeta
+			if snap != nil && snap.Accounts != nil {
+				found = snap.Accounts[strings.ToLower(val)]
+				if found == nil {
+					found = snap.Accounts[val]
+				}
+			}
+			if found == nil {
+				state.RaiseError("account with name %q not found in budget", val)
+				return 0
+			}
+			outcome.UpdatedTx.SourceAccountID = found.ID
+			outcome.UpdatedTx.SourceAccountName = found.Name
+			outcome.UpdatedTx.IsUserOwnedSource = found.IsUserOwned
+			outcome.Modified = true
 			return 0
 		}))
 
@@ -1117,16 +1234,38 @@ func registerAutomationTx(
 					found = snap.Accounts[strings.ToLower(val)]
 				}
 			}
-			if found != nil {
-				outcome.UpdatedTx.DestinationAccountID = found.ID
-				outcome.UpdatedTx.DestAccountName = found.Name
-				outcome.UpdatedTx.IsUserOwnedDest = found.IsUserOwned
-				outcome.Modified = true
-			} else {
-				outcome.UpdatedTx.DestinationAccountID = val
-				outcome.UpdatedTx.DestAccountName = val
-				outcome.Modified = true
+			if found == nil {
+				state.RaiseError("account with id or name %q not found in budget", val)
+				return 0
 			}
+			outcome.UpdatedTx.DestinationAccountID = found.ID
+			outcome.UpdatedTx.DestAccountName = found.Name
+			outcome.UpdatedTx.IsUserOwnedDest = found.IsUserOwned
+			outcome.Modified = true
+			return 0
+		}))
+
+		L.SetField(txTable, "set_dest_account_by_name", L.NewFunction(func(state *glua.LState) int {
+			if err := checkCall(); err != nil {
+				state.RaiseError("%s", err.Error())
+				return 0
+			}
+			val := strings.TrimSpace(state.CheckString(1))
+			var found *AccountMeta
+			if snap != nil && snap.Accounts != nil {
+				found = snap.Accounts[strings.ToLower(val)]
+				if found == nil {
+					found = snap.Accounts[val]
+				}
+			}
+			if found == nil {
+				state.RaiseError("account with name %q not found in budget", val)
+				return 0
+			}
+			outcome.UpdatedTx.DestinationAccountID = found.ID
+			outcome.UpdatedTx.DestAccountName = found.Name
+			outcome.UpdatedTx.IsUserOwnedDest = found.IsUserOwned
+			outcome.Modified = true
 			return 0
 		}))
 
@@ -1325,6 +1464,111 @@ func registerAutomationTx(
 	}
 
 	L.SetGlobal("tx", txTable)
+
+	// Register account object representing the external counterparty account
+	var extAcctID string
+	var extAcctName string
+	var extPartyID string
+	var extPartyName string
+
+	if tx.IsUserOwnedSource && !tx.IsUserOwnedDest {
+		extAcctID = tx.DestinationAccountID
+		extAcctName = tx.DestAccountName
+		extPartyID = tx.PartyID
+		extPartyName = tx.PartyName
+	} else if !tx.IsUserOwnedSource && tx.IsUserOwnedDest {
+		extAcctID = tx.SourceAccountID
+		extAcctName = tx.SourceAccountName
+		extPartyID = tx.PartyID
+		extPartyName = tx.PartyName
+	} else if !tx.IsUserOwnedDest {
+		extAcctID = tx.DestinationAccountID
+		extAcctName = tx.DestAccountName
+		extPartyID = tx.PartyID
+		extPartyName = tx.PartyName
+	} else if !tx.IsUserOwnedSource {
+		extAcctID = tx.SourceAccountID
+		extAcctName = tx.SourceAccountName
+		extPartyID = tx.PartyID
+		extPartyName = tx.PartyName
+	}
+
+	if extAcctID != "" && snap != nil && snap.Accounts != nil {
+		if a := snap.Accounts[extAcctID]; a != nil {
+			if extAcctName == "" {
+				extAcctName = a.Name
+			}
+			if extPartyID == "" {
+				extPartyID = a.PartyID
+			}
+			if extPartyName == "" && snap.Parties != nil {
+				if p := snap.Parties[a.PartyID]; p != nil {
+					extPartyName = p.Name
+				}
+			}
+		}
+	}
+
+	acctTable := L.NewTable()
+	L.SetField(acctTable, "id", glua.LString(extAcctID))
+	L.SetField(acctTable, "name", glua.LString(extAcctName))
+	L.SetField(acctTable, "party_id", glua.LString(extPartyID))
+	L.SetField(acctTable, "party", glua.LString(extPartyName))
+
+	if !readOnly && outcome != nil {
+		L.SetField(acctTable, "set_party", L.NewFunction(func(state *glua.LState) int {
+			if err := checkCall(); err != nil {
+				state.RaiseError("%s", err.Error())
+				return 0
+			}
+			val := strings.TrimSpace(state.CheckString(1))
+			var found *PartyMeta
+			if snap != nil && snap.Parties != nil {
+				found = snap.Parties[val]
+			}
+			if found == nil {
+				state.RaiseError("party with id %q not found in budget", val)
+				return 0
+			}
+			outcome.AccountReassign = &AccountPartyReassignment{
+				AccountID:     extAcctID,
+				TargetPartyID: found.ID,
+			}
+			outcome.UpdatedTx.PartyID = found.ID
+			outcome.UpdatedTx.PartyName = found.Name
+			outcome.Modified = true
+			return 0
+		}))
+
+		L.SetField(acctTable, "set_party_by_name", L.NewFunction(func(state *glua.LState) int {
+			if err := checkCall(); err != nil {
+				state.RaiseError("%s", err.Error())
+				return 0
+			}
+			val := strings.TrimSpace(state.CheckString(1))
+			var found *PartyMeta
+			if snap != nil && snap.Parties != nil {
+				found = snap.Parties[strings.ToLower(val)]
+				if found == nil {
+					found = snap.Parties[val]
+				}
+			}
+			if found == nil {
+				state.RaiseError("party with name %q not found in budget", val)
+				return 0
+			}
+			outcome.AccountReassign = &AccountPartyReassignment{
+				AccountID:     extAcctID,
+				TargetPartyID: found.ID,
+			}
+			outcome.UpdatedTx.PartyID = found.ID
+			outcome.UpdatedTx.PartyName = found.Name
+			outcome.Modified = true
+			return 0
+		}))
+	}
+
+	L.SetGlobal("account", acctTable)
 }
 
 // EvaluateAutomationJudge executes the judge script against a transaction context.

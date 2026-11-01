@@ -191,7 +191,7 @@ func TestBatchRunAndDryRun(t *testing.T) {
 	_, err := CreateAutomation(ctx, tenantDB, CreateAutomationInput{
 		Name:           "Categorize Transport",
 		JudgeScript:    `text.contains(tx.notes, "Uber")`,
-		ExecutorScript: `tx.set_bucket("Transport")`,
+		ExecutorScript: `tx.set_bucket_by_name("Transport")`,
 		AgentID:        "user-1",
 		CorrelationID:  "corr-1",
 	})
@@ -200,7 +200,7 @@ func TestBatchRunAndDryRun(t *testing.T) {
 	}
 
 	// 1. Dry run
-	matched, outcome, _, err := DryRunAutomation(ctx, tenantDB, `text.contains(tx.notes, "Uber")`, `tx.set_bucket("Transport")`, txID)
+	matched, outcome, _, err := DryRunAutomation(ctx, tenantDB, `text.contains(tx.notes, "Uber")`, `tx.set_bucket_by_name("Transport")`, txID)
 	if err != nil {
 		t.Fatalf("dry run error: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestInTxPipelineOnExecuteResolution(t *testing.T) {
 	_, err := CreateAutomation(ctx, tenantDB, CreateAutomationInput{
 		Name:           "Auto Categorize Uber",
 		JudgeScript:    `text.contains(tx.notes, "Uber")`,
-		ExecutorScript: `tx.set_bucket("Transport")`,
+		ExecutorScript: `tx.set_bucket_by_name("Transport")`,
 		AgentID:        "user-1",
 		CorrelationID:  "corr-1",
 	})
@@ -450,5 +450,97 @@ func TestMultiVersionSquashAndGetVersion(t *testing.T) {
 	}
 	if rem[1].act != "SQUASH" || rem[1].c != "Squashed v2-v4 changes" {
 		t.Fatalf("expected v4 action 'SQUASH' and updated comment, got %+v", rem[1])
+	}
+}
+
+func TestAccountPartyReassignmentInPipeline(t *testing.T) {
+	tenantDB, cleanup := setupTestTenantDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// 1. Setup user party & checking account
+	userPartyID := domain.NewUUIDv7()
+	userAcctID := domain.NewUUIDv7()
+	tenantDB.Exec(`INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+		VALUES (?, 1, 'Owner', 'INDIVIDUAL', 1, 'user', 1000)`, userPartyID)
+	tenantDB.Exec(`INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+		VALUES (?, 1, ?, 'Checking', 'CHECKING', 'PLN', 0, 'user', 1000)`, userAcctID, userPartyID)
+
+	// 2. Setup target master party "Żabka"
+	targetPartyID := domain.NewUUIDv7()
+	tenantDB.Exec(`INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+		VALUES (?, 1, 'Żabka', 'ORGANIZATION', 0, 'user', 1000)`, targetPartyID)
+
+	// 3. Setup temporary raw party & POS account "ZABKA Z4508 K.1"
+	tempPartyID := domain.NewUUIDv7()
+	posAcctID := domain.NewUUIDv7()
+	tenantDB.Exec(`INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+		VALUES (?, 1, 'ZABKA Z4508 K.1', 'ORGANIZATION', 0, 'user', 1000)`, tempPartyID)
+	tenantDB.Exec(`INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+		VALUES (?, 1, ?, 'ZABKA Z4508 K.1', 'EXTERNAL', 'PLN', 0, 'user', 1000)`, posAcctID, tempPartyID)
+
+	// 4. Create active automation that reassigns account to Żabka
+	_, err := CreateAutomation(ctx, tenantDB, CreateAutomationInput{
+		Name:           "Reassign Żabka POS",
+		JudgeScript:    `text.contains(account.name, "ZABKA")`,
+		ExecutorScript: `account.set_party_by_name("Żabka")`,
+		AgentID:        "user-1",
+		CorrelationID:  "corr-zabka",
+	})
+	if err != nil {
+		t.Fatalf("create automation: %v", err)
+	}
+
+	// 5. Create transaction using posAcctID
+	note := "Hot dog & water"
+	_, err = transaction.ExecuteResolution(ctx, tenantDB, transaction.ResolveResolutionInput{
+		OperationType: transaction.OpDirectMove,
+		BudgetTransactions: []transaction.BudgetTxInput{
+			{
+				SourceAccountID:      userAcctID,
+				DestinationAccountID: posAcctID,
+				SourceAmountMinor:    1500,
+				SourceCurrency:       "PLN",
+				DestAmountMinor:      1500,
+				DestCurrency:         "PLN",
+				Notes:                &note,
+			},
+		},
+		AgentID:       "user-1",
+		CorrelationID: "corr-tx",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteResolution failed: %v", err)
+	}
+
+	// 6. Verify posAcctID was reassigned to targetPartyID ("Żabka")
+	var newPartyID string
+	var acctVer int
+	err = tenantDB.QueryRow(`SELECT party_id, version FROM accounts_current WHERE id = ?`, posAcctID).Scan(&newPartyID, &acctVer)
+	if err != nil {
+		t.Fatalf("query accounts_current: %v", err)
+	}
+	if newPartyID != targetPartyID {
+		t.Fatalf("expected account party_id %s (Żabka), got %s", targetPartyID, newPartyID)
+	}
+	if acctVer != 2 {
+		t.Fatalf("expected account version 2, got %d", acctVer)
+	}
+
+	// 7. Verify tempPartyID was soft-deleted from parties_current
+	var tempCount int
+	tenantDB.QueryRow(`SELECT count(*) FROM parties_current WHERE id = ?`, tempPartyID).Scan(&tempCount)
+	if tempCount != 0 {
+		t.Fatalf("expected orphaned tempParty to be deleted from parties_current, got %d", tempCount)
+	}
+
+	// Verify soft delete in append-only parties table
+	var softDelAction string
+	err = tenantDB.QueryRow(`SELECT action FROM parties WHERE id = ? AND version = 2`, tempPartyID).Scan(&softDelAction)
+	if err != nil {
+		t.Fatalf("query parties append log: %v", err)
+	}
+	if softDelAction != "SOFT_DELETE" {
+		t.Fatalf("expected SOFT_DELETE action in parties table, got %s", softDelAction)
 	}
 }

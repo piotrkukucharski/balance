@@ -250,6 +250,8 @@ func main() {
 	tenantOwner.POST("/debug/actions/resurrect-account", debugHandler.ResurrectAccountAction)
 	tenantOwner.POST("/debug/actions/delete-orphaned-transactions", debugHandler.DeleteOrphanedTransactionsAction)
 	tenantOwner.POST("/debug/actions/reconcile-discrepancies", debugHandler.ReconcileDiscrepanciesAction)
+	tenantOwner.POST("/debug/integrations/ai/audit", debugHandler.AuditAIAgentAction)
+	tenantOwner.POST("/debug/integrations/gocardless/audit", debugHandler.AuditGoCardlessAction)
 
 	// REST API v1 (OpenAPI 3.1)
 	apiServer := openapi.NewServer(mainDB, tenantMgr, appService)
