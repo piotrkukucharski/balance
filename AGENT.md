@@ -15,10 +15,10 @@ All engineering work in this repository follows the strict end-to-end lifecycle 
 > 1. **Task in todo** (Project `29`): Verify or create task before starting.
 > 2. **Worktree & Branch**: Create isolated environment via `task dev:worktree:create -- BALANCE-X` (work on `main` is permitted only for minor documentation/meta changes).
 > 3. **Move to Doing**: Place task into Kanban `Doing` bucket (`ID: 94`, View: `120`).
-> 4. **BDD Gherkin-First & Implementation**: Write/update `features/*.feature`, obtain user approval, implement in `internal/`, verify with `task test:bdd` and `task test:all`.
+> 4. **BDD Gherkin-First & Implementation**: Write/update `features/*.feature`, obtain user approval, implement in `internal/`, verify with `task test:unit && task test:bdd && task test:web`.
 > 5. **Staged Commits**: 1 commit bound strictly to 1 task (`[BALANCE-X]`) per `balance-commits`.
 > 6. **Finish & Merge**: From repository root, run `task dev:worktree:finish` (rebase & fast-forward onto `main`).
-> 7. **Done**: Move task to Kanban `Finished` bucket (`ID: 95`) and mark `done: true`.
+> 7. **Done**: Move task to Kanban `Finished` bucket (`ID: 95`) and mark `done: true` via `tasks_update(task: <id>, bucket_id: 95, done: true)`.
 >
 > 📖 Detailed runbook: [`.agents/skills/balance-flow/SKILL.md`](.agents/skills/balance-flow/SKILL.md)
 
@@ -31,8 +31,8 @@ All engineering work in this repository follows the strict end-to-end lifecycle 
 1. Once the user approves the Gherkin specification, implement:
    - Domain/application code in `internal/` and/or `cmd/`.
    - Corresponding Godog step definitions and assertions in `internal/bdd/bdd_test.go`.
-   - Unit/integration tests where applicable.
-2. Run verification via `task test:bdd` and `task test:all`.
+   - Unit/integration tests where applicable (follow the test canon: budgets in SQLite require an existing record in `users`, non-null `created_by_agent_id`, and valid UUIDv7 IDs).
+2. Run verification via `task test:unit && task test:bdd && task test:web`. (Run `task test:all` or `task test:e2e` when verifying broad regression, as browser E2E tests take up to 10 minutes).
 3. **Commit after every completed stage** (`git commit`) with a clear, descriptive English commit message adhering to the mandatory commit message format.
 
 ### Commit Message Structure & Task Binding
@@ -55,7 +55,7 @@ Git commits must strictly follow the Conventional Commits format with a single t
 
 ## 3. UI & Frontend Standards (`daisyui` Skill Mandatory)
 
-Whenever creating or modifying HTML views or JSX/templates (`internal/web/handlers/*.go`):
+Whenever creating or modifying HTML views, templates, or frontend assets (`internal/web/templates/<module>/*.html`, `internal/web/templates/<module>/*.js`):
 
 1. **Mandatory daisyUI Skill First**: You **MUST ALWAYS** consult and read the daisyUI skill instructions in [`.agents/skills/daisyui/SKILL.md`](.agents/skills/daisyui/SKILL.md) **BEFORE** writing, modifying, or proposing any UI, HTML, or template code. Never write UI components from memory or guess daisyUI classes without consulting the skill first.
 2. **DaisyUI v5 + Tailwind CSS v4 CDN**:
@@ -139,7 +139,8 @@ All changes must preserve these non-negotiable invariants from [`docs/architectu
     ├── rule/                            # RE2 linear-time regex auto-matching rules engine
     ├── testutil/heavyfixture/           # 10-year multi-currency heavy dataset generator
     ├── transaction/                     # SHA-256 deduplication & atomic Move/Merge/Split engine
-    └── web/handlers/                    # Echo middlewares, PWA handlers, and DaisyUI v5 views
+    ├── web/handlers/                    # Echo middlewares, controllers, and API/JSON endpoints
+    └── web/templates/                   # Modular HTML templates, JS scripts, and CSS with base page inheritance
 ```
 
 ---
