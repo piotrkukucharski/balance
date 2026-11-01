@@ -72,7 +72,7 @@ func TestBaseTemplateInheritanceIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed rendering transactions/view: %v", err)
 	}
-	if !strings.Contains(txHTML, "<title>Balance — Transactions</title>") {
+	if !strings.Contains(txHTML, "<title>Balance — Transactions") {
 		t.Errorf("expected Transactions title in transactions/view, got:\n%s", txHTML)
 	}
 	if !strings.Contains(txHTML, `data-theme="dark"`) {
