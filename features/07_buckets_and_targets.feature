@@ -257,6 +257,18 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     And the bucket "Emergency" balance should be "1,200.00 PLN"
     And the Ready to Assign banner should display "-700.00 PLN"
 
+  Scenario: Empty category group displays quick add bucket action and empty state
+    Given an open budget "Family Home"
+    When I create a bucket "Groceries" in group "Living"
+    And category group "Savings" exists in bucket groups
+    And I request the budget view "/budgets/:budgetId/budget"
+    Then the response status should be 200 OK
+    And category group "Living" should have quick add bucket action
+    And category group "Savings" should have quick add bucket action
+    And category group "Savings" should display empty state "No buckets in this category yet." with add bucket button
+    And the mobile category group "Savings" should be visible with add bucket button
+
+
 
 
 

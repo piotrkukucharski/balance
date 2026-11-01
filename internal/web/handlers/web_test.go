@@ -2574,6 +2574,39 @@ func TestGroupRenamingAndMovingEndpoints(t *testing.T) {
 	if lifestyleIdx == -1 || needsIdx == -1 || lifestyleIdx > needsIdx {
 		t.Errorf("expected 'Lifestyle & Fun' group header to appear before 'Needs' in BudgetView html, got indices: lifestyle=%d, needs=%d", lifestyleIdx, needsIdx)
 	}
+
+	// 4. Verify quick add bucket buttons and empty category state
+	// Insert an empty bucket group "Savings" into bucket_groups
+	_, err = tenantDB.Exec(`INSERT INTO bucket_groups (id, name, sort_order, created_at, updated_at) VALUES (?, 'Savings', 99, 1000, 1000)`, domain.NewUUIDv7())
+	if err != nil {
+		t.Fatalf("failed inserting empty bucket group: %v", err)
+	}
+
+	bvEmptyRec := httptest.NewRecorder()
+	bvEmptyCtx := e.NewContext(httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/budget", nil), bvEmptyRec)
+	bvEmptyCtx.SetParamNames("budgetId")
+	bvEmptyCtx.SetParamValues(budgetID)
+	bvEmptyCtx.Set(ContextBudgetDBKey, tenantDB)
+	bvEmptyCtx.Set(ContextUserIDKey, userID)
+	bvEmptyCtx.Set(ContextRoleKey, "OWNER")
+	bvEmptyCtx.Set("csrfToken", "token123")
+
+	if err := workspaceHandler.BudgetView(bvEmptyCtx); err != nil {
+		t.Fatalf("BudgetView with empty group failed: %v", err)
+	}
+	emptyBody := bvEmptyRec.Body.String()
+
+	// Verify header quick-add button for each category
+	if !strings.Contains(emptyBody, `onclick="openNewBucketModal('Savings')"`) {
+		t.Errorf("expected quick-add button for Savings group in header")
+	}
+	// Verify empty category state row in desktop table and mobile list
+	if !strings.Contains(emptyBody, `No buckets in this category yet.`) {
+		t.Errorf("expected empty state text 'No buckets in this category yet.'")
+	}
+	if !strings.Contains(emptyBody, `id="mobile-group-Savings"`) {
+		t.Errorf("expected empty category group header to render on mobile")
+	}
 }
 
 func TestMobileResponsiveBudgetViewAndErgonomics(t *testing.T) {

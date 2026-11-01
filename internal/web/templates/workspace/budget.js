@@ -408,7 +408,11 @@ function filterEnvelopeSearch(query) {
     });
 }
 
-function openNewBucketModal() {
+function openNewBucketModal(prefillGroup) {
+    const groupInp = document.getElementById('new_bucket_group');
+    if (groupInp) {
+        groupInp.value = prefillGroup || '';
+    }
     new_bucket_modal.showModal();
     const inp = document.getElementById('new_bucket_name');
     if (inp) setTimeout(() => inp.focus(), 50);

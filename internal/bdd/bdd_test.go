@@ -5017,6 +5017,49 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	ctx.Step(`^category group "([^"]*)" exists in bucket groups$`, func(groupName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		_, err = bDB.Exec(`INSERT INTO bucket_groups (id, name, sort_order, created_at, updated_at) VALUES (?, ?, 99, 1000, 1000)`, domain.NewUUIDv7(), groupName)
+		return err
+	})
+
+	ctx.Step(`^category group "([^"]*)" should have quick add bucket action$`, func(groupName string) error {
+		body := tc.lastResponse.Body.String()
+		pattern := fmt.Sprintf(`openNewBucketModal('%s')`, strings.ReplaceAll(groupName, "'", "\\'"))
+		if !strings.Contains(body, pattern) {
+			return fmt.Errorf("expected quick add action %s in response body", pattern)
+		}
+		return nil
+	})
+
+	ctx.Step(`^category group "([^"]*)" should display empty state "([^"]*)" with add bucket button$`, func(groupName, expectedText string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, expectedText) {
+			return fmt.Errorf("expected empty state text %q in response body", expectedText)
+		}
+		escapedGroup := strings.ReplaceAll(groupName, "'", "\\'")
+		if !strings.Contains(body, fmt.Sprintf(`openNewBucketModal('%s')`, escapedGroup)) {
+			return fmt.Errorf("expected add bucket button for group %q in empty state", groupName)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the mobile category group "([^"]*)" should be visible with add bucket button$`, func(groupName string) error {
+		body := tc.lastResponse.Body.String()
+		safeID := handlers.SafeDOMID(groupName)
+		if !strings.Contains(body, fmt.Sprintf(`id="mobile-group-%s"`, safeID)) {
+			return fmt.Errorf("expected mobile group header for %s with id mobile-group-%s", groupName, safeID)
+		}
+		escapedGroup := strings.ReplaceAll(groupName, "'", "\\'")
+		if !strings.Contains(body, fmt.Sprintf(`openNewBucketModal('%s')`, escapedGroup)) {
+			return fmt.Errorf("expected add bucket action for mobile group %s", groupName)
+		}
+		return nil
+	})
+
 	ctx.Step(`^the OpenAPI specification is loaded$`, func() error {
 		swagger, err := openapi.GetSwagger()
 		if err != nil {

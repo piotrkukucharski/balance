@@ -245,9 +245,12 @@
                                     <div class="flex items-center gap-2 cursor-pointer" onclick="toggleGroup('{{.GroupID}}')">
                                         <span id="group-icon-{{.GroupID}}" class="text-xs transition-transform duration-200">▼</span>
                                         <span class="uppercase tracking-wider text-xs font-black text-base-content/80">{{.GroupName}}</span>
-                                        <span class="badge badge-neutral badge-xs font-mono font-normal">{{len .Buckets}} envelopes</span>
+                                        <span class="badge badge-neutral badge-xs font-mono font-normal">{{len .Buckets}} buckets</span>
                                     </div>
                                     <div class="flex items-center gap-0.5 ml-2">
+                                        <button type="button" class="btn btn-ghost btn-xs p-1 h-6 min-h-0 text-base-content/60 hover:text-primary" onclick="openNewBucketModal('{{.EscapedGroupName}}')" title="Add Bucket to Category">
+                                            ＋
+                                        </button>
                                         <button type="button" class="btn btn-ghost btn-xs p-1 h-6 min-h-0 text-base-content/60 hover:text-primary" onclick="openRenameGroupModal('{{.EscapedGroupName}}')" title="Rename Category">
                                             ✏️
                                         </button>
@@ -282,6 +285,19 @@
                             </td>
                             <td class="py-2.5"></td>
                         </tr>
+                        {{- if eq (len .Buckets) 0}}
+                        <tr class="group-item-{{.GroupID}} border-b border-base-200">
+                            <td colspan="5" class="py-6 px-4 bg-base-100/60 text-center">
+                                <div class="flex flex-col sm:flex-row items-center justify-center gap-3">
+                                    <span class="text-xs text-base-content/60">No buckets in this category yet.</span>
+                                    <button type="button" class="btn btn-outline btn-primary btn-xs gap-1 font-semibold" onclick="openNewBucketModal('{{.EscapedGroupName}}')">
+                                        <span>＋</span>
+                                        <span>Add Bucket</span>
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                        {{- end}}
                         {{- range $b := .Buckets}}
                         <tr id="bucket-{{$b.ID}}" class="hover transition-colors bucket-row group-item-{{$b.GroupID}}" data-bucket-id="{{$b.ID}}" data-group-id="{{$b.GroupID}}" data-group-name="{{$b.GroupName}}" data-bucket-name="{{$b.Name}}" data-search="{{$b.SearchTokens}}">
                             <td>
@@ -408,7 +424,6 @@
         </div>
         {{- else}}
         {{- range .BucketGroups}}
-        {{- if .Buckets}}
         <div id="mobile-group-{{.GroupID}}" class="card card-border bg-base-200/80 border-base-300 px-3.5 py-2.5 mobile-group-header select-none mobile-group-drop-zone transition-colors" data-group-id="{{.GroupID}}" data-group-name="{{.GroupName}}">
             <div class="flex items-center justify-between gap-2">
                 <div class="flex items-center gap-2 min-w-0 cursor-pointer flex-1" onclick="toggleMobileGroup('{{.GroupID}}')">
@@ -417,6 +432,7 @@
                     <span class="badge badge-neutral badge-xs font-mono font-normal shrink-0">{{len .Buckets}}</span>
                 </div>
                 <div class="flex items-center gap-1 shrink-0">
+                    <button type="button" class="btn btn-ghost btn-xs min-h-7 px-1.5 text-base-content/60 hover:text-primary touch-manipulation" onclick="openNewBucketModal('{{.EscapedGroupName}}')" title="Add Bucket to Category">＋</button>
                     <button type="button" class="btn btn-ghost btn-xs min-h-7 px-1.5 text-base-content/60 hover:text-primary touch-manipulation" onclick="openRenameGroupModal('{{.EscapedGroupName}}')" title="Rename Category">✏️</button>
                     <form method="POST" action="/budgets/{{$.BudgetID}}/groups/move?dir=up" class="inline">
                         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
@@ -444,6 +460,17 @@
                 </div>
             </div>
         </div>
+        {{- if eq (len .Buckets) 0}}
+        <div class="card card-border bg-base-100 border-base-200 shadow-xs mobile-group-item-{{.GroupID}} p-4 text-center">
+            <div class="flex flex-col items-center justify-center gap-2">
+                <span class="text-xs text-base-content/60">No buckets in this category yet.</span>
+                <button type="button" class="btn btn-outline btn-primary btn-xs gap-1 font-semibold" onclick="openNewBucketModal('{{.EscapedGroupName}}')">
+                    <span>＋</span>
+                    <span>Add Bucket</span>
+                </button>
+            </div>
+        </div>
+        {{- end}}
         {{- range $b := .Buckets}}
         <div id="mobile-bucket-{{$b.ID}}" class="card card-border bg-base-100 border-base-300 shadow-xs mobile-bucket-card mobile-group-item-{{$b.GroupID}}" data-bucket-id="{{$b.ID}}" data-group-id="{{$b.GroupID}}" data-group-name="{{$b.GroupName}}" data-bucket-name="{{$b.Name}}" data-search="{{$b.SearchTokens}}">
             <div class="card-body p-4 gap-2.5">
@@ -547,7 +574,6 @@
                 </div>
             </div>
         </div>
-        {{- end}}
         {{- end}}
         {{- end}}
         {{- end}}
@@ -673,7 +699,7 @@
                 </div>
                 <div class="form-control">
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Group / Category</span></label>
-                    <input type="text" name="group_name" value="" list="existing_category_groups" required placeholder="{{.NewBucketGroupPlaceholder}}" class="input input-bordered w-full input-md focus:input-primary" />
+                    <input type="text" id="new_bucket_group" name="group_name" value="" list="existing_category_groups" required placeholder="{{.NewBucketGroupPlaceholder}}" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
                 <div class="modal-action mt-6 gap-2">
                     <button type="button" class="btn btn-ghost" onclick="new_bucket_modal.close()">Cancel</button>
