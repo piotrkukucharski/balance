@@ -18,6 +18,7 @@ import (
 	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/i18n"
 	"github.com/balance/balance/internal/integration/gocardless"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/web/templates"
@@ -386,6 +387,7 @@ type debugDiscrepancyRow struct {
 }
 
 type debugAuditCardViewData struct {
+	Locale                 string
 	BudgetID               string
 	CSRFToken              string
 	HasAnomalies           bool
@@ -421,7 +423,7 @@ func (h *DebugHandler) DebugView(c echo.Context) error {
 
 	// Run initial audit to render initial state
 	report, _ := h.RunAudit(c.Request().Context(), tenantDB)
-	auditHTML := RenderAuditCard(budgetID, csrfToken, report)
+	auditHTML := RenderAuditCard(budgetID, csrfToken, report, userLocale)
 
 	data := debugViewData{
 		Locale:                  userLocale,
@@ -445,7 +447,11 @@ func (h *DebugHandler) DebugView(c echo.Context) error {
 }
 
 // RenderAuditCard produces the HTML snippet for the integrity status card.
-func RenderAuditCard(budgetID, csrfToken string, report IntegrityAuditReport) string {
+func RenderAuditCard(budgetID, csrfToken string, report IntegrityAuditReport, locale ...string) string {
+	userLocale := i18n.DefaultLocale
+	if len(locale) > 0 && locale[0] != "" {
+		userLocale = locale[0]
+	}
 	var obRows []debugOrphanedBalanceRow
 	for _, o := range report.OrphanedBalances {
 		obRows = append(obRows, debugOrphanedBalanceRow{
@@ -479,6 +485,7 @@ func RenderAuditCard(budgetID, csrfToken string, report IntegrityAuditReport) st
 	}
 
 	data := debugAuditCardViewData{
+		Locale:                 userLocale,
 		BudgetID:               budgetID,
 		CSRFToken:              csrfToken,
 		HasAnomalies:           report.HasAnomalies,
@@ -507,6 +514,7 @@ func (h *DebugHandler) AuditAction(c echo.Context) error {
 
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	csrfToken, _ := c.Get("csrfToken").(string)
+	userLocale := GetUserLocale(c)
 
 	report, err := h.RunAudit(c.Request().Context(), tenantDB)
 	if err != nil {
@@ -514,13 +522,13 @@ func (h *DebugHandler) AuditAction(c echo.Context) error {
 		return c.String(http.StatusInternalServerError, "Failed to run audit: "+err.Error())
 	}
 
-	msg := "Audyt integralności zakończony sukcesem."
+	msg := i18n.T(userLocale, "debug-notify-audit-clean")
 	if report.HasAnomalies {
-		msg = "Audyt zakończony: wykryto anomalie bilansowe."
+		msg = i18n.T(userLocale, "debug-notify-audit-anomalies")
 	}
-	c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "`+msg+`", "success": `+fmt.Sprintf("%t", !report.HasAnomalies)+`}}`)
+	c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "`+templateEscape(msg)+`", "success": `+fmt.Sprintf("%t", !report.HasAnomalies)+`}}`)
 
-	return c.HTML(http.StatusOK, RenderAuditCard(budgetID, csrfToken, report))
+	return c.HTML(http.StatusOK, RenderAuditCard(budgetID, csrfToken, report, userLocale))
 }
 
 // CleanupOrphanedAction handles POST /budgets/:budgetId/debug/actions/cleanup-orphaned.
@@ -533,6 +541,7 @@ func (h *DebugHandler) CleanupOrphanedAction(c echo.Context) error {
 
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	csrfToken, _ := c.Get("csrfToken").(string)
+	userLocale := GetUserLocale(c)
 
 	tx, err := tenantDB.BeginTx(c.Request().Context(), nil)
 	if err != nil {
@@ -545,21 +554,21 @@ func (h *DebugHandler) CleanupOrphanedAction(c echo.Context) error {
 		WHERE account_id NOT IN (SELECT id FROM accounts_current)`)
 	if err != nil {
 		logger.Error(c.Request().Context(), "Failed deleting orphaned balances", "budget_id", budgetID, "error", err.Error())
-		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Błąd czyszczenia osieroconych sald", "success": false}}`)
+		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "DB error deleting orphaned balances", "success": false}}`)
 		return c.String(http.StatusInternalServerError, "DB error: "+err.Error())
 	}
 
 	deletedCount, _ := res.RowsAffected()
 	if err := tx.Commit(); err != nil {
-		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Błąd zapisu transakcji czyszczenia", "success": false}}`)
+		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Commit error", "success": false}}`)
 		return c.String(http.StatusInternalServerError, "Commit error: "+err.Error())
 	}
 
 	report, _ := h.RunAudit(c.Request().Context(), tenantDB)
-	msg := fmt.Sprintf("Wyczyszczono %d osieroconych rekordów sald.", deletedCount)
-	c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "`+msg+`", "success": true}}`)
+	msg := i18n.T(userLocale, "debug-notify-cleanup-balances-success", "count", deletedCount)
+	c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "`+templateEscape(msg)+`", "success": true}}`)
 
-	return c.HTML(http.StatusOK, RenderAuditCard(budgetID, csrfToken, report))
+	return c.HTML(http.StatusOK, RenderAuditCard(budgetID, csrfToken, report, userLocale))
 }
 
 // ResurrectAccountAction handles POST /budgets/:budgetId/debug/actions/resurrect-account.
@@ -578,6 +587,7 @@ func (h *DebugHandler) ResurrectAccountAction(c echo.Context) error {
 		corrID = domain.NewUUIDv7()
 	}
 	csrfToken, _ := c.Get("csrfToken").(string)
+	userLocale := GetUserLocale(c)
 	acctID := c.FormValue("account_id")
 	if acctID == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "Missing account_id")
@@ -602,7 +612,7 @@ func (h *DebugHandler) ResurrectAccountAction(c echo.Context) error {
 		ORDER BY version DESC LIMIT 1`, acctID).Scan(&maxVer, &partyID, &name, &aType, &curr, &iban, &favType, &favVal)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Konto nie istnieje w historii accounts", "success": false}}`)
+			c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "`+templateEscape(i18n.T(userLocale, "debug-notify-resurrect-not-found"))+`", "success": false}}`)
 			return c.String(http.StatusNotFound, "Account history not found")
 		}
 		return echo.NewHTTPError(http.StatusInternalServerError, "DB error fetching account history: "+err.Error())
@@ -641,7 +651,7 @@ func (h *DebugHandler) ResurrectAccountAction(c echo.Context) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'RESTORE', ?, ?, ?)`,
 		acctID, nextVer, partyID, name, aType, curr, iban.String, fType, favVal.String, userID, corrID, now)
 	if err != nil {
-		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Błąd zapisu historii wskrzeszenia konta", "success": false}}`)
+		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Error appending restore account", "success": false}}`)
 		return c.String(http.StatusInternalServerError, "Failed appending restore account: "+err.Error())
 	}
 
@@ -663,20 +673,20 @@ func (h *DebugHandler) ResurrectAccountAction(c echo.Context) error {
 			updated_at = excluded.updated_at`,
 		acctID, nextVer, partyID, name, aType, curr, iban.String, fType, favVal.String, userID, now)
 	if err != nil {
-		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Błąd przywracania accounts_current", "success": false}}`)
+		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Error restoring accounts_current", "success": false}}`)
 		return c.String(http.StatusInternalServerError, "Failed upserting accounts_current: "+err.Error())
 	}
 
 	if err := tx.Commit(); err != nil {
-		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Błąd zatwierdzania transakcji wskrzeszenia", "success": false}}`)
+		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Commit error", "success": false}}`)
 		return c.String(http.StatusInternalServerError, "Commit error: "+err.Error())
 	}
 
 	report, _ := h.RunAudit(c.Request().Context(), tenantDB)
-	msg := fmt.Sprintf("Konto \"%s\" zostało pomyślnie wskrzeszone jako zamknięte (is_closed=1).", name)
+	msg := i18n.T(userLocale, "debug-notify-resurrect-success", "name", name)
 	c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "`+templateEscape(msg)+`", "success": true}}`)
 
-	return c.HTML(http.StatusOK, RenderAuditCard(budgetID, csrfToken, report))
+	return c.HTML(http.StatusOK, RenderAuditCard(budgetID, csrfToken, report, userLocale))
 }
 
 // DeleteOrphanedTransactionsAction handles POST /budgets/:budgetId/debug/actions/delete-orphaned-transactions.
@@ -690,6 +700,7 @@ func (h *DebugHandler) DeleteOrphanedTransactionsAction(c echo.Context) error {
 
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	csrfToken, _ := c.Get("csrfToken").(string)
+	userLocale := GetUserLocale(c)
 
 	tx, err := tenantDB.BeginTx(c.Request().Context(), nil)
 	if err != nil {
@@ -747,15 +758,15 @@ func (h *DebugHandler) DeleteOrphanedTransactionsAction(c echo.Context) error {
 	}
 
 	if err := tx.Commit(); err != nil {
-		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Błąd zapisu usuwania osieroconych transakcji", "success": false}}`)
+		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Commit error deleting orphaned transactions", "success": false}}`)
 		return c.String(http.StatusInternalServerError, "Commit error: "+err.Error())
 	}
 
 	report, _ := h.RunAudit(c.Request().Context(), tenantDB)
-	msg := fmt.Sprintf("Pomyślnie usunięto %d transakcji budżetowych i %d transakcji raw.", len(bTxIDs), len(rTxIDs))
+	msg := i18n.T(userLocale, "debug-notify-delete-txs-success", "bCount", len(bTxIDs), "rCount", len(rTxIDs))
 	c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "`+templateEscape(msg)+`", "success": true}}`)
 
-	return c.HTML(http.StatusOK, RenderAuditCard(budgetID, csrfToken, report))
+	return c.HTML(http.StatusOK, RenderAuditCard(budgetID, csrfToken, report, userLocale))
 }
 
 // ReconcileDiscrepanciesAction handles POST /budgets/:budgetId/debug/actions/reconcile-discrepancies.
@@ -771,16 +782,18 @@ func (h *DebugHandler) ReconcileDiscrepanciesAction(c echo.Context) error {
 	userID := c.Get(ContextUserIDKey).(string)
 	corrID := c.Get("correlationID").(string)
 	csrfToken, _ := c.Get("csrfToken").(string)
+	userLocale := GetUserLocale(c)
 
 	report, err := h.RunAudit(c.Request().Context(), tenantDB)
 	if err != nil {
-		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Błąd pobierania audytu", "success": false}}`)
+		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Audit error", "success": false}}`)
 		return c.String(http.StatusInternalServerError, err.Error())
 	}
 
 	if len(report.AccountDiscrepancies) == 0 {
-		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "Brak rozbieżności sald do skorygowania.", "success": true}}`)
-		return c.HTML(http.StatusOK, RenderAuditCard(budgetID, csrfToken, report))
+		msg := i18n.T(userLocale, "debug-notify-reconcile-none")
+		c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "`+templateEscape(msg)+`", "success": true}}`)
+		return c.HTML(http.StatusOK, RenderAuditCard(budgetID, csrfToken, report, userLocale))
 	}
 
 	now := time.Now().UTC().UnixMicro()
@@ -850,10 +863,10 @@ func (h *DebugHandler) ReconcileDiscrepanciesAction(c echo.Context) error {
 	}
 
 	refreshedReport, _ := h.RunAudit(c.Request().Context(), tenantDB)
-	msg := fmt.Sprintf("Wygenerowano %d transakcji korygujących (Reconciliation Adjustment).", createdCount)
-	c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "`+msg+`", "success": true}}`)
+	msg := i18n.T(userLocale, "debug-notify-reconcile-success", "count", createdCount)
+	c.Response().Header().Set("HX-Trigger", `{"debugNotification": {"message": "`+templateEscape(msg)+`", "success": true}}`)
 
-	return c.HTML(http.StatusOK, RenderAuditCard(budgetID, csrfToken, refreshedReport))
+	return c.HTML(http.StatusOK, RenderAuditCard(budgetID, csrfToken, refreshedReport, userLocale))
 }
 
 func templateEscape(s string) string {
@@ -988,11 +1001,13 @@ func (h *DebugHandler) AuditAIAgentAction(c echo.Context) error {
 		replyText = strings.TrimSpace(parsed.Candidates[0].Content.Parts[0].Text)
 	}
 
+	userLocale := GetUserLocale(c)
+
 	return c.JSON(http.StatusOK, IntegrationAuditResult{
 		Success:       true,
 		StatusCode:    http.StatusOK,
 		RawResponse:   rawBody,
-		Message:       fmt.Sprintf("Połączenie z Google Gemini API (%s) działa poprawnie. Odpowiedź na '2 + 2 =': %q", model, replyText),
+		Message:       i18n.T(userLocale, "debug-ai-success", "model", model, "reply", replyText),
 		CorrelationID: corrID,
 	})
 }
@@ -1008,13 +1023,14 @@ func (h *DebugHandler) AuditGoCardlessAction(c echo.Context) error {
 	corrID := logger.CorrelationIDFromContext(c.Request().Context())
 	secretID := os.Getenv("GOCARDLESS_SECRET_ID")
 	secretKey := os.Getenv("GOCARDLESS_SECRET_KEY")
+	userLocale := GetUserLocale(c)
 
 	if secretID == "" || secretKey == "" {
 		return c.JSON(http.StatusOK, IntegrationAuditResult{
 			Success:       false,
 			StatusCode:    http.StatusUnauthorized,
 			RawResponse:   `{"error": {"code": 401, "message": "GOCARDLESS_SECRET_ID or GOCARDLESS_SECRET_KEY is not configured"}}`,
-			Message:       "Brak skonfigurowanych kluczy GOCARDLESS_SECRET_ID / GOCARDLESS_SECRET_KEY w środowisku",
+			Message:       i18n.T(userLocale, "debug-gocardless-no-keys"),
 			CorrelationID: corrID,
 		})
 	}
@@ -1040,7 +1056,7 @@ func (h *DebugHandler) AuditGoCardlessAction(c echo.Context) error {
 			Success:       false,
 			StatusCode:    statusCode,
 			RawResponse:   rawMsg,
-			Message:       "Błąd komunikacji z GoCardless API: " + rawMsg,
+			Message:       i18n.T(userLocale, "debug-gocardless-api-error", "error", rawMsg),
 			CorrelationID: corrID,
 		})
 	}
@@ -1049,7 +1065,7 @@ func (h *DebugHandler) AuditGoCardlessAction(c echo.Context) error {
 		Success:       true,
 		StatusCode:    http.StatusOK,
 		RawResponse:   fmt.Sprintf(`{"institutions_count": %d}`, len(institutions)),
-		Message:       fmt.Sprintf("Połączenie z GoCardless API poprawne. Pobrano %d instytucji bankowych dla kraju PL.", len(institutions)),
+		Message:       i18n.T(userLocale, "debug-gocardless-success", "count", len(institutions), "country", "PL"),
 		CorrelationID: corrID,
 	})
 }

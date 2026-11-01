@@ -130,8 +130,99 @@ settings-default-currency = Domyślna waluta
 settings-currency-immutable = Główna waluta jest niezmienna po utworzeniu budżetu
 settings-timezone = Strefa czasowa IANA
 settings-save-btn = Zapisz ustawienia
+settings-role-notice = Przeglądasz ustawienia budżetu z uprawnieniami { $role }. Tylko WŁAŚCICIEL (OWNER) może modyfikować parametry budżetu.
+settings-personal-pref-title = Preferencje osobiste
+settings-personal-pref-desc = Skonfiguruj własny format daty ({ $dateFormat }) oraz czasu ({ $timeFormat }).
+settings-personal-pref-btn = Dostosuj formaty →
+settings-debug-card-title = Narzędzia diagnostyczne (Debug)
+settings-debug-card-desc = Sprawdź integralność finansową, osierocone salda i wykonaj akcje naprawcze bilansu.
+settings-debug-card-btn = Otwórz Narzędzia Debug →
 settings-danger-zone = Strefa Niebezpieczna
+settings-danger-zone-desc = Trwale usuń ten budżet, koperty, zapisy księgi, transakcje oraz historię kont. Tej operacji nie można cofnąć.
 settings-delete-budget-btn = Usuń Budżet
+settings-delete-confirm = Czy na pewno chcesz usunąć ten budżet? Wszystkie dane zostaną bezpowrotnie skasowane.
+settings-danger-owner-only = Tylko WŁAŚCICIEL (OWNER) budżetu może usunąć ten obszar roboczy.
+
+# Diagnostic Tools (Debug) View
+debug-title = Narzędzia diagnostyczne (Debug)
+debug-desc = Weryfikuj spójność księgi w czasie rzeczywistym, wykrywaj osierocone rekordy i uruchamiaj naprawcze procedury transakcyjne.
+debug-back-to-settings = ← Wróć do Ustawień
+debug-badge = Narzędzia diagnostyczne (Debug)
+debug-toast-success = Operacja zakończona pomyślnie
+debug-integrations-title = Integracje (AI & GoCardless)
+debug-integrations-desc = Weryfikacja autoryzacji, łączności i statusu zewnętrznych dostawców usług.
+debug-gemini-title = Google Gemini API
+debug-gemini-status-untested = Nie sprawdzono
+debug-gemini-status-checking = Sprawdzanie...
+debug-gemini-status-ok = Działa poprawnie
+debug-gemini-desc = Weryfikacja komunikacji z modelem LLM na teście promptu "2 + 2 =".
+debug-gemini-btn = Audyt AI
+debug-gocardless-title = GoCardless (Open Banking)
+debug-gocardless-status-untested = Nie sprawdzono
+debug-gocardless-status-checking = Sprawdzanie...
+debug-gocardless-status-ok = Działa poprawnie
+debug-gocardless-desc = Weryfikacja autoryzacji tokenu OAuth i pobierania instytucji bankowych z API.
+debug-gocardless-btn = Audyt GoCardless
+debug-integrations-status-error = Błąd ({ $status })
+debug-integrations-status-failure = Awaria
+debug-integrations-http-status = Status HTTP: { $status }
+debug-integrations-error = Błąd: { $error }
+debug-integrations-api-response = Odpowiedź API:
+debug-integrations-request-failed = Błąd wykonania żądania: { $error }
+debug-ai-success = Połączenie z Google Gemini API ({ $model }) działa poprawnie. Odpowiedź na '2 + 2 =': { $reply }
+debug-gocardless-success = Połączenie z GoCardless API poprawne. Pobrano { $count } instytucji bankowych dla kraju { $country }.
+debug-gocardless-no-keys = Brak skonfigurowanych kluczy GOCARDLESS_SECRET_ID / GOCARDLESS_SECRET_KEY w środowisku
+debug-gocardless-api-error = Błąd komunikacji z GoCardless API: { $error }
+
+# Debug Audit Card
+debug-audit-card-title = Ledger Spójność & Integralność Bilansowa
+debug-audit-card-desc = Weryfikacja spójności w czasie rzeczywistym wykonywana w izolowanej transakcji.
+debug-audit-all-passed = Wszystkie testy księgi zaliczone
+debug-audit-anomalies-detected = Wykryto anomalie bilansowe
+debug-audit-check1-title = 1. Osierocone Salda & Transakcje (Konta usunięte z accounts_current)
+debug-audit-check1-clean = Brak osieroconych sald ani transakcji powiązanych z nieistniejącymi kontami.
+debug-audit-orphaned-balances-alert = Wykryto { $count } osieroconych rekordów sald w account_currency_balances!
+debug-audit-orphaned-accounts-alert = Wykryto { $count } nieistniejących kont powiązanych z transakcjami lub saldami:
+debug-audit-orphaned-txs-details = Szczegóły osieroconych transakcji ({ $count }):
+debug-audit-col-account-id = ID Konta
+debug-audit-col-currency = Waluta
+debug-audit-col-amount = Kwota
+debug-audit-col-account-name = Nazwa konta (Historia)
+debug-audit-col-budget-txs = Transakcje budżetowe
+debug-audit-col-raw-txs = Transakcje surowe (Raw)
+debug-audit-col-history-status = Status w historii
+debug-audit-col-actions = Akcje naprawcze
+debug-audit-col-type = Typ
+debug-audit-col-roles = Rola brakującego konta
+debug-audit-col-missing-acct = ID brakującego konta
+debug-audit-col-notes-payee = Notatki / Odbiorca
+debug-audit-btn-resurrect = Wskrześ Konto
+debug-audit-not-in-history = Brak w historii
+debug-audit-confirm-resurrect = Przywrócić konto "{ $name }" w stanie zamkniętym (is_closed=1)?
+debug-audit-check2-title = 2. Zgodność Transakcji z Saldami Kont
+debug-audit-check2-clean = Wszystkie salda kont dokładnie odpowiadają sumie transakcji budżetowych.
+debug-audit-check2-discrepancies-alert = Wykryto { $count } kont z rozbieżnością między saldem zapisanym a historią transakcji!
+debug-audit-col-stored = Zapisane
+debug-audit-col-computed = Wyliczone
+debug-audit-col-diff = Różnica
+debug-audit-check3-title = 3. Równanie Fundamentalne (Gotówka == Koperty + RTA)
+debug-audit-status-balanced = Zbilansowane
+debug-audit-status-unbalanced = Niezbilansowane
+debug-audit-btn-rerun = Uruchom Audyt Ponownie
+debug-audit-btn-cleanup-orphaned = Usuń Osierocone Salda
+debug-audit-confirm-cleanup-orphaned = Czy na pewno chcesz usunąć osierocone rekordy sald?
+debug-audit-btn-delete-orphaned-txs = Usuń Osierocone Transakcje
+debug-audit-confirm-delete-orphaned-txs = Czy na pewno chcesz trwale usunąć wszystkie osierocone transakcje budżetowe i raw?
+debug-audit-btn-reconcile = Generuj Korektę Bilansową
+debug-audit-confirm-reconcile = Utworzyć automatyczne transakcje korygujące dla wykrytych rozbieżności sald?
+debug-notify-audit-clean = Audyt integralności zakończony sukcesem.
+debug-notify-audit-anomalies = Audyt zakończony: wykryto anomalie bilansowe.
+debug-notify-cleanup-balances-success = Wyczyszczono { $count } osieroconych rekordów sald.
+debug-notify-resurrect-success = Konto "{ $name }" zostało pomyślnie wskrzeszone jako zamknięte (is_closed=1).
+debug-notify-resurrect-not-found = Konto nie istnieje w historii accounts
+debug-notify-delete-txs-success = Pomyślnie usunięto { $bCount } transakcji budżetowych i { $rCount } transakcji raw.
+debug-notify-reconcile-success = Wygenerowano { $count } transakcji korygujących (Reconciliation Adjustment).
+debug-notify-reconcile-none = Brak rozbieżności sald do skorygowania.
 
 # Members View
 members-title = Członkowie i Uprawnienia

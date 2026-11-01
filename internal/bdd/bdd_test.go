@@ -8052,7 +8052,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 
 	ctx.Step(`^the audit card should offer an option to resurrect the account$`, func() error {
 		body := tc.lastResponse.Body.String()
-		if !strings.Contains(body, "resurrect-account") || !strings.Contains(body, "Wskrześ Konto") {
+		if !strings.Contains(body, "resurrect-account") || (!strings.Contains(body, "Resurrect Account") && !strings.Contains(body, "Wskrześ Konto")) {
 			return fmt.Errorf("expected audit card to offer resurrect-account button")
 		}
 		return nil

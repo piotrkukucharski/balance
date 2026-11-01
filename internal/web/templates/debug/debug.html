@@ -2,27 +2,27 @@
 {{- template "shared/base" . -}}
 {{- end -}}
 
-{{- define "title" -}}Balance — {{.BudgetName}} Diagnostic Tools (Debug){{- end -}}
+{{- define "title" -}}{{t .Locale "app-name"}} — {{.BudgetName}} {{t .Locale "debug-title"}}{{- end -}}
 
 {{- define "body_start" -}}
     <!-- Toast Notification Container -->
     <div id="debug-toast" class="toast toast-top toast-end z-50 transition-opacity duration-300 hidden">
         <div id="debug-toast-alert" class="alert alert-success text-xs shadow-lg flex items-center gap-2">
             <span id="debug-toast-icon">✓</span>
-            <span id="debug-toast-msg">Operation completed</span>
+            <span id="debug-toast-msg">{{t .Locale "debug-toast-success"}}</span>
         </div>
     </div>
 {{- end -}}
 
 {{- define "navbar_start_extra" -}}
-            <span class="badge badge-warning font-semibold text-xs">Diagnostic Tools (Debug)</span>
+            <span class="badge badge-warning font-semibold text-xs">{{t .Locale "debug-badge"}}</span>
 {{- end -}}
 
 {{- define "navbar_end" -}}
-            <a href="/budgets/{{.BudgetID}}/settings" class="btn btn-ghost btn-sm">← Back to Settings</a>
+            <a href="/budgets/{{.BudgetID}}/settings" class="btn btn-ghost btn-sm">{{t .Locale "debug-back-to-settings"}}</a>
             <form method="POST" action="/logout">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
-                <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
+                <button type="submit" class="btn btn-ghost btn-sm font-medium">{{t .Locale "nav-logout"}}</button>
             </form>
 {{- end -}}
 
@@ -32,9 +32,9 @@
                 <div>
                     <h1 class="text-2xl font-black tracking-tight flex items-center gap-2">
                         <span>🛠️</span>
-                        <span>Diagnostic Tools (Debug)</span>
+                        <span>{{t .Locale "debug-title"}}</span>
                     </h1>
-                    <p class="text-xs text-base-content/60 mt-1">Audit ledger integrity in real-time, detect orphaned projections, and trigger transactional repair routines.</p>
+                    <p class="text-xs text-base-content/60 mt-1">{{t .Locale "debug-desc"}}</p>
                 </div>
             </div>
 
@@ -42,15 +42,22 @@
                 {{.AuditCardHTML}}
             </div>
 
-            <!-- Integracje (AI & GoCardless) -->
-            <div class="card card-border bg-base-100 border-base-300 shadow-md mt-6">
+            <!-- Integrations (AI & GoCardless) -->
+            <div class="card card-border bg-base-100 border-base-300 shadow-md mt-6"
+                 data-i18n-checking="{{t .Locale "debug-gemini-status-checking"}}"
+                 data-i18n-ok="{{t .Locale "debug-gemini-status-ok"}}"
+                 data-i18n-failure="{{t .Locale "debug-integrations-status-failure"}}"
+                 data-i18n-status-http="{{t .Locale "debug-integrations-http-status" "status" "__STATUS__"}}"
+                 data-i18n-error-label="{{t .Locale "debug-integrations-error" "error" "__ERROR__"}}"
+                 data-i18n-api-resp="{{t .Locale "debug-integrations-api-response"}}"
+                 data-i18n-req-failed="{{t .Locale "debug-integrations-request-failed" "error" "__ERROR__"}}">
                 <div class="card-body p-6 space-y-6">
                     <div class="border-b border-base-200 pb-4">
                         <h2 class="card-title text-base font-bold flex items-center gap-2">
                             <span>🔌</span>
-                            <span>Integracje (AI & GoCardless)</span>
+                            <span>{{t .Locale "debug-integrations-title"}}</span>
                         </h2>
-                        <p class="text-xs text-base-content/60 mt-0.5">Weryfikacja autoryzacji, łączności i statusu zewnętrznych dostawców usług.</p>
+                        <p class="text-xs text-base-content/60 mt-0.5">{{t .Locale "debug-integrations-desc"}}</p>
                     </div>
 
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -60,18 +67,18 @@
                                 <div class="flex items-center justify-between mb-2">
                                     <h3 class="font-bold text-sm flex items-center gap-2">
                                         <span>✨</span>
-                                        <span>Google Gemini API</span>
+                                        <span>{{t .Locale "debug-gemini-title"}}</span>
                                     </h3>
-                                    <span id="ai-status-badge" class="badge badge-ghost text-xs">Nie sprawdzono</span>
+                                    <span id="ai-status-badge" class="badge badge-ghost text-xs">{{t .Locale "debug-gemini-status-untested"}}</span>
                                 </div>
-                                <p class="text-xs text-base-content/70 mb-4">Weryfikacja komunikacji z modelem LLM na teście promptu <code class="bg-base-300/80 px-1 py-0.5 rounded text-[11px]">"2 + 2 ="</code>.</p>
+                                <p class="text-xs text-base-content/70 mb-4">{{t .Locale "debug-gemini-desc"}} <code class="bg-base-300/80 px-1 py-0.5 rounded text-[11px]">"2 + 2 ="</code>.</p>
                             </div>
 
                             <div>
                                 <div id="ai-audit-output" class="hidden mb-3 p-2.5 rounded-lg text-xs font-mono break-all whitespace-pre-wrap max-h-48 overflow-y-auto"></div>
                                 <button type="button" id="btn-audit-ai" class="btn btn-sm btn-outline btn-primary w-full gap-2" onclick="runIntegrationAudit('ai')">
                                     <span>🔍</span>
-                                    <span>Audyt AI</span>
+                                    <span>{{t .Locale "debug-gemini-btn"}}</span>
                                 </button>
                             </div>
                         </div>
@@ -82,18 +89,18 @@
                                 <div class="flex items-center justify-between mb-2">
                                     <h3 class="font-bold text-sm flex items-center gap-2">
                                         <span>🏦</span>
-                                        <span>GoCardless (Open Banking)</span>
+                                        <span>{{t .Locale "debug-gocardless-title"}}</span>
                                     </h3>
-                                    <span id="gc-status-badge" class="badge badge-ghost text-xs">Nie sprawdzono</span>
+                                    <span id="gc-status-badge" class="badge badge-ghost text-xs">{{t .Locale "debug-gocardless-status-untested"}}</span>
                                 </div>
-                                <p class="text-xs text-base-content/70 mb-4">Weryfikacja autoryzacji tokenu OAuth i pobierania instytucji bankowych z API.</p>
+                                <p class="text-xs text-base-content/70 mb-4">{{t .Locale "debug-gocardless-desc"}}</p>
                             </div>
 
                             <div>
                                 <div id="gc-audit-output" class="hidden mb-3 p-2.5 rounded-lg text-xs font-mono break-all whitespace-pre-wrap max-h-48 overflow-y-auto"></div>
                                 <button type="button" id="btn-audit-gc" class="btn btn-sm btn-outline btn-primary w-full gap-2" onclick="runIntegrationAudit('gocardless')">
                                     <span>🔍</span>
-                                    <span>Audyt GoCardless</span>
+                                    <span>{{t .Locale "debug-gocardless-btn"}}</span>
                                 </button>
                             </div>
                         </div>
@@ -114,15 +121,15 @@
                     <div>
                         <h2 class="card-title text-base font-bold flex items-center gap-2">
                             <span>📊</span>
-                            <span>Ledger Spójność & Integralność Bilansowa</span>
+                            <span>{{t .Locale "debug-audit-card-title"}}</span>
                         </h2>
-                        <p class="text-xs text-base-content/60 mt-0.5">Real-time consistency checks evaluated in an isolated transaction.</p>
+                        <p class="text-xs text-base-content/60 mt-0.5">{{t .Locale "debug-audit-card-desc"}}</p>
                     </div>
                     <div>
                         {{- if not .HasAnomalies}}
-                        <span class="badge badge-success font-bold gap-1 text-xs py-2 px-3">✓ All Ledger Checks Passed</span>
+                        <span class="badge badge-success font-bold gap-1 text-xs py-2 px-3">✓ {{t .Locale "debug-audit-all-passed"}}</span>
                         {{- else}}
-                        <span class="badge badge-error font-bold gap-1 text-xs py-2 px-3">⚠️ Anomalies Detected</span>
+                        <span class="badge badge-error font-bold gap-1 text-xs py-2 px-3">⚠️ {{t .Locale "debug-audit-anomalies-detected"}}</span>
                         {{- end}}
                     </div>
                 </div>
@@ -130,19 +137,19 @@
                 <!-- Check 1: Orphaned Balances and Transactions -->
                 <div class="space-y-2">
                     <h3 class="text-xs font-bold uppercase tracking-wider text-base-content/70 flex items-center gap-1.5">
-                        <span>1. Osierocone Salda & Transakcje (Konta usunięte z accounts_current)</span>
+                        <span>{{t .Locale "debug-audit-check1-title"}}</span>
                     </h3>
                     {{- if and (eq (len .OrphanedBalances) 0) (eq (len .OrphanedTransactions) 0)}}
-                    <div class="text-xs text-success flex items-center gap-1.5 font-medium"><span>✓</span><span>Brak osieroconych sald ani transakcji powiązanych z nieistniejącymi kontami.</span></div>
+                    <div class="text-xs text-success flex items-center gap-1.5 font-medium"><span>✓</span><span>{{t .Locale "debug-audit-check1-clean"}}</span></div>
                     {{- else}}
                         {{- if .OrphanedBalances}}
                         <div class="alert alert-error alert-soft text-xs mb-3">
-                            <span><strong>{{len .OrphanedBalances}}</strong> orphaned balance records were detected in <code>account_currency_balances</code>!</span>
+                            <span>{{t .Locale "debug-audit-orphaned-balances-alert" "count" (len .OrphanedBalances)}}</span>
                         </div>
                         <div class="overflow-x-auto mb-4">
                             <table class="table table-xs w-full">
                                 <thead>
-                                    <tr><th>Account ID</th><th>Current</th><th class="text-right">Amont</th></tr>
+                                    <tr><th>{{t .Locale "debug-audit-col-account-id"}}</th><th>{{t .Locale "debug-audit-col-currency"}}</th><th class="text-right">{{t .Locale "debug-audit-col-amount"}}</th></tr>
                                 </thead>
                                 <tbody>
                                     {{- range .OrphanedBalances}}
@@ -159,18 +166,18 @@
 
                         {{- if .OrphanedAccounts}}
                         <div class="alert alert-warning alert-soft text-xs mb-3">
-                            <span><strong>{{len .OrphanedAccounts}}</strong> non-existent accounts associated with transactions or balances were detected:</span>
+                            <span>{{t .Locale "debug-audit-orphaned-accounts-alert" "count" (len .OrphanedAccounts)}}</span>
                         </div>
                         <div class="overflow-x-auto mb-4">
                             <table class="table table-xs w-full">
                                 <thead>
                                     <tr>
-                                        <th>Account Name (History)</th>
-                                        <th>Account ID</th>
-                                        <th class="text-center">Budget Transactions</th>
-                                        <th class="text-center">Raw Transactions</th>
-                                        <th>Status in History</th>
-                                        <th class="text-right">Corrective Actions</th>
+                                        <th>{{t .Locale "debug-audit-col-account-name"}}</th>
+                                        <th>{{t .Locale "debug-audit-col-account-id"}}</th>
+                                        <th class="text-center">{{t .Locale "debug-audit-col-budget-txs"}}</th>
+                                        <th class="text-center">{{t .Locale "debug-audit-col-raw-txs"}}</th>
+                                        <th>{{t .Locale "debug-audit-col-history-status"}}</th>
+                                        <th class="text-right">{{t .Locale "debug-audit-col-actions"}}</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -185,16 +192,16 @@
                                             {{- if .CanResurrect}}
                                             <form hx-post="/budgets/{{$.BudgetID}}/debug/actions/resurrect-account" hx-target="#audit-card-container" hx-swap="innerHTML" class="inline"
                                                   hx-disabled-elt="find button"
-                                                  onsubmit="return confirm('Przywrócić konto &quot;{{.AccountName}}&quot; w stanie zamkniętym (is_closed=1)?') ? (this.querySelector('button').disabled = true, true) : false;">
+                                                  onsubmit="return confirm('{{t $.Locale "debug-audit-confirm-resurrect" "name" .AccountName}}') ? (this.querySelector('button').disabled = true, true) : false;">
                                                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
                                                 <input type="hidden" name="account_id" value="{{.AccountID}}" />
                                                 <button type="submit" class="btn btn-xs btn-primary gap-1">
                                                     <span>♻️</span>
-                                                    <span>Wskrześ Konto</span>
+                                                    <span>{{t $.Locale "debug-audit-btn-resurrect"}}</span>
                                                 </button>
                                             </form>
                                             {{- else}}
-                                            <span class="badge badge-ghost text-xs">Not in the history</span>
+                                            <span class="badge badge-ghost text-xs">{{t $.Locale "debug-audit-not-in-history"}}</span>
                                             {{- end}}
                                         </td>
                                     </tr>
@@ -206,17 +213,17 @@
 
                         {{- if .OrphanedTransactions}}
                         <div class="text-xs font-semibold text-base-content/70 mb-1 flex items-center justify-between">
-                            <span>Details of Orphaned Transactions ({{len .OrphanedTransactions}}):</span>
+                            <span>{{t .Locale "debug-audit-orphaned-txs-details" "count" (len .OrphanedTransactions)}}</span>
                         </div>
                         <div class="overflow-x-auto max-h-48 border border-base-300 rounded-lg mb-2">
                             <table class="table table-xs w-full">
                                 <thead class="sticky top-0 bg-base-200">
                                     <tr>
-                                        <th>Type</th>
-                                        <th>Roles of the Missing Account</th>
-                                        <th>Missing Account ID</th>
-                                        <th>Notes / Payee</th>
-                                        <th class="text-right">Amount</th>
+                                        <th>{{t .Locale "debug-audit-col-type"}}</th>
+                                        <th>{{t .Locale "debug-audit-col-roles"}}</th>
+                                        <th>{{t .Locale "debug-audit-col-missing-acct"}}</th>
+                                        <th>{{t .Locale "debug-audit-col-notes-payee"}}</th>
+                                        <th class="text-right">{{t .Locale "debug-audit-col-amount"}}</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -239,18 +246,18 @@
                 <!-- Check 2: Transaction Sum Discrepancy -->
                 <div class="space-y-2">
                     <h3 class="text-xs font-bold uppercase tracking-wider text-base-content/70 flex items-center gap-1.5">
-                        <span>2. Zgodność Transakcji z Saldami Kont</span>
+                        <span>{{t .Locale "debug-audit-check2-title"}}</span>
                     </h3>
                     {{- if not .AccountDiscrepancies}}
-                    <div class="text-xs text-success flex items-center gap-1.5 font-medium"><span>✓</span><span>All account balances exactly match the net sum of budget transactions.</span></div>
+                    <div class="text-xs text-success flex items-center gap-1.5 font-medium"><span>✓</span><span>{{t .Locale "debug-audit-check2-clean"}}</span></div>
                     {{- else}}
                     <div class="alert alert-warning alert-soft text-xs mb-3">
-                        <span>Found <strong>{{len .AccountDiscrepancies}}</strong> accounts with discrepancy between stored balance and transaction history!</span>
+                        <span>{{t .Locale "debug-audit-check2-discrepancies-alert" "count" (len .AccountDiscrepancies)}}</span>
                     </div>
                     <div class="overflow-x-auto">
                         <table class="table table-xs w-full">
                             <thead>
-                                <tr><th>Account</th><th>Currency</th><th class="text-right">Stored</th><th class="text-right">Computed</th><th class="text-right">Diff</th></tr>
+                                <tr><th>{{t .Locale "debug-audit-col-account-name"}}</th><th>{{t .Locale "debug-audit-col-currency"}}</th><th class="text-right">{{t .Locale "debug-audit-col-stored"}}</th><th class="text-right">{{t .Locale "debug-audit-col-computed"}}</th><th class="text-right">{{t .Locale "debug-audit-col-diff"}}</th></tr>
                             </thead>
                             <tbody>
                                 {{- range .AccountDiscrepancies}}
@@ -272,12 +279,12 @@
                 <div class="space-y-2">
                     <div class="flex items-center justify-between">
                         <h3 class="text-xs font-bold uppercase tracking-wider text-base-content/70 flex items-center gap-1.5">
-                            <span>3. Równanie Fundamentalne (Gotówka == Koperty + RTA)</span>
+                            <span>{{t .Locale "debug-audit-check3-title"}}</span>
                         </h3>
                         {{- if .FundamentalEquationOK}}
-                        <span class="badge badge-success text-xs font-bold">Balanced</span>
+                        <span class="badge badge-success text-xs font-bold">{{t .Locale "debug-audit-status-balanced"}}</span>
                         {{- else}}
-                        <span class="badge badge-error text-xs font-bold">Unbalanced</span>
+                        <span class="badge badge-error text-xs font-bold">{{t .Locale "debug-audit-status-unbalanced"}}</span>
                         {{- end}}
                     </div>
                     <div class="text-xs text-base-content/80 font-mono bg-base-200/50 p-3 rounded-lg border border-base-300">
@@ -293,38 +300,38 @@
                         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
                         <button type="submit" class="btn btn-sm btn-outline gap-1.5">
                             <span>🔄</span>
-                            <span>Uruchom Audyt Ponownie</span>
+                            <span>{{t .Locale "debug-audit-btn-rerun"}}</span>
                         </button>
                     </form>
 
                     <div class="flex flex-wrap items-center gap-2">
                         <form hx-post="/budgets/{{.BudgetID}}/debug/actions/cleanup-orphaned" hx-target="#audit-card-container" hx-swap="innerHTML" class="inline"
                               hx-disabled-elt="find button"
-                              onsubmit="return confirm('Czy na pewno chcesz usunąć osierocone rekordy sald?') ? (this.querySelector('button').disabled = true, true) : false;">
+                              onsubmit="return confirm('{{t .Locale "debug-audit-confirm-cleanup-orphaned"}}') ? (this.querySelector('button').disabled = true, true) : false;">
                             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
                             <button type="submit" class="btn btn-sm btn-warning gap-1.5" {{if not .OrphanedBalances}}disabled{{end}}>
                                 <span>🧹</span>
-                                <span>Usuń Osierocone Salda</span>
+                                <span>{{t .Locale "debug-audit-btn-cleanup-orphaned"}}</span>
                             </button>
                         </form>
 
                         <form hx-post="/budgets/{{.BudgetID}}/debug/actions/delete-orphaned-transactions" hx-target="#audit-card-container" hx-swap="innerHTML" class="inline"
                               hx-disabled-elt="find button"
-                              onsubmit="return confirm('Czy na pewno chcesz trwale usunąć wszystkie osierocone transakcje budżetowe i raw?') ? (this.querySelector('button').disabled = true, true) : false;">
+                              onsubmit="return confirm('{{t .Locale "debug-audit-confirm-delete-orphaned-txs"}}') ? (this.querySelector('button').disabled = true, true) : false;">
                             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
                             <button type="submit" class="btn btn-sm btn-error gap-1.5" {{if not .OrphanedTransactions}}disabled{{end}}>
                                 <span>🗑️</span>
-                                <span>Usuń Osierocone Transakcje</span>
+                                <span>{{t .Locale "debug-audit-btn-delete-orphaned-txs"}}</span>
                             </button>
                         </form>
 
                         <form hx-post="/budgets/{{.BudgetID}}/debug/actions/reconcile-discrepancies" hx-target="#audit-card-container" hx-swap="innerHTML" class="inline"
                               hx-disabled-elt="find button"
-                              onsubmit="return confirm('Utworzyć automatyczne transakcje korygujące dla wykrytych rozbieżności sald?') ? (this.querySelector('button').disabled = true, true) : false;">
+                              onsubmit="return confirm('{{t .Locale "debug-audit-confirm-reconcile"}}') ? (this.querySelector('button').disabled = true, true) : false;">
                             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
                             <button type="submit" class="btn btn-sm btn-primary gap-1.5" {{if not .AccountDiscrepancies}}disabled{{end}}>
                                 <span>⚖️</span>
-                                <span>Generuj Korektę Bilansową</span>
+                                <span>{{t .Locale "debug-audit-btn-reconcile"}}</span>
                             </button>
                         </form>
                     </div>

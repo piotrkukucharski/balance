@@ -130,8 +130,99 @@ settings-default-currency = Default Currency
 settings-currency-immutable = Base currency is immutable once provisioned
 settings-timezone = IANA Timezone
 settings-save-btn = Save Settings
+settings-role-notice = You are viewing budget settings with { $role } permissions. Only the OWNER can update budget properties.
+settings-personal-pref-title = Personal Preferences
+settings-personal-pref-desc = Configure your personal date format ({ $dateFormat }) and time format ({ $timeFormat }).
+settings-personal-pref-btn = Customize Formats →
+settings-debug-card-title = Diagnostic Tools (Debug)
+settings-debug-card-desc = Check financial integrity, orphaned balances, and run balance repair actions.
+settings-debug-card-btn = Open Debug Tools →
 settings-danger-zone = Danger Zone
+settings-danger-zone-desc = Permanently delete this budget envelope, ledger records, transactions, and account history. This action cannot be undone.
 settings-delete-budget-btn = Delete Budget
+settings-delete-confirm = Are you absolutely sure you want to delete this budget? All data will be permanently wiped.
+settings-danger-owner-only = Only the budget OWNER can delete or destroy this workspace.
+
+# Diagnostic Tools (Debug) View
+debug-title = Diagnostic Tools (Debug)
+debug-desc = Audit ledger integrity in real-time, detect orphaned projections, and trigger transactional repair routines.
+debug-back-to-settings = ← Back to Settings
+debug-badge = Diagnostic Tools (Debug)
+debug-toast-success = Operation completed
+debug-integrations-title = Integrations (AI & GoCardless)
+debug-integrations-desc = Verify authorization, connectivity, and status of external service providers.
+debug-gemini-title = Google Gemini API
+debug-gemini-status-untested = Not checked
+debug-gemini-status-checking = Checking...
+debug-gemini-status-ok = Operational
+debug-gemini-desc = Verify communication with LLM model on prompt test "2 + 2 =".
+debug-gemini-btn = Run AI Audit
+debug-gocardless-title = GoCardless (Open Banking)
+debug-gocardless-status-untested = Not checked
+debug-gocardless-status-checking = Checking...
+debug-gocardless-status-ok = Operational
+debug-gocardless-desc = Verify OAuth token authorization and retrieving banking institutions from the API.
+debug-gocardless-btn = Run GoCardless Audit
+debug-integrations-status-error = Error ({ $status })
+debug-integrations-status-failure = Failure
+debug-integrations-http-status = Status HTTP: { $status }
+debug-integrations-error = Error: { $error }
+debug-integrations-api-response = API Response:
+debug-integrations-request-failed = Request execution error: { $error }
+debug-ai-success = Connection to Google Gemini API ({ $model }) works properly. Response to '2 + 2 =': { $reply }
+debug-gocardless-success = Connection to GoCardless API successful. Retrieved { $count } banking institutions for country { $country }.
+debug-gocardless-no-keys = Missing GOCARDLESS_SECRET_ID / GOCARDLESS_SECRET_KEY credentials in the environment
+debug-gocardless-api-error = GoCardless API communication error: { $error }
+
+# Debug Audit Card
+debug-audit-card-title = Ledger Consistency & Balance Integrity
+debug-audit-card-desc = Real-time consistency checks evaluated in an isolated transaction.
+debug-audit-all-passed = All Ledger Checks Passed
+debug-audit-anomalies-detected = Anomalies Detected
+debug-audit-check1-title = 1. Orphaned Balances & Transactions (Accounts deleted from accounts_current)
+debug-audit-check1-clean = No orphaned balances or transactions associated with non-existent accounts.
+debug-audit-orphaned-balances-alert = { $count } orphaned balance records were detected in account_currency_balances!
+debug-audit-orphaned-accounts-alert = { $count } non-existent accounts associated with transactions or balances were detected:
+debug-audit-orphaned-txs-details = Details of Orphaned Transactions ({ $count }):
+debug-audit-col-account-id = Account ID
+debug-audit-col-currency = Currency
+debug-audit-col-amount = Amount
+debug-audit-col-account-name = Account Name (History)
+debug-audit-col-budget-txs = Budget Transactions
+debug-audit-col-raw-txs = Raw Transactions
+debug-audit-col-history-status = Status in History
+debug-audit-col-actions = Corrective Actions
+debug-audit-col-type = Type
+debug-audit-col-roles = Roles of the Missing Account
+debug-audit-col-missing-acct = Missing Account ID
+debug-audit-col-notes-payee = Notes / Payee
+debug-audit-btn-resurrect = Resurrect Account
+debug-audit-not-in-history = Not in history
+debug-audit-confirm-resurrect = Restore account "{ $name }" in closed state (is_closed=1)?
+debug-audit-check2-title = 2. Transaction Consistency with Account Balances
+debug-audit-check2-clean = All account balances exactly match the net sum of budget transactions.
+debug-audit-check2-discrepancies-alert = Found { $count } accounts with discrepancy between stored balance and transaction history!
+debug-audit-col-stored = Stored
+debug-audit-col-computed = Computed
+debug-audit-col-diff = Diff
+debug-audit-check3-title = 3. Fundamental Equation (Cash == Envelopes + RTA)
+debug-audit-status-balanced = Balanced
+debug-audit-status-unbalanced = Unbalanced
+debug-audit-btn-rerun = Run Audit Again
+debug-audit-btn-cleanup-orphaned = Remove Orphaned Balances
+debug-audit-confirm-cleanup-orphaned = Are you sure you want to delete orphaned balance records?
+debug-audit-btn-delete-orphaned-txs = Delete Orphaned Transactions
+debug-audit-confirm-delete-orphaned-txs = Are you sure you want to permanently delete all orphaned budget and raw transactions?
+debug-audit-btn-reconcile = Generate Balance Adjustment
+debug-audit-confirm-reconcile = Create automatic adjustment transactions for detected balance discrepancies?
+debug-notify-audit-clean = Integrity audit completed successfully.
+debug-notify-audit-anomalies = Audit completed: balance anomalies detected.
+debug-notify-cleanup-balances-success = Cleaned up { $count } orphaned balance records.
+debug-notify-resurrect-success = Account "{ $name }" was successfully resurrected as closed (is_closed=1).
+debug-notify-resurrect-not-found = Account does not exist in accounts history
+debug-notify-delete-txs-success = Successfully deleted { $bCount } budget transactions and { $rCount } raw transactions.
+debug-notify-reconcile-success = Generated { $count } reconciliation adjustment transactions.
+debug-notify-reconcile-none = No balance discrepancies to reconcile.
 
 # Members View
 members-title = Members & Access Control
