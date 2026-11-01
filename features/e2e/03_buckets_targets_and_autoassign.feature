@@ -11,7 +11,7 @@ Feature: Browser E2E Envelope Buckets, Targets, Fund Assignments and Priority Au
     When I open the "New Bucket" modal and create bucket "Living Expenses" in group "Needs"
     And I open the "New Bucket" modal and create bucket "Leisure" in group "Wants"
     Then the budget table should list buckets "Living Expenses" and "Leisure"
-    When I open the Bucket Inspector drawer for "Living Expenses"
+    When I open the Bucket Targets drawer for "Living Expenses"
     And I click "+ Add Target" and create a "MONTHLY" target named "Apartment Rent" with priority "Mandatory (3)" and amount "2000.00"
     Then the bucket "Living Expenses" should display required target "2,000.00 PLN" and health badge "Underfunded"
     When I open the "Assign" modal for "Living Expenses" and assign "2500.00" PLN

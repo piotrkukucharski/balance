@@ -119,8 +119,8 @@ When a budget is opened (`/budgets/:budgetId/budget`), the center workspace disp
     - 🟡 **`Underfunded` (Amber/Yellow Badge + Progress Bar)**: Available balance >= 0, but one or more targets in the active rolling window still need funding. Displays the exact missing amount (e.g. `Underfunded by 450.00 PLN due Nov 15`) and highlights whether a `Mandatory` (`priority = 3`) target is at risk.
     - 🔴 **`Overspent` (Red Alert Badge)**: Available balance in any currency is negative (`< 0`), requiring immediate coverage from the Unallocated Pool or another Bucket.
     - ⚪ **`On Hold / Optional Remaining` (Neutral Badge)**: All required targets are met; only `Optional` (`priority = 1`) wish-list targets remain unfunded.
-- **Right-Hand Inspector Drawer (YNAB Target & Funding Inspector)**:
-  - Clicking any `Bucket` opens the right-hand inspector panel showing its individual `Target`s (ordered by priority), non-spending strategy selector, the **AI Formula Assistant** (`LUA_FORMULA`), and quick-fund buttons.
+- **Right-Hand Targets Drawer (YNAB Target & Funding Inspector)**:
+  - Clicking any `Bucket` or its "Targets" action button opens the right-hand targets drawer panel showing its individual `Target`s (ordered by priority), non-spending strategy selector, the **AI Formula Assistant** (`LUA_FORMULA`), and quick-fund buttons.
 
 ### 3.5 Transactions View & Primary Toolbar Actions
 In the **Transactions (`/budgets/:budgetId/transactions`)** section, the top action toolbar prominently provides two primary buttons:

@@ -1351,7 +1351,7 @@ func InitializeE2EScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
-	ctx.Step(`^I open the Bucket Inspector drawer for "([^"]*)"$`, func(bucketName string) error {
+	ctx.Step(`^I open the Bucket (?:Inspector|Targets) drawer for "([^"]*)"$`, func(bucketName string) error {
 		bID, err := tc.findBucketID(bucketName)
 		if err != nil {
 			return err
