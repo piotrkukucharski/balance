@@ -45,10 +45,22 @@
                 </div>
                 <div class="flex items-center gap-2.5">
                     {{- if .HasLinkedBankAccounts}}
+                    {{- if .NeedsInitialSyncModal}}
                     <button type="button" class="btn btn-secondary btn-sm shadow font-semibold gap-1.5" onclick="bank_sync_modal.showModal()">
                         <span>🔄</span>
                         <span>Sync with Bank</span>
                     </button>
+                    {{- else}}
+                    <button type="button" class="btn btn-secondary btn-sm shadow font-semibold gap-1.5"
+                            hx-post="/budgets/{{.BudgetID}}/transactions/sync"
+                            hx-swap="none"
+                            hx-include="this"
+                            hx-vals='{"csrf_token": "{{.CSRFToken}}"}'
+                            onclick="const a = document.getElementById('sync-alerts'); if(a){ a.innerHTML = '<div role=\'alert\' class=\'alert alert-info shadow-lg animate-fade-in flex items-center gap-2\'><span class=\'loading loading-spinner loading-sm text-info\'></span><div><h4 class=\'font-bold\'>Sync in Progress</h4><p class=\'text-xs\'>Connecting to bank and fetching transactions...</p></div></div>'; }">
+                        <span>🔄</span>
+                        <span>Sync with Bank</span>
+                    </button>
+                    {{- end}}
                     {{- else}}
                     <div class="tooltip tooltip-bottom" data-tip="No bank-linked accounts. Connect an account first.">
                         <button type="button" class="btn btn-secondary btn-sm shadow font-semibold gap-1.5 btn-disabled opacity-60" disabled>
@@ -596,7 +608,7 @@
                     <div class="flex flex-col gap-1 max-h-48 overflow-y-auto border border-base-300 rounded-lg p-2 bg-base-100">
                         {{- if .HasLinkedBankAccounts}}
                         {{- range .Accounts}}
-                        {{- if .IsBankLinked}}
+                        {{- if and .IsBankLinked (not .HasHistory)}}
                         <label class="label cursor-pointer justify-start gap-3 py-1.5 px-2 hover:bg-base-200 rounded-lg transition-colors">
                             <input type="checkbox" name="account_ids" value="{{.ID}}" checked class="checkbox checkbox-primary checkbox-sm" />
                             <span class="label-text font-medium text-sm">{{.Name}} <span class="text-xs text-base-content/60">({{.BalanceFormatted}} {{.Currency}})</span></span>

@@ -170,6 +170,17 @@ Feature: Two-Tier Transaction Resolution (Move, Merge, Split) and Deduplication
     When I trigger "Sync with Bank" on budget "Family Home" for account "mBank Checking"
     Then the bank sync should fail with a mock disabled in production error
 
+  Scenario: Sync with Bank skips modal when all linked accounts have transaction history
+    Given an active checking account "mBank Checking" with previously imported transactions
+    When I visit the transactions ledger page
+    Then the Sync with Bank button should trigger direct synchronization without opening modal
+
+  Scenario: Sync with Bank opens modal when at least one linked account has no prior transactions
+    Given an active checking account "mBank Checking" with 0.00 PLN initial balance
+    When I visit the transactions ledger page
+    Then the Sync with Bank button should open the sync options modal
+    And the bank sync modal should list "mBank Checking"
+
 
 
 

@@ -77,6 +77,7 @@ type txAccountItem struct {
 	BalanceFormatted string
 	IsActiveFilter   bool
 	IsBankLinked     bool
+	HasHistory       bool
 }
 
 type txLedgerRow struct {
@@ -124,6 +125,7 @@ type transactionsViewData struct {
 	BottomDockHTML          template.HTML
 	DateTimeFormatterScript template.HTML
 	HasLinkedBankAccounts   bool
+	NeedsInitialSyncModal   bool
 	IsAllAccountsActive     bool
 	FilterPartyID           string
 	FilteredPartyName       string
@@ -210,6 +212,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		ORDER BY a.name ASC`)
 	var accounts []txAccountItem
 	linkedBankAcctCount := 0
+	uninitializedBankAcctCount := 0
 
 	var filteredPartyName string
 	if filterPartyID != "" {
@@ -225,8 +228,17 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 
 			aBalMajor := float64(aBalMinor) / 100.0
 			isBankLinked := ailID != ""
+			hasHistory := false
 			if isBankLinked {
 				linkedBankAcctCount++
+				// Check if this account already has any raw or budget transactions
+				var rawCnt, btxCnt int
+				_ = tenantDB.QueryRowContext(c.Request().Context(), `SELECT COUNT(*) FROM raw_transactions_current WHERE account_id = ?`, aID).Scan(&rawCnt)
+				_ = tenantDB.QueryRowContext(c.Request().Context(), `SELECT COUNT(*) FROM budget_transactions_current WHERE source_account_id = ? OR destination_account_id = ?`, aID, aID).Scan(&btxCnt)
+				hasHistory = (rawCnt + btxCnt) > 0
+				if !hasHistory {
+					uninitializedBankAcctCount++
+				}
 			}
 
 			accounts = append(accounts, txAccountItem{
@@ -236,6 +248,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 				BalanceFormatted: fmt.Sprintf("%.2f", aBalMajor),
 				IsActiveFilter:   filterAcctID != "" && filterAcctID == aID,
 				IsBankLinked:     isBankLinked,
+				HasHistory:       hasHistory,
 			})
 		}
 	}
@@ -481,6 +494,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "transactions")),
 		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
 		HasLinkedBankAccounts:   linkedBankAcctCount > 0,
+		NeedsInitialSyncModal:   uninitializedBankAcctCount > 0,
 		IsAllAccountsActive:     filterAcctID == "" && filterPartyID == "",
 		FilterPartyID:           filterPartyID,
 		FilteredPartyName:       filteredPartyName,
@@ -1074,19 +1088,24 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 		}
 	}
 
-	// If still empty, fetch first user-owned checking account linked to a bank integration
+	// If still empty, fetch all user-owned accounts linked to bank integrations
 	if len(accountIDs) == 0 {
-		var firstAcctID string
-		err := tenantDB.QueryRowContext(c.Request().Context(), `
+		rows, qErr := tenantDB.QueryContext(c.Request().Context(), `
 			SELECT a.id FROM accounts_current a
 			JOIN parties_current p ON a.party_id = p.id
 			JOIN account_integration_links ail ON a.id = ail.account_id
 			WHERE p.is_user_owned = 1 AND a.is_closed = 0
-			ORDER BY a.name ASC
-			LIMIT 1`).Scan(&firstAcctID)
-		if err == nil {
-			accountIDs = append(accountIDs, firstAcctID)
-		} else {
+			ORDER BY a.name ASC`)
+		if qErr == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var acctID string
+				if err := rows.Scan(&acctID); err == nil {
+					accountIDs = append(accountIDs, acctID)
+				}
+			}
+		}
+		if len(accountIDs) == 0 {
 			logger.Warn(ctx, "Bank sync rejected: no bank-linked accounts found for synchronization", "budget_id", budgetID)
 			return echo.NewHTTPError(http.StatusBadRequest, "No bank-linked accounts available for synchronization. Please link a bank account first.")
 		}

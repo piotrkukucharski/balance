@@ -3424,6 +3424,25 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	ctx.Step(`^the Sync with Bank button should trigger direct synchronization without opening modal$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, `hx-post="/budgets/`) || !strings.Contains(body, `/transactions/sync"`) {
+			return fmt.Errorf("expected direct hx-post synchronization on button, got body: %s", body)
+		}
+		if strings.Contains(body, `onclick="bank_sync_modal.showModal()"`) {
+			return fmt.Errorf("expected bank_sync_modal.showModal() to be omitted when all accounts have history")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the Sync with Bank button should open the sync options modal$`, func() error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, `onclick="bank_sync_modal.showModal()"`) {
+			return fmt.Errorf("expected onclick bank_sync_modal.showModal() when at least one account needs initial sync, got body: %s", body)
+		}
+		return nil
+	})
+
 	ctx.Step(`^a budget "([^"]*)" with only manual cash accounts$`, func(budgetName string) error {
 		tc.activeBudgetID = domain.NewUUIDv7()
 		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
