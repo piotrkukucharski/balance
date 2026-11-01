@@ -565,13 +565,12 @@ Applies to: `Party`, `Account`, `MatchingRule`, `RawTransaction`, `BudgetTransac
    - **In-Progress Weekend Rule**: For dates during the current in-progress weekend where Monday's rate has not yet been published by the central banks, the engine uses the latest known business day rate (Friday) until Monday's rate is published.
    - **Strict Error on Missing Past History**: If a transaction date is older than the earliest available historical rate in `currency_exchange_rates` (older than 90 days), the conversion **must immediately fail with an error** (`ErrExchangeRateNotFound`). Silent 1:1 fallbacks for historical financial transactions are strictly prohibited.
 
-4. **Standalone CLI Worker & Scheduled Sync (`balance worker:sync-fx`)**:
-   - Executed as a standalone CLI subcommand: `balance worker:sync-fx` (or via `task worker:sync-fx`).
-   - Supported CLI flags:
+4. **Dual-Mode Background Scheduler & CLI Worker (`SCHEDULER_MODE=external|internal`)**:
+   - **External Mode (`SCHEDULER_MODE=external`, default)**: Executed as a standalone CLI subcommand `balance worker:sync-fx` (or via `task worker:sync-fx`). Suitable for host cron, Kubernetes `CronJob`, or external serverless schedulers. Supported CLI flags:
      - `--days=N`: Number of days of history to sync (defaults to 1 day if data exists, or 90 days if `currency_exchange_rates` is empty).
      - `--source=ALL|ECB|NBP`: Sourcing filter (defaults to `ALL` with ECB priority).
      - `--data-dir=PATH`: Path to directory containing `main.db`.
-   - Intended for execution once daily via host Linux cron or container scheduler.
+   - **Internal Mode (`SCHEDULER_MODE=internal`)**: The server runs an embedded in-process scheduler (`github.com/go-co-op/gocron/v2`). Automatically triggers `worker:sync-fx` in the background on startup (non-blocking) and periodically every 12 hours (`WithSingletonMode`) without requiring external cron daemons.
 
 5. **REST API Triggers**:
    - `POST /api/v1/exchange-rates/sync`: Allows authenticated clients / admins to trigger synchronization of central bank feeds on demand, returning `{"synced_count": N}`.

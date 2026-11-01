@@ -30,6 +30,7 @@ import (
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/lua"
 	"github.com/balance/balance/internal/report"
+	"github.com/balance/balance/internal/scheduler"
 	"github.com/balance/balance/internal/service"
 	"github.com/balance/balance/internal/transaction"
 	"github.com/balance/balance/internal/web/handlers"
@@ -88,6 +89,8 @@ type bddTestContext struct {
 	activeTargetName       string
 	activeTargetBucketName string
 	activeTargetDueDate    string
+
+	testScheduler *scheduler.Scheduler
 	lastEvaluatedCount     int
 	lastCreatedTargetID    string
 }
@@ -6269,6 +6272,60 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		if resp.SyncedCount <= minCount {
 			return fmt.Errorf("expected synced_count > %d, got %d", minCount, resp.SyncedCount)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the background scheduler is configured with mode "([^"]*)"$`, func(modeStr string) error {
+		mode := scheduler.ParseMode(modeStr)
+		s, err := scheduler.New(scheduler.Config{
+			Mode:         mode,
+			FXSyncPeriod: 50 * time.Millisecond,
+			MainDB:       tc.mainDB,
+		})
+		if err != nil {
+			return err
+		}
+		tc.testScheduler = s
+		return nil
+	})
+
+	ctx.Step(`^the scheduler starts$`, func() error {
+		if tc.testScheduler == nil {
+			return errors.New("scheduler is not initialized")
+		}
+		return tc.testScheduler.Start(context.Background())
+	})
+
+	ctx.Step(`^the internal scheduler should remain inactive$`, func() error {
+		if tc.testScheduler == nil {
+			return errors.New("scheduler is not initialized")
+		}
+		if tc.testScheduler.IsRunning() {
+			return errors.New("expected scheduler to be inactive, but it is running")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the internal scheduler should be active and running$`, func() error {
+		if tc.testScheduler == nil {
+			return errors.New("scheduler is not initialized")
+		}
+		if !tc.testScheduler.IsRunning() {
+			return errors.New("expected scheduler to be running, but it is not")
+		}
+		return nil
+	})
+
+	ctx.Step(`^shutting down the scheduler should stop all background jobs$`, func() error {
+		if tc.testScheduler == nil {
+			return errors.New("scheduler is not initialized")
+		}
+		if err := tc.testScheduler.Shutdown(context.Background()); err != nil {
+			return err
+		}
+		if tc.testScheduler.IsRunning() {
+			return errors.New("expected scheduler to be stopped after shutdown")
 		}
 		return nil
 	})

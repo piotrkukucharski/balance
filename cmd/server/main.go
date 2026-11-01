@@ -12,6 +12,7 @@ import (
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/fx"
 	"github.com/balance/balance/internal/logger"
+	"github.com/balance/balance/internal/scheduler"
 	"github.com/balance/balance/internal/service"
 	openapi "github.com/balance/balance/internal/api"
 	webassets "github.com/balance/balance/internal/web/assets"
@@ -271,6 +272,21 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
+
+	schedulerMode := scheduler.ParseMode(os.Getenv("SCHEDULER_MODE"))
+	sched, err := scheduler.New(scheduler.Config{
+		Mode:   schedulerMode,
+		MainDB: mainDB,
+	})
+	if err != nil {
+		logger.Error(ctx, "Failed initializing scheduler", "error", err.Error())
+		os.Exit(1)
+	}
+	if err := sched.Start(ctx); err != nil {
+		logger.Error(ctx, "Failed starting scheduler", "error", err.Error())
+		os.Exit(1)
+	}
+	defer sched.Shutdown(ctx)
 
 	logger.Info(ctx, "Balance server starting", "port", port, "url", fmt.Sprintf("http://localhost:%s", port))
 	if err := e.Start(":" + port); err != nil {

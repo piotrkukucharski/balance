@@ -55,3 +55,12 @@ Feature: Central Bank Exchange Rates and Multi-Currency Conversion
     When I send a POST request to "/api/v1/exchange-rates/sync"
     Then the response status should be 200 OK
     And the response body should contain "synced_count" greater than 0
+
+  Scenario: Background scheduler execution in external and internal modes
+    Given the background scheduler is configured with mode "external"
+    When the scheduler starts
+    Then the internal scheduler should remain inactive
+    Given the background scheduler is configured with mode "internal"
+    When the scheduler starts
+    Then the internal scheduler should be active and running
+    And shutting down the scheduler should stop all background jobs
