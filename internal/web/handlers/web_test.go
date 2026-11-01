@@ -2957,3 +2957,117 @@ func TestPartiesManagementAndSmartRules(t *testing.T) {
 		t.Fatalf("expected smart rule to be saved in matching_rules_current, got %d", savedRuleCount)
 	}
 }
+
+func TestFundTargetHandler(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "balance_fund_target_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mainPath := filepath.Join(tmpDir, "main.db")
+	mainDB, err := db.OpenDB(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatal(err)
+	}
+
+	budgetsDir := filepath.Join(tmpDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tenantMgr.CloseAll()
+
+	e := echo.New()
+	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+
+	userID := domain.NewUUIDv7()
+	budgetID := domain.NewUUIDv7()
+	now := time.Now().UTC().UnixMicro()
+	_, _ = mainDB.Exec(`
+		INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at)
+		VALUES (?, 'funduser@example.com', 'h', 'Fund User', ?, ?)`, userID, now, now)
+	_, err = mainDB.Exec(`
+		INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at)
+		VALUES (?, 'Fund Test Budget', 'PLN', 'UTC', ?, ?, ?)`, budgetID, userID, now, now)
+	if err != nil {
+		t.Fatalf("failed inserting budget: %v", err)
+	}
+
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
+	if err != nil {
+		t.Fatalf("failed getting tenant db: %v", err)
+	}
+	bID, err := budget.CreateBucket(context.Background(), tenantDB, budget.CreateBucketInput{
+		Name:          "Household",
+		AgentID:       userID,
+		CorrelationID: domain.NewUUIDv7(),
+	})
+	if err != nil {
+		t.Fatalf("failed creating bucket: %v", err)
+	}
+
+	// Create target with required amount 100.00 PLN (10000 minor)
+	tID, err := budget.CreateTarget(context.Background(), tenantDB, budget.CreateTargetInput{
+		BucketID:          bID,
+		Name:              "Electricity",
+		Priority:          3,
+		AmountMinor:       10000,
+		Currency:          "PLN",
+		RecurrenceCadence: budget.CadenceMonthly,
+		AgentID:           userID,
+		CorrelationID:     domain.NewUUIDv7(),
+	})
+	if err != nil {
+		t.Fatalf("failed creating target: %v", err)
+	}
+
+	// Put 40.00 PLN in bucket buffer
+	_ = budget.AssignFunds(context.Background(), tenantDB, budget.AssignFundsInput{
+		BucketID:      bID,
+		Currency:      "PLN",
+		AmountMinor:   4000,
+		AgentID:       userID,
+		CorrelationID: domain.NewUUIDv7(),
+	})
+
+	fundReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/targets/"+tID+"/fund", nil)
+	fundRec := httptest.NewRecorder()
+	fundCtx := e.NewContext(fundReq, fundRec)
+	fundCtx.SetParamNames("budgetId", "id")
+	fundCtx.SetParamValues(budgetID, tID)
+	fundCtx.Set(ContextBudgetDBKey, tenantDB)
+	fundCtx.Set(ContextUserIDKey, userID)
+	fundCtx.Set("correlationID", domain.NewUUIDv7())
+
+	if err := workspaceHandler.FundTarget(fundCtx); err != nil {
+		t.Fatalf("FundTarget handler failed: %v", err)
+	}
+
+	if fundRec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect, got %d", fundRec.Code)
+	}
+	loc := fundRec.Header().Get("Location")
+	if !strings.Contains(loc, "flash=target_funded") {
+		t.Fatalf("expected flash=target_funded in redirect URL, got %s", loc)
+	}
+
+	var fundedMinor int64
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, tID).Scan(&fundedMinor)
+	if fundedMinor != 10000 {
+		t.Fatalf("expected target Electricity to be fully funded (10000), got %d", fundedMinor)
+	}
+
+	var bucketBal int64
+	_ = tenantDB.QueryRow(`SELECT balance_minor FROM bucket_currency_balances WHERE bucket_id = ? AND currency = 'PLN'`, bID).Scan(&bucketBal)
+	// Initial 4000 (from buffer) + 6000 (from RTA) = 10000
+	if bucketBal != 10000 {
+		t.Fatalf("expected bucket balance 10000, got %d", bucketBal)
+	}
+}

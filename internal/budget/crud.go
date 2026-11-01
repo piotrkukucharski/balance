@@ -115,6 +115,26 @@ type MoveTargetFundsInput struct {
 	CorrelationID  string
 }
 
+// AutoFundTargetInput payload for auto-funding a target's missing amount cascade-wise.
+type AutoFundTargetInput struct {
+	TargetID      string
+	AmountMinor   int64 // If > 0, override needed amount; if <= 0, auto-computed from requirements
+	WindowDays    int   // requirement evaluation window (default 30)
+	Timezone      string
+	AgentID       string
+	CorrelationID string
+}
+
+// AutoFundTargetResult returns the amounts funded from buffer vs ready to assign.
+type AutoFundTargetResult struct {
+	TargetID         string
+	BucketID         string
+	Currency         string
+	FundedTotalMinor int64
+	FromBufferMinor  int64
+	FromRTAMinor     int64
+}
+
 // CreateBucket creates a new bucket in event store and synchronous projection.
 func CreateBucket(ctx context.Context, tenantDB *sql.DB, input CreateBucketInput) (string, error) {
 	tx, err := tenantDB.BeginTx(ctx, nil)
@@ -1123,6 +1143,222 @@ func MoveTargetFunds(ctx context.Context, tenantDB *sql.DB, input MoveTargetFund
 	}
 
 	return tx.Commit()
+}
+
+// AutoFundTarget automatically funds the missing requirement of a target in a cascade:
+// 1. First covers from the bucket's unassigned buffer (up to available buffer).
+// 2. Any remaining needed amount is assigned directly from Ready to Assign into the bucket & target (even if RTA goes negative).
+func AutoFundTarget(ctx context.Context, tenantDB *sql.DB, input AutoFundTargetInput) (*AutoFundTargetResult, error) {
+	if input.TargetID == "" {
+		return nil, errors.New("target ID is required")
+	}
+	if input.WindowDays <= 0 {
+		input.WindowDays = 30
+	}
+	loc := time.UTC
+	if input.Timezone != "" {
+		if l, err := time.LoadLocation(input.Timezone); err == nil {
+			loc = l
+		}
+	}
+	nowInTz := time.Now().In(loc)
+
+	tx, err := tenantDB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC().UnixMicro()
+
+	// 1. Fetch target details
+	var t TargetDefinition
+	var nameNull sql.NullString
+	var rInterval sql.NullInt64
+	var dueDate sql.NullInt64
+	var ceiling sql.NullInt64
+	var amountMode string
+	var luaScript sql.NullString
+	var usesRuntime int
+	var isArchived int
+
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, bucket_id, name, priority, sort_order, amount_minor, currency,
+		       recurrence_cadence, recurrence_interval, due_date, non_spending_strategy,
+		       ceiling_amount_minor, current_funded_minor, amount_mode, lua_script, uses_runtime, is_archived
+		FROM targets_projection
+		WHERE id = ?`, input.TargetID).Scan(
+		&t.ID, &t.BucketID, &nameNull, &t.Priority, &t.SortOrder, &t.AmountMinor, &t.Currency,
+		&t.RecurrenceCadence, &rInterval, &dueDate, &t.NonSpendingStrategy,
+		&ceiling, &t.CurrentFundedMinor, &amountMode, &luaScript, &usesRuntime, &isArchived,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errors.New("target not found")
+		}
+		return nil, fmt.Errorf("failed fetching target: %w", err)
+	}
+	if isArchived == 1 {
+		return nil, errors.New("target is archived")
+	}
+
+	if nameNull.Valid {
+		t.Name = nameNull.String
+	}
+	if rInterval.Valid {
+		t.RecurrenceInterval = int(rInterval.Int64)
+	}
+	if dueDate.Valid {
+		t.DueDate = dueDate.Int64
+	}
+	if ceiling.Valid {
+		cVal := ceiling.Int64
+		t.CeilingAmountMinor = &cVal
+	}
+
+	// Calculate needed amount
+	neededMinor := input.AmountMinor
+	if neededMinor <= 0 {
+		reqMinor := ComputeTargetRequirementInLoc(&t, input.WindowDays, nowInTz, loc)
+		neededMinor = reqMinor - t.CurrentFundedMinor
+	}
+	if neededMinor <= 0 {
+		// Target is already fully funded
+		return &AutoFundTargetResult{
+			TargetID:         t.ID,
+			BucketID:         t.BucketID,
+			Currency:         t.Currency,
+			FundedTotalMinor: 0,
+			FromBufferMinor:  0,
+			FromRTAMinor:     0,
+		}, nil
+	}
+
+	// 2. Fetch bucket balance
+	var bucketBal int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT COALESCE(balance_minor, 0)
+		FROM bucket_currency_balances
+		WHERE bucket_id = ? AND currency = ?`, t.BucketID, t.Currency).Scan(&bucketBal)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("failed fetching bucket balance: %w", err)
+	}
+
+	// 3. Fetch total current_funded_minor for all active targets in this bucket
+	var totalFunded int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(current_funded_minor), 0)
+		FROM targets_projection
+		WHERE bucket_id = ? AND currency = ? AND is_archived = 0`, t.BucketID, t.Currency).Scan(&totalFunded)
+	if err != nil {
+		return nil, fmt.Errorf("failed fetching bucket targets funded total: %w", err)
+	}
+
+	unassignedBuffer := bucketBal - totalFunded
+	if unassignedBuffer < 0 {
+		unassignedBuffer = 0
+	}
+
+	fromBufferMinor := int64(0)
+	fromRTAMinor := int64(0)
+
+	if unassignedBuffer >= neededMinor {
+		fromBufferMinor = neededMinor
+	} else {
+		fromBufferMinor = unassignedBuffer
+		fromRTAMinor = neededMinor - fromBufferMinor
+	}
+
+	// Step A: Cover from Unassigned Buffer if fromBufferMinor > 0
+	if fromBufferMinor > 0 {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE targets_projection
+			SET current_funded_minor = current_funded_minor + ?, updated_at = ?
+			WHERE id = ?`, fromBufferMinor, now, t.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed updating target from buffer: %w", err)
+		}
+
+		// Update target version and event
+		var curVer int
+		_ = tx.QueryRowContext(ctx, `SELECT version FROM targets_projection WHERE id = ?`, t.ID).Scan(&curVer)
+		curVer++
+		_, _ = tx.ExecContext(ctx, `UPDATE targets_projection SET version = ? WHERE id = ?`, curVer, t.ID)
+
+		movedPayload, _ := json.Marshal(map[string]any{
+			"bucket_id":        t.BucketID,
+			"source_target_id": nil,
+			"dest_target_id":   t.ID,
+			"currency":         t.Currency,
+			"amount_minor":     fromBufferMinor,
+		})
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO target_events (event_id, aggregate_id, bucket_id, version, event_type, payload, agent_id, correlation_id, occurred_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			domain.NewUUIDv7(), t.ID, t.BucketID, curVer, EventTypeTargetFundsMoved, string(movedPayload), input.AgentID, input.CorrelationID, now,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed recording target funds moved event from buffer: %w", err)
+		}
+	}
+
+	// Step B: Cover remainder from Ready to Assign if fromRTAMinor > 0
+	if fromRTAMinor > 0 {
+		// Update bucket balance
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO bucket_currency_balances (bucket_id, currency, balance_minor)
+			VALUES (?, ?, ?)
+			ON CONFLICT(bucket_id, currency) DO UPDATE SET
+				balance_minor = balance_minor + excluded.balance_minor`,
+			t.BucketID, t.Currency, fromRTAMinor,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed updating bucket balance from RTA: %w", err)
+		}
+
+		// Update target funded minor
+		_, err = tx.ExecContext(ctx, `
+			UPDATE targets_projection
+			SET current_funded_minor = current_funded_minor + ?, updated_at = ?
+			WHERE id = ?`, fromRTAMinor, now, t.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed updating target current_funded_minor from RTA: %w", err)
+		}
+
+		// Record bucket FUNDS_ASSIGNED event
+		var bucketVer int
+		_ = tx.QueryRowContext(ctx, `SELECT version FROM buckets_projection WHERE id = ?`, t.BucketID).Scan(&bucketVer)
+		nextVer := bucketVer + 1
+
+		assignPayload, _ := json.Marshal(map[string]any{
+			"bucket_id":    t.BucketID,
+			"target_id":    t.ID,
+			"currency":     t.Currency,
+			"amount_minor": fromRTAMinor,
+		})
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO bucket_events (event_id, aggregate_id, version, event_type, payload, agent_id, correlation_id, occurred_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			domain.NewUUIDv7(), t.BucketID, nextVer, EventTypeFundsAssigned, string(assignPayload), input.AgentID, input.CorrelationID, now,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed recording funds assigned event: %w", err)
+		}
+		_, _ = tx.ExecContext(ctx, `UPDATE buckets_projection SET version = ?, updated_at = ? WHERE id = ?`, nextVer, now, t.BucketID)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed committing transaction: %w", err)
+	}
+
+	return &AutoFundTargetResult{
+		TargetID:         t.ID,
+		BucketID:         t.BucketID,
+		Currency:         t.Currency,
+		FundedTotalMinor: fromBufferMinor + fromRTAMinor,
+		FromBufferMinor:  fromBufferMinor,
+		FromRTAMinor:     fromRTAMinor,
+	}, nil
 }
 
 // CalculateReadyToAssign calculates available unallocated funds per currency.

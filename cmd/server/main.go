@@ -214,6 +214,7 @@ func main() {
 	tenantEditor.POST("/targets", workspaceHandler.CreateTarget)
 	tenantEditor.POST("/targets/:id/update", workspaceHandler.UpdateTarget)
 	tenantEditor.POST("/targets/:id/delete", workspaceHandler.DeleteTarget)
+	tenantEditor.POST("/targets/:id/fund", workspaceHandler.FundTarget)
 	tenantEditor.POST("/structure/generate-ai-preview", workspaceHandler.GenerateStructurePreview)
 	tenantEditor.GET("/structure/preview-source", workspaceHandler.PreviewSourceStructure)
 	tenantEditor.POST("/structure/apply", workspaceHandler.ApplyStructure)

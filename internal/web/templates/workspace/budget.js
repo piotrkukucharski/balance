@@ -498,6 +498,17 @@ function openBucketDrawer(id, name, group, bal, curr) {
 
             const targetTitle = (t.Name && t.Name.trim().length > 0) ? (escapeHtml(t.Name) + luaBadge) : ('<span class="badge ' + (t.Priority === 3 ? 'badge-error' : (t.Priority === 2 ? 'badge-primary' : 'badge-ghost')) + ' badge-sm font-semibold">' + priorityText + '</span>' + luaBadge);
 
+            const fundButtonHtml = (t.NeededMinor && t.NeededMinor > 0) ?
+                '<form method="POST" action="/budgets/' + currentBudgetID + '/targets/' + t.ID + '/fund" class="inline">' +
+                    '<input type="hidden" name="csrf_token" value="' + csrfTokenVal + '" />' +
+                    '<input type="hidden" name="horizon" value="' + currentHorizon + '" />' +
+                    '<input type="hidden" name="filter" value="' + currentFilter + '" />' +
+                    '<button type="submit" class="btn btn-xs btn-outline btn-primary font-semibold gap-1 px-2 touch-manipulation" title="Auto-fill missing amount (' + (t.NeededMinor/100).toFixed(2) + ' ' + t.Currency + ')">' +
+                        '<span>⚡</span>' +
+                        '<span>Fund</span>' +
+                    '</button>' +
+                '</form>' : '';
+
             card.innerHTML = 
                 '<div class="flex justify-between items-start">' +
                     '<div>' +
@@ -506,7 +517,10 @@ function openBucketDrawer(id, name, group, bal, curr) {
                         '</div>' +
                         '<div class="text-[11px] text-base-content/60">Priority: ' + priorityText + ' • Cadence: ' + cadenceDisplay + dueHtml + ' • Strategy: ' + t.NonSpendingStrategy + ceilingHtml + '</div>' +
                     '</div>' +
-                    '<span class="badge ' + t.HealthBadgeClass + ' badge-sm font-semibold">' + t.HealthBadge + '</span>' +
+                    '<div class="flex items-center gap-1.5 shrink-0">' +
+                        '<span class="badge ' + t.HealthBadgeClass + ' badge-sm font-semibold">' + t.HealthBadge + '</span>' +
+                        fundButtonHtml +
+                    '</div>' +
                 '</div>' +
                 formulaErrHtml +
                 '<div class="flex justify-between items-center text-xs mt-1">' +

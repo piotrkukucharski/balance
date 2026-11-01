@@ -535,3 +535,166 @@ func TestGetAvailableCurrencies(t *testing.T) {
 		t.Fatalf("expected [EUR, PLN, USD], got %v", currencies)
 	}
 }
+
+func TestAutoFundTargetCascade(t *testing.T) {
+	ctx := context.Background()
+	tenantDB := setupTestTenantDB(t)
+	now := time.Now().UTC().UnixMicro()
+	agentID := domain.NewUUIDv7()
+	correlationID := domain.NewUUIDv7()
+
+	// 1. Setup checking account with 1,000.00 PLN liquid cash
+	userPartyID := domain.NewUUIDv7()
+	acctID := domain.NewUUIDv7()
+	_, _ = tenantDB.ExecContext(ctx, `
+		INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+		VALUES (?, 1, 'Self', 'INDIVIDUAL', 1, ?, ?)`, userPartyID, agentID, now)
+	_, _ = tenantDB.ExecContext(ctx, `
+		INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+		VALUES (?, 1, ?, 'Main Checking', 'CHECKING', 'PLN', 0, ?, ?)`, acctID, userPartyID, agentID, now)
+	_, _ = tenantDB.ExecContext(ctx, `
+		INSERT INTO account_currency_balances (account_id, currency, balance_minor, updated_at)
+		VALUES (?, 'PLN', 100000, ?)`, acctID, now)
+
+	// Ready to assign is initially 1,000.00 PLN (100,000 minor)
+
+	// 2. Create bucket "Living"
+	bLiving, err := CreateBucket(ctx, tenantDB, CreateBucketInput{
+		Name:          "Living",
+		AgentID:       agentID,
+		CorrelationID: correlationID,
+	})
+	if err != nil {
+		t.Fatalf("failed creating bucket: %v", err)
+	}
+
+	// Assign 200.00 PLN to bucket Living without target (entire 200.00 PLN goes to unassigned buffer)
+	err = AssignFunds(ctx, tenantDB, AssignFundsInput{
+		BucketID:      bLiving,
+		Currency:      "PLN",
+		AmountMinor:   20000,
+		AgentID:       agentID,
+		CorrelationID: correlationID,
+	})
+	if err != nil {
+		t.Fatalf("failed assigning funds: %v", err)
+	}
+
+	// RTA is now 800.00 PLN (80,000 minor)
+
+	// Create target "Rent" for 500.00 PLN (50,000 minor), currently 0 funded
+	tRent, err := CreateTarget(ctx, tenantDB, CreateTargetInput{
+		BucketID:          bLiving,
+		Name:              "Rent",
+		Priority:          3,
+		AmountMinor:       50000,
+		Currency:          "PLN",
+		RecurrenceCadence: CadenceMonthly,
+		AgentID:           agentID,
+		CorrelationID:     correlationID,
+	})
+	if err != nil {
+		t.Fatalf("failed creating target: %v", err)
+	}
+
+	// Case 1: Cascade auto-fund "Rent":
+	// Needs 500.00 PLN.
+	// Buffer has 200.00 PLN -> 200.00 PLN from buffer.
+	// Remainder 300.00 PLN -> from Ready to Assign.
+	res, err := AutoFundTarget(ctx, tenantDB, AutoFundTargetInput{
+		TargetID:      tRent,
+		WindowDays:    30,
+		AgentID:       agentID,
+		CorrelationID: correlationID,
+	})
+	if err != nil {
+		t.Fatalf("AutoFundTarget failed: %v", err)
+	}
+	if res.FromBufferMinor != 20000 {
+		t.Errorf("expected fromBuffer=20000, got %d", res.FromBufferMinor)
+	}
+	if res.FromRTAMinor != 30000 {
+		t.Errorf("expected fromRTA=30000, got %d", res.FromRTAMinor)
+	}
+	if res.FundedTotalMinor != 50000 {
+		t.Errorf("expected fundedTotal=50000, got %d", res.FundedTotalMinor)
+	}
+
+	var rentFunded int64
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, tRent).Scan(&rentFunded)
+	if rentFunded != 50000 {
+		t.Errorf("expected Rent current_funded=50000, got %d", rentFunded)
+	}
+
+	var bucketBal int64
+	_ = tenantDB.QueryRow(`SELECT balance_minor FROM bucket_currency_balances WHERE bucket_id = ? AND currency = 'PLN'`, bLiving).Scan(&bucketBal)
+	// Initial 20000 + 30000 from RTA = 50000
+	if bucketBal != 50000 {
+		t.Errorf("expected bucket balance=50000, got %d", bucketBal)
+	}
+
+	// Ready to Assign should now be 100,000 - 50,000 = 50,000 PLN (500.00 PLN)
+	rtaMap, _ := CalculateReadyToAssign(ctx, tenantDB)
+	if rtaMap["PLN"] != 50000 {
+		t.Errorf("expected RTA=50000, got %d", rtaMap["PLN"])
+	}
+
+	// Case 2: Over-assignment into negative RTA
+	// Create target "Deposit" needing 800.00 PLN (80,000 minor)
+	tDeposit, err := CreateTarget(ctx, tenantDB, CreateTargetInput{
+		BucketID:          bLiving,
+		Name:              "Deposit",
+		Priority:          3,
+		AmountMinor:       80000,
+		Currency:          "PLN",
+		RecurrenceCadence: CadenceMonthly,
+		AgentID:           agentID,
+		CorrelationID:     correlationID,
+	})
+	if err != nil {
+		t.Fatalf("failed creating target Deposit: %v", err)
+	}
+
+	// Buffer is 0 (bucket balance=50000, funded=50000). RTA is 50,000 PLN.
+	// AutoFundTarget should fund all 80,000 from RTA, driving RTA into -30,000 (-300.00 PLN)
+	res2, err := AutoFundTarget(ctx, tenantDB, AutoFundTargetInput{
+		TargetID:      tDeposit,
+		WindowDays:    30,
+		AgentID:       agentID,
+		CorrelationID: correlationID,
+	})
+	if err != nil {
+		t.Fatalf("AutoFundTarget Deposit failed: %v", err)
+	}
+	if res2.FromBufferMinor != 0 {
+		t.Errorf("expected fromBuffer=0, got %d", res2.FromBufferMinor)
+	}
+	if res2.FromRTAMinor != 80000 {
+		t.Errorf("expected fromRTA=80000, got %d", res2.FromRTAMinor)
+	}
+
+	var depFunded int64
+	_ = tenantDB.QueryRow(`SELECT current_funded_minor FROM targets_projection WHERE id = ?`, tDeposit).Scan(&depFunded)
+	if depFunded != 80000 {
+		t.Errorf("expected Deposit funded=80000, got %d", depFunded)
+	}
+
+	rtaMap2, _ := CalculateReadyToAssign(ctx, tenantDB)
+	if rtaMap2["PLN"] != -30000 {
+		t.Errorf("expected negative RTA=-30000, got %d", rtaMap2["PLN"])
+	}
+
+	// Case 3: AutoFundTarget when already fully funded returns 0 without error
+	res3, err := AutoFundTarget(ctx, tenantDB, AutoFundTargetInput{
+		TargetID:      tDeposit,
+		WindowDays:    30,
+		AgentID:       agentID,
+		CorrelationID: correlationID,
+	})
+	if err != nil {
+		t.Fatalf("AutoFundTarget on fully funded target failed: %v", err)
+	}
+	if res3.FundedTotalMinor != 0 {
+		t.Errorf("expected fundedTotal=0 on fully funded target, got %d", res3.FundedTotalMinor)
+	}
+}

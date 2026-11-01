@@ -4602,6 +4602,24 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	})
 
 	ctx.Step(`^the Ready to Assign banner should display "([^"]*)"$`, func(expectedAmount string) error {
+		if tc.lastResponse == nil || tc.lastResponse.Body == nil || !strings.Contains(tc.lastResponse.Body.String(), "Ready to Assign") {
+			bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+			if err != nil {
+				return err
+			}
+			reqView := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/budgets/%s/budget", tc.activeBudgetID), nil)
+			recView := httptest.NewRecorder()
+			cView := tc.echoEngine.NewContext(reqView, recView)
+			cView.SetParamNames("budgetId")
+			cView.SetParamValues(tc.activeBudgetID)
+			cView.Set(handlers.ContextUserIDKey, tc.activeUserID)
+			cView.Set(handlers.ContextRoleKey, "OWNER")
+			cView.Set(handlers.ContextBudgetDBKey, bDB)
+			if err := tc.workspaceHandler.BudgetView(cView); err != nil {
+				return err
+			}
+			tc.lastResponse = recView
+		}
 		body := tc.lastResponse.Body.String()
 		cleanExpected := strings.ReplaceAll(expectedAmount, ",", "")
 		if !strings.Contains(body, expectedAmount) && !strings.Contains(body, cleanExpected) {
@@ -4761,6 +4779,35 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 			return fmt.Errorf("expected target %s to have funded %d, got %d", targetName, parseAmountStr(expectedAmt), funded)
 		}
 		return nil
+	})
+
+	ctx.Step(`^I trigger quick fund on target "([^"]*)" in bucket "([^"]*)"$`, func(targetName, bucketName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var tID, bID string
+		err = bDB.QueryRow(`
+			SELECT t.id, t.bucket_id
+			FROM targets_projection t
+			JOIN buckets_projection b ON t.bucket_id = b.id
+			WHERE t.name = ? AND b.name = ? AND t.is_archived = 0 AND b.is_archived = 0`, targetName, bucketName).Scan(&tID, &bID)
+		if err != nil {
+			return fmt.Errorf("failed resolving target %s in bucket %s: %w", targetName, bucketName, err)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/targets/%s/fund", tc.activeBudgetID, tID), nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId", "id")
+		c.SetParamValues(tc.activeBudgetID, tID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		err = tc.workspaceHandler.FundTarget(c)
+		tc.lastResponse = rec
+		return err
 	})
 
 	ctx.Step(`^the unallocated pool should be reduced to "([^"]*)"$`, func(expectedAmt string) error {

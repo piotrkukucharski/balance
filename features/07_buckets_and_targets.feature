@@ -230,6 +230,34 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     And the desktop bucket row "Groceries" should have a drag handle
     And category group "Food & Dining" should be a drop target for buckets
 
+  Scenario: Quick auto-funding target from unassigned buffer and Ready to Assign cascade
+    Given an open budget "Family Home" with "5,000.00 PLN" in checking account
+    When I create a bucket "Housing" in group "Needs"
+    And I add a mandatory target "Rent" with priority 3, cadence "MONTHLY", amount "2,000.00 PLN"
+    And I add an optional target "Decorations" with priority 1, cadence "MONTHLY", amount "1,000.00 PLN"
+    And I assign "2,000.00 PLN" from ready to assign to bucket "Housing"
+    And I move "500.00 PLN" from target "Rent" to buffer in bucket "Housing"
+    Then target "Rent" in bucket "Housing" should have funded amount "1,500.00 PLN"
+    And target "Decorations" in bucket "Housing" should have funded amount "0.00 PLN"
+    And the bucket "Housing" should have unassigned buffer "500.00 PLN"
+    And the Ready to Assign banner should display "3,000.00 PLN"
+    When I trigger quick fund on target "Decorations" in bucket "Housing"
+    Then target "Decorations" in bucket "Housing" should have funded amount "1,000.00 PLN"
+    And the bucket "Housing" should have unassigned buffer "0.00 PLN"
+    And the Ready to Assign banner should display "2,500.00 PLN"
+    And the bucket "Housing" balance should be "2,500.00 PLN"
+
+  Scenario: Quick auto-funding target allows Ready to Assign to go negative on over-assignment
+    Given an open budget "Family Home" with "500.00 PLN" in checking account
+    When I create a bucket "Emergency" in group "Needs"
+    And I add a mandatory target "Medical" with priority 3, cadence "MONTHLY", amount "1,200.00 PLN"
+    And the Ready to Assign banner should display "500.00 PLN"
+    When I trigger quick fund on target "Medical" in bucket "Emergency"
+    Then target "Medical" in bucket "Emergency" should have funded amount "1,200.00 PLN"
+    And the bucket "Emergency" balance should be "1,200.00 PLN"
+    And the Ready to Assign banner should display "-700.00 PLN"
+
+
 
 
 

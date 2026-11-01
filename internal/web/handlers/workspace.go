@@ -655,6 +655,8 @@ func getFlashMessage(code string) string {
 		return "Target updated successfully."
 	case "target_deleted":
 		return "Target deleted successfully."
+	case "target_funded":
+		return "Target funded successfully."
 	default:
 		return ""
 	}
@@ -2147,6 +2149,46 @@ func (h *WorkspaceHandler) DeleteTarget(c echo.Context) error {
 	}
 
 	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "target_deleted", bucketID))
+}
+
+// FundTarget funds a target's missing amount cascade-wise from Unassigned Buffer and Ready to Assign.
+func (h *WorkspaceHandler) FundTarget(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	targetID := c.Param("id")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+	corrID := c.Get("correlationID").(string)
+
+	var tz string
+	_ = h.mainDB.QueryRowContext(c.Request().Context(), `SELECT timezone FROM budgets WHERE id = ?`, budgetID).Scan(&tz)
+
+	horizon := c.FormValue("horizon")
+	loc := time.UTC
+	if tz != "" {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+		}
+	}
+	nowInTz := time.Now().In(loc)
+	_, windowDays := budget.CalculateHorizonDays(horizon, nowInTz, loc)
+
+	res, err := budget.AutoFundTarget(c.Request().Context(), tenantDB, budget.AutoFundTargetInput{
+		TargetID:      targetID,
+		WindowDays:    windowDays,
+		Timezone:      tz,
+		AgentID:       userID,
+		CorrelationID: corrID,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	bucketID := ""
+	if res != nil {
+		bucketID = res.BucketID
+	}
+
+	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "target_funded", bucketID))
 }
 
 // GenerateStructurePreview produces a proposed budget structure from an AI prompt.

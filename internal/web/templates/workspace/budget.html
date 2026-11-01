@@ -365,9 +365,18 @@
                                                 <span class="font-mono text-[11px] text-base-content/70">{{$t.FundedFormatted}} / {{$t.RequiredFormatted}} {{$t.Currency}}</span>
                                             </div>
                                             <span class="badge {{$t.HealthBadgeClass}} badge-xs font-semibold">{{$t.HealthBadge}}</span>
-                                            <div class="text-right min-w-[90px]">
+                                            <div class="flex items-center justify-end gap-1.5 min-w-[140px]">
                                                 {{- if gt $t.NeededMinor 0}}
                                                 <span class="font-mono text-xs font-semibold text-warning">Needs {{$t.NeededFormatted}} {{$t.Currency}}</span>
+                                                <form method="POST" action="/budgets/{{$.BudgetID}}/targets/{{$t.ID}}/fund" class="inline">
+                                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
+                                                    <input type="hidden" name="horizon" value="{{$.HorizonParam}}" />
+                                                    <input type="hidden" name="filter" value="{{$.FilterParam}}" />
+                                                    <button type="submit" class="btn btn-xs btn-outline btn-primary font-semibold gap-1 px-2 touch-manipulation" title="Auto-fill missing amount ({{$t.NeededFormatted}} {{$t.Currency}})">
+                                                        <span>⚡</span>
+                                                        <span>Fund</span>
+                                                    </button>
+                                                </form>
                                                 {{- else}}
                                                 <span class="font-mono text-xs text-base-content/40">✓ Funded</span>
                                                 {{- end}}
@@ -506,9 +515,18 @@
                                 <span class="badge badge-outline badge-xs font-mono text-secondary border-secondary">LUA</span>
                                 {{- end}}
                             </div>
-                            <div class="shrink-0">
+                            <div class="flex items-center gap-1.5 shrink-0">
                                 {{- if gt $t.NeededMinor 0}}
                                 <span class="font-mono text-[11px] font-semibold text-warning">Needs {{$t.NeededFormatted}} {{$t.Currency}}</span>
+                                <form method="POST" action="/budgets/{{$.BudgetID}}/targets/{{$t.ID}}/fund" class="inline">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
+                                    <input type="hidden" name="horizon" value="{{$.HorizonParam}}" />
+                                    <input type="hidden" name="filter" value="{{$.FilterParam}}" />
+                                    <button type="submit" class="btn btn-xs btn-outline btn-primary font-semibold gap-0.5 px-1.5 min-h-6 h-6 text-[10px] touch-manipulation" title="Auto-fill missing amount ({{$t.NeededFormatted}} {{$t.Currency}})">
+                                        <span>⚡</span>
+                                        <span>Fund</span>
+                                    </button>
+                                </form>
                                 {{- else}}
                                 <span class="font-mono text-[11px] text-base-content/40">✓ Funded</span>
                                 {{- end}}
