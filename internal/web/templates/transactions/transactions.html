@@ -22,7 +22,7 @@
 {{- template "shared/base" . -}}
 {{- end -}}
 
-{{- define "title" -}}Balance — Transactions{{- end -}}
+{{- define "title" -}}{{t .Locale "app-name"}} — {{t .Locale "tx-ledger-title"}}{{- end -}}
 
 {{- define "body_start" -}}
     <!-- Party Autocomplete Suggestions -->
@@ -39,16 +39,16 @@
                 <div>
                     <h1 class="text-2xl font-black tracking-tight flex items-center gap-2">
                         <span>💸</span>
-                        <span>Transactions Ledger</span>
+                        <span>{{t .Locale "tx-ledger-title"}}</span>
                     </h1>
-                    <p class="text-xs text-base-content/60 mt-0.5">Unified double-entry cashflow workbench and rapid bank reconciliation.</p>
+                    <p class="text-xs text-base-content/60 mt-0.5">{{t .Locale "tx-ledger-desc"}}</p>
                 </div>
                 <div class="flex items-center gap-2.5">
                     {{- if .HasLinkedBankAccounts}}
                     {{- if .NeedsInitialSyncModal}}
                     <button type="button" class="btn btn-secondary btn-sm shadow font-semibold gap-1.5" onclick="bank_sync_modal.showModal()">
                         <span>🔄</span>
-                        <span>Sync with Bank</span>
+                        <span>{{t .Locale "tx-sync-bank-btn"}}</span>
                     </button>
                     {{- else}}
                     <button type="button" class="btn btn-secondary btn-sm shadow font-semibold gap-1.5"
@@ -58,20 +58,20 @@
                             hx-vals='{"csrf_token": "{{.CSRFToken}}"}'
                             onclick="const a = document.getElementById('sync-alerts'); if(a){ a.innerHTML = '<div role=\'alert\' class=\'alert alert-info shadow-lg animate-fade-in flex items-center gap-2\'><span class=\'loading loading-spinner loading-sm text-info\'></span><div><h4 class=\'font-bold\'>Sync in Progress</h4><p class=\'text-xs\'>Connecting to bank and fetching transactions...</p></div></div>'; }">
                         <span>🔄</span>
-                        <span>Sync with Bank</span>
+                        <span>{{t .Locale "tx-sync-bank-btn"}}</span>
                     </button>
                     {{- end}}
                     {{- else}}
                     <div class="tooltip tooltip-bottom" data-tip="No bank-linked accounts. Connect an account first.">
                         <button type="button" class="btn btn-secondary btn-sm shadow font-semibold gap-1.5 btn-disabled opacity-60" disabled>
                             <span>🔄</span>
-                            <span>Sync with Bank</span>
+                            <span>{{t .Locale "tx-sync-bank-btn"}}</span>
                         </button>
                     </div>
                     {{- end}}
                     <button type="button" class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="focusQuickAdd()">
                         <span>➕</span>
-                        <span>Add Transaction <kbd class="kbd kbd-xs bg-primary-content/20 text-primary-content border-none">N</kbd></span>
+                        <span>{{t .Locale "tx-new-tx-btn"}} <kbd class="kbd kbd-xs bg-primary-content/20 text-primary-content border-none">N</kbd></span>
                     </button>
                 </div>
             </div>

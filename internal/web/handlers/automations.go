@@ -776,6 +776,8 @@ func renderAutomationsListMarkup(budgetID string, automations []automation.Autom
 }
 
 type automationsPageViewData struct {
+	Locale                  string
+	NumberFormat            string
 	BudgetID                string
 	BudgetName              string
 	CSRFToken               string
@@ -790,11 +792,15 @@ type automationsPageViewData struct {
 
 func renderAutomationsPageMarkup(budgetID string, automations []automation.Automation, recentTxs []RecentTxOption, csrfToken string, c echo.Context) string {
 	dFormat, tFormat := GetUserDateTimePreferences(c)
-	sidebar := RenderSidebarNavigation(budgetID, "automations")
-	dock := RenderBottomDock(budgetID, "automations")
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
+	sidebar := RenderSidebarNavigation(budgetID, "automations", userLocale)
+	dock := RenderBottomDock(budgetID, "automations", userLocale)
 	listMarkup := renderAutomationsListMarkup(budgetID, automations, csrfToken)
 
 	data := automationsPageViewData{
+		Locale:         userLocale,
+		NumberFormat:   userNumberFormat,
 		BudgetID:       budgetID,
 		BudgetName:     "Automations",
 		CSRFToken:      csrfToken,

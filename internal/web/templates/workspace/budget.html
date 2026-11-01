@@ -2,7 +2,7 @@
 {{- template "shared/base" . -}}
 {{- end -}}
 
-{{- define "title" -}}Balance — {{.BudgetName}}{{- end -}}
+{{- define "title" -}}{{t .Locale "app-name"}} — {{.BudgetName}}{{- end -}}
 
 {{- define "navbar_start_extra" -}}
 <span class="badge badge-soft badge-primary font-semibold text-xs hidden sm:inline-flex">{{.Role}}</span>
@@ -11,19 +11,19 @@
 {{- define "navbar_end" -}}
 <div class="badge badge-accent badge-soft font-bold py-2.5 sm:py-3 text-xs gap-1 sm:gap-1.5">
     <span>⏳</span>
-    <span class="hidden sm:inline">Age of Money: {{.AOMHeadline}} days</span>
+    <span class="hidden sm:inline">{{t .Locale "budget-age-of-money" "days" .AOMHeadline}}</span>
     <span class="sm:hidden">{{.AOMHeadline}}d</span>
 </div>
 <form method="POST" action="/logout">
     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
-    <button type="submit" class="btn btn-ghost btn-xs sm:btn-sm font-medium px-2 sm:px-3">Log Out</button>
+    <button type="submit" class="btn btn-ghost btn-xs sm:btn-sm font-medium px-2 sm:px-3">{{t .Locale "nav-logout"}}</button>
 </form>
 {{- end -}}
 
 {{- define "sidebar_extra" -}}
 <div class="divider my-0"></div>
 <div class="px-2">
-    <div class="text-xs font-bold uppercase tracking-wider text-base-content/50 mb-2">Accounts Summary</div>
+    <div class="text-xs font-bold uppercase tracking-wider text-base-content/50 mb-2">{{t .Locale "budget-accounts-summary"}}</div>
     <div class="space-y-2">
         {{- if .HasAccounts}}
         {{- range .AccountSummaries}}
@@ -41,8 +41,8 @@
         {{- end}}
         {{- else}}
         <div class="text-xs text-base-content/50 py-1">
-            <p>No accounts connected yet.</p>
-            <a href="/budgets/{{.BudgetID}}/accounts" class="btn btn-xs btn-outline btn-primary mt-2 w-full">+ Add Account</a>
+            <p>{{t .Locale "budget-no-accounts"}}</p>
+            <a href="/budgets/{{.BudgetID}}/accounts" class="btn btn-xs btn-outline btn-primary mt-2 w-full">+ {{t .Locale "action-add"}}</a>
         </div>
         {{- end}}
     </div>
@@ -64,7 +64,7 @@
             <div class="stat-figure text-success text-3xl hidden sm:block">💵</div>
             <div class="stat-title text-xs font-bold uppercase tracking-wider flex items-center gap-1.5">
                 <span class="sm:hidden text-base">💵</span>
-                <span>Ready to Assign</span>
+                <span>{{t .Locale "budget-rta-title"}}</span>
             </div>
             <div class="stat-value {{.RTAColor}} text-2xl md:text-3xl font-black tracking-tight mt-0.5">
                 {{.DefaultRTAFormatted}} {{.DefaultCurr}}
@@ -97,16 +97,16 @@
             <div class="stat-figure text-primary text-3xl hidden sm:block">🎯</div>
             <div class="stat-title text-xs font-bold uppercase tracking-wider flex items-center gap-1.5">
                 <span class="sm:hidden text-base">🎯</span>
-                <span>Needed ({{.HorizonTitle}})</span>
+                <span>{{t .Locale "budget-needed-title" "horizon" .HorizonTitle}}</span>
             </div>
             <div class="stat-value text-primary text-2xl md:text-3xl font-black tracking-tight mt-0.5">
                 {{.TotalNeededFormatted}} <span class="text-xs font-normal text-base-content/60">{{.DefaultCurr}}</span>
             </div>
             <div class="stat-desc text-xs mt-1.5">
                 {{- if .HasMandatoryP3Needed}}
-                of which Mandatory: <span class="font-mono font-bold text-error">{{.MandatoryP3NeededFormatted}} {{.DefaultCurr}}</span>
+                {{t .Locale "budget-mandatory-needed"}} <span class="font-mono font-bold text-error">{{.MandatoryP3NeededFormatted}} {{.DefaultCurr}}</span>
                 {{- else}}
-                <span class="text-success font-medium">✓ All mandatory targets funded</span>
+                <span class="text-success font-medium">✓ {{t .Locale "budget-all-mandatory-funded"}}</span>
                 {{- end}}
             </div>
         </div>
@@ -144,8 +144,8 @@
                 <input type="hidden" name="filter" value="{{.FilterParam}}" />
                 <button type="submit" class="btn btn-sm sm:btn-xs btn-outline btn-primary font-semibold shadow-xs gap-1 sm:gap-1.5 min-h-8 touch-manipulation">
                     <span>⚡</span>
-                    <span class="sm:hidden">Auto-Assign</span>
-                    <span class="hidden sm:inline">Auto-Assign by Priority</span>
+                    <span class="sm:hidden">{{t .Locale "budget-auto-assign-btn"}}</span>
+                    <span class="hidden sm:inline">{{t .Locale "budget-auto-assign-btn"}}</span>
                 </button>
             </form>
         </div>
@@ -156,26 +156,26 @@
         <div class="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2 sm:gap-3 w-full lg:w-auto">
             <div class="grid grid-cols-2 sm:inline-flex sm:join gap-1.5 sm:gap-0 w-full sm:w-auto">
                 <a href="/budgets/{{.BudgetID}}/budget?horizon={{.HorizonParam}}&filter=all" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation {{if .IsFilterAll}}btn-primary{{else}}btn-ghost border border-base-300{{end}}">
-                    <span>All</span> <span class="badge badge-xs sm:badge-sm font-mono">{{.CountAll}}</span>
+                    <span>{{t .Locale "budget-filter-all"}}</span> <span class="badge badge-xs sm:badge-sm font-mono">{{.CountAll}}</span>
                 </a>
                 <a href="/budgets/{{.BudgetID}}/budget?horizon={{.HorizonParam}}&filter=attention" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation {{if eq .FilterParam "attention"}}btn-primary{{else}}btn-ghost border border-base-300{{end}}">
-                    <span class="truncate">Needs attention</span> <span class="badge badge-xs sm:badge-sm font-mono badge-warning">{{.CountAttention}}</span>
+                    <span class="truncate">{{t .Locale "budget-filter-attention"}}</span> <span class="badge badge-xs sm:badge-sm font-mono badge-warning">{{.CountAttention}}</span>
                 </a>
                 <a href="/budgets/{{.BudgetID}}/budget?horizon={{.HorizonParam}}&filter=overspent" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation {{if eq .FilterParam "overspent"}}btn-primary{{else}}btn-ghost border border-base-300{{end}}">
-                    <span>Overspent</span> <span class="badge badge-xs sm:badge-sm font-mono badge-error">{{.CountOverspent}}</span>
+                    <span>{{t .Locale "budget-filter-overspent"}}</span> <span class="badge badge-xs sm:badge-sm font-mono badge-error">{{.CountOverspent}}</span>
                 </a>
                 <a href="/budgets/{{.BudgetID}}/budget?horizon={{.HorizonParam}}&filter=buffer" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation {{if eq .FilterParam "buffer"}}btn-primary{{else}}btn-ghost border border-base-300{{end}}">
-                    <span>Has buffer</span> <span class="badge badge-xs sm:badge-sm font-mono badge-info">{{.CountBuffer}}</span>
+                    <span>{{t .Locale "budget-filter-buffer"}}</span> <span class="badge badge-xs sm:badge-sm font-mono badge-info">{{.CountBuffer}}</span>
                 </a>
             </div>
             <div class="join grid grid-cols-2 sm:inline-flex w-full sm:w-auto">
-                <button type="button" class="btn btn-sm btn-ghost border border-base-300 join-item text-xs touch-manipulation" onclick="expandAllEnvelopes()">Expand all</button>
-                <button type="button" class="btn btn-sm btn-ghost border border-base-300 join-item text-xs touch-manipulation" onclick="collapseAllEnvelopes()">Collapse all</button>
+                <button type="button" class="btn btn-sm btn-ghost border border-base-300 join-item text-xs touch-manipulation" onclick="expandAllEnvelopes()">{{t .Locale "budget-expand-all"}}</button>
+                <button type="button" class="btn btn-sm btn-ghost border border-base-300 join-item text-xs touch-manipulation" onclick="collapseAllEnvelopes()">{{t .Locale "budget-collapse-all"}}</button>
             </div>
         </div>
         <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full lg:w-auto">
             <div class="relative w-full sm:w-48">
-                <input type="text" id="envelope_search_input" placeholder="Search envelopes..." class="input input-bordered input-sm w-full text-xs pl-8" oninput="filterEnvelopeSearch(this.value)" />
+                <input type="text" id="envelope_search_input" placeholder="{{t .Locale "budget-search-placeholder"}}" class="input input-bordered input-sm w-full text-xs pl-8" oninput="filterEnvelopeSearch(this.value)" />
                 <span class="absolute left-2.5 top-2 text-xs opacity-50 select-none">🔍</span>
             </div>
             <div class="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
@@ -185,7 +185,7 @@
                 </button>
                 <button type="button" class="btn btn-primary btn-sm gap-1.5 shadow font-semibold w-full sm:w-auto touch-manipulation" onclick="openNewBucketModal()">
                     <span>+</span>
-                    <span>New Bucket</span>
+                    <span>{{t .Locale "budget-new-bucket-btn"}}</span>
                 </button>
             </div>
         </div>

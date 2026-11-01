@@ -12,6 +12,7 @@ import (
 
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/i18n"
 	"github.com/balance/balance/internal/integration/gocardless"
 	"github.com/balance/balance/internal/integration/mock"
 	"github.com/balance/balance/internal/logger"
@@ -77,6 +78,8 @@ type accountRowView struct {
 }
 
 type accountsViewData struct {
+	Locale                  string
+	NumberFormat            string
 	BudgetID                string
 	BudgetName              string
 	CSRFToken               string
@@ -93,6 +96,9 @@ type accountsViewData struct {
 func (h *AccountsHandler) AccountsView(c echo.Context) error {
 	budgetID := c.Param("budgetId")
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
+	dFormat, tFormat := GetUserDateTimePreferences(c)
 
 	rows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT a.id, a.name, a.account_type, a.primary_currency, COALESCE(a.iban, ''),
@@ -213,7 +219,7 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 			AccountType:       aType,
 			TypeBadgeClass:    typeBadge,
 			Currency:          curr,
-			BalanceFormatted:  fmt.Sprintf("%.2f", float64(balanceMinor)/100.0),
+			BalanceFormatted:  i18n.FormatMoneyMinor(balanceMinor, curr, userLocale, userNumberFormat),
 			FaviconType:       favType,
 			FaviconValue:      favVal,
 			EmojiChar:         emojiChar,
@@ -227,13 +233,17 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 	}
 
 	out, err := templates.RenderString("accounts/view", accountsViewData{
+		Locale:                  userLocale,
+		NumberFormat:            userNumberFormat,
 		BudgetID:                budgetID,
 		BudgetName:              "Accounts",
 		CSRFToken:               csrfToken,
+		DateFormat:              dFormat,
+		TimeFormat:              tFormat,
 		IsDevMode:               isDevMode(),
 		Accounts:                accountViews,
-		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "accounts")),
-		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "accounts")),
+		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "accounts", userLocale)),
+		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "accounts", userLocale)),
 		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
 	})
 	if err != nil {

@@ -17,6 +17,7 @@ import (
 
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/i18n"
 	"github.com/balance/balance/internal/integration/gocardless"
 	"github.com/balance/balance/internal/integration/mock"
 	"github.com/balance/balance/internal/logger"
@@ -116,6 +117,8 @@ type txRawRow struct {
 }
 
 type transactionsViewData struct {
+	Locale                  string
+	NumberFormat            string
 	DateFormat              string
 	TimeFormat              string
 	BudgetID                string
@@ -146,6 +149,8 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 	budgetID := c.Param("budgetId")
 	role := c.Get(ContextRoleKey).(string)
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
 
 	var budgetName, defaultCurr string
 	h.mainDB.QueryRowContext(c.Request().Context(), `SELECT name, default_currency FROM budgets WHERE id = ?`, budgetID).
@@ -226,7 +231,6 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 			var aBalMinor int64
 			acctRows.Scan(&aID, &aName, &aCurr, &aBalMinor, &ailID)
 
-			aBalMajor := float64(aBalMinor) / 100.0
 			isBankLinked := ailID != ""
 			hasHistory := false
 			if isBankLinked {
@@ -245,7 +249,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 				ID:               aID,
 				Name:             aName,
 				Currency:         aCurr,
-				BalanceFormatted: fmt.Sprintf("%.2f", aBalMajor),
+				BalanceFormatted: i18n.FormatMoneyMinor(aBalMinor, "", userLocale, userNumberFormat),
 				IsActiveFilter:   filterAcctID != "" && filterAcctID == aID,
 				IsBankLinked:     isBankLinked,
 				HasHistory:       hasHistory,
@@ -371,7 +375,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 			IsTransfer:        isTransfer,
 			AmountClass:       amountClass,
 			AmountPrefix:      amountPrefix,
-			AmountFormatted:   fmt.Sprintf("%.2f", amountMajor),
+			AmountFormatted:   i18n.FormatMoneyMinor(int64(math.Abs(float64(amountMinor))), "", userLocale, userNumberFormat),
 			ActionMenuHTML:    template.HTML(actionMenu),
 		})
 	}
@@ -475,7 +479,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 				SuggestedBucketID: suggestedBucketID,
 				AmountBadgeClass:  amountBadgeClass,
 				AmountPrefix:      amountPrefix,
-				AmountFormatted:   fmt.Sprintf("%.2f", rAmountMajor),
+				AmountFormatted:   i18n.FormatMoneyMinor(int64(math.Abs(float64(rAmountMinor))), "", userLocale, userNumberFormat),
 				ActionMenuHTML:    template.HTML(rawActionMenu),
 			})
 		}
@@ -485,13 +489,15 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 	dFormat, tFormat := GetUserDateTimePreferences(c)
 
 	viewData := transactionsViewData{
+		Locale:                  userLocale,
+		NumberFormat:            userNumberFormat,
 		DateFormat:              dFormat,
 		TimeFormat:              tFormat,
 		BudgetID:                budgetID,
 		BudgetName:              budgetName,
 		CSRFToken:               csrfToken,
-		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "transactions")),
-		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "transactions")),
+		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "transactions", userLocale)),
+		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "transactions", userLocale)),
 		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
 		HasLinkedBankAccounts:   linkedBankAcctCount > 0,
 		NeedsInitialSyncModal:   uninitializedBankAcctCount > 0,

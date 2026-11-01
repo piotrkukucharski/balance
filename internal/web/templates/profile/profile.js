@@ -6,16 +6,17 @@ function updateLivePreview() {
     if (!dFormatEl || !tFormatEl) return;
 
     const locale = localeEl ? localeEl.value : 'en-US';
+    const selectedOpt = localeEl ? localeEl.options[localeEl.selectedIndex] : null;
     let dFormat = dFormatEl.value;
     let tFormat = tFormatEl.value;
     let nFormat = nFormatEl ? nFormatEl.value : 'auto';
 
-    // Resolve auto formats based on locale
+    // Resolve auto formats based on selected locale's data attributes
     if (dFormat === 'auto') {
-        dFormat = locale === 'pl-PL' ? 'DD.MM.YYYY' : 'YYYY-MM-DD';
+        dFormat = (selectedOpt && selectedOpt.dataset.dateFormat) ? selectedOpt.dataset.dateFormat : 'YYYY-MM-DD';
     }
     if (tFormat === 'auto') {
-        tFormat = '24h';
+        tFormat = (selectedOpt && selectedOpt.dataset.timeFormat) ? selectedOpt.dataset.timeFormat : '24h';
     }
 
     const now = new Date();
@@ -48,13 +49,8 @@ function updateLivePreview() {
     let numGrouping = ',';
     let numDecimal = '.';
     if (nFormat === 'auto') {
-        if (locale === 'pl-PL') {
-            numGrouping = ' ';
-            numDecimal = ',';
-        } else {
-            numGrouping = ',';
-            numDecimal = '.';
-        }
+        numGrouping = (selectedOpt && selectedOpt.dataset.grouping !== undefined) ? selectedOpt.dataset.grouping : ',';
+        numDecimal = (selectedOpt && selectedOpt.dataset.decimal) ? selectedOpt.dataset.decimal : '.';
     } else {
         switch(nFormat) {
             case '1.000,99': numGrouping = '.'; numDecimal = ','; break;

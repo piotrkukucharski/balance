@@ -101,9 +101,18 @@ func (h *ProfileHandler) ProfileView(c echo.Context) error {
 		formAction = fmt.Sprintf("/budgets/%s/settings/profile", budgetID)
 	}
 
-	languageOptions := []profileSelectOption{
-		{"en-US", "English (US)", locale == "en-US"},
-		{"pl-PL", "Polski (PL)", locale == "pl-PL"},
+	allDefaults := i18n.AllLocaleDefaults()
+	var languageOptions []profileSelectOption
+	for _, tag := range i18n.SupportedLocales() {
+		name := tag
+		if d, ok := allDefaults[tag]; ok && d.DisplayName != "" {
+			name = d.DisplayName
+		}
+		languageOptions = append(languageOptions, profileSelectOption{
+			Value:    tag,
+			Label:    name,
+			Selected: locale == tag,
+		})
 	}
 
 	dateOptions := []profileSelectOption{
@@ -178,9 +187,14 @@ func (h *ProfileHandler) UpdateProfile(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "Display name cannot be empty")
 	}
 
-	switch locale {
-	case "en-US", "pl-PL":
-	default:
+	localeFound := false
+	for _, tag := range i18n.SupportedLocales() {
+		if tag == locale {
+			localeFound = true
+			break
+		}
+	}
+	if !localeFound {
 		return echo.NewHTTPError(http.StatusBadRequest, "Invalid locale")
 	}
 

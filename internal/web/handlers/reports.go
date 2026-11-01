@@ -31,6 +31,8 @@ func NewReportsHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *ReportsHa
 }
 
 type reportsViewData struct {
+	Locale                  string
+	NumberFormat            string
 	BudgetID                string
 	BudgetName              string
 	CSRFToken               string
@@ -55,15 +57,22 @@ func (h *ReportsHandler) ReportsView(c echo.Context) error {
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
+	dFormat, tFormat := GetUserDateTimePreferences(c)
 
 	out, err := templates.RenderString("reports/view", reportsViewData{
+		Locale:                  userLocale,
+		NumberFormat:            userNumberFormat,
 		BudgetID:                budgetID,
 		BudgetName:              "Reports",
 		CSRFToken:               csrfToken,
+		DateFormat:              dFormat,
+		TimeFormat:              tFormat,
 		AOMHeadline:             aomHeadline,
 		SavedReportsHTML:        template.HTML(h.renderSavedReportsSection(c.Request().Context(), tenantDB, budgetID, csrfToken)),
-		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "reports")),
-		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "reports")),
+		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "reports", userLocale)),
+		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "reports", userLocale)),
 		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
 	})
 	if err != nil {
@@ -609,6 +618,8 @@ type savedPresetView struct {
 }
 
 type reportDetailViewData struct {
+	Locale                  string
+	NumberFormat            string
 	BudgetID                string
 	BudgetName              string
 	CSRFToken               string
@@ -671,18 +682,26 @@ func (h *ReportsHandler) ReportDetailView(c echo.Context) error {
 		}
 	}
 
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
+	dFormat, tFormat := GetUserDateTimePreferences(c)
+
 	out, err := templates.RenderString("reports/detail", reportDetailViewData{
+		Locale:                  userLocale,
+		NumberFormat:            userNumberFormat,
 		BudgetID:                budgetID,
 		BudgetName:              "",
 		CSRFToken:               csrfToken,
+		DateFormat:              dFormat,
+		TimeFormat:              tFormat,
 		Meta:                    meta,
 		ReportTypeEnum:          reportTypeEnum,
 		SelectedRange:           selectedRange,
 		SelectedCurrency:        selectedCurrency,
 		ExcludeInternal:         excludeInternal,
 		SavedPresets:            savedPresets,
-		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "reports")),
-		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "reports")),
+		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "reports", userLocale)),
+		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "reports", userLocale)),
 		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
 	})
 	if err != nil {

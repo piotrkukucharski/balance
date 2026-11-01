@@ -34,6 +34,8 @@ type memberViewRow struct {
 }
 
 type membersViewData struct {
+	Locale                  string
+	NumberFormat            string
 	BudgetID                string
 	BudgetName              string
 	CSRFToken               string
@@ -91,16 +93,20 @@ func (h *MembersHandler) MembersView(c echo.Context) error {
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
 	dFormat, tFormat := GetUserDateTimePreferences(c)
 
 	data := membersViewData{
+		Locale:                  userLocale,
+		NumberFormat:            userNumberFormat,
 		BudgetID:                budgetID,
 		BudgetName:              "Members",
 		CSRFToken:               csrfToken,
 		DateFormat:              dFormat,
 		TimeFormat:              tFormat,
-		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "members")),
-		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "settings")),
+		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "members", userLocale)),
+		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "settings", userLocale)),
 		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
 		Members:                 members,
 	}

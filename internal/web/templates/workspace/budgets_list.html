@@ -2,18 +2,18 @@
 {{- template "shared/base" . -}}
 {{- end -}}
 
-{{- define "title" -}}Balance — Budgets{{- end -}}
+{{- define "title" -}}{{t .Locale "app-name"}} — {{t .Locale "budgets-list-title"}}{{- end -}}
 
 {{- define "content" -}}
 <div class="max-w-5xl w-full mx-auto">
     <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
         <div>
-            <h1 class="text-3xl font-black tracking-tight">Your Budgets</h1>
-            <p class="text-sm text-base-content/60 mt-1">Select an active budget or create a new envelope workspace.</p>
+            <h1 class="text-3xl font-black tracking-tight">{{t .Locale "budgets-list-title"}}</h1>
+            <p class="text-sm text-base-content/60 mt-1">{{t .Locale "budgets-list-desc"}}</p>
         </div>
         <button class="btn btn-primary shadow-md font-semibold gap-2" onclick="openNewBudgetModal('empty')">
             <span>+</span>
-            <span>New Budget</span>
+            <span>{{t .Locale "budgets-list-new-btn"}}</span>
         </button>
     </div>
 
@@ -27,7 +27,7 @@
                         <div class="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center font-bold text-lg">💰</div>
                         <div>
                             <h3 class="card-title text-xl font-bold tracking-tight">{{.Name}}</h3>
-                            <div class="text-xs text-base-content/60">Timezone: {{.Timezone}}</div>
+                            <div class="text-xs text-base-content/60">{{t $.Locale "budgets-list-timezone" "tz" .Timezone}}</div>
                         </div>
                     </div>
                     <div class="flex items-center gap-2">
@@ -41,13 +41,13 @@
                                 <li>
                                     <button type="button" class="flex items-center gap-2 py-1.5" onclick="openEditBudgetModal('{{.ID}}', '{{.EscapedName}}')">
                                         <span>✏️</span>
-                                        <span>Rename</span>
+                                        <span>{{t $.Locale "action-rename"}}</span>
                                     </button>
                                 </li>
                                 <li>
                                     <button type="button" class="flex items-center gap-2 py-1.5" onclick="openCloneBudgetModal('{{.ID}}', '{{.EscapedName}}')">
                                         <span>📋</span>
-                                        <span>Clone Budget</span>
+                                        <span>{{t $.Locale "budgets-list-clone-btn"}}</span>
                                     </button>
                                 </li>
                                 <li>
@@ -55,7 +55,7 @@
                                         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
                                         <button type="submit" class="flex items-center gap-2 text-error py-1.5 w-full hover:bg-error/10">
                                             <span>🗑️</span>
-                                            <span>Delete Budget</span>
+                                            <span>{{t $.Locale "budgets-list-delete-btn"}}</span>
                                         </button>
                                     </form>
                                 </li>
@@ -68,15 +68,15 @@
                 <div class="flex items-center justify-between">
                     <div class="flex items-center gap-2">
                         <span class="badge badge-neutral badge-sm">{{.Currency}}</span>
-                        <span class="text-xs text-base-content/60">Default Currency</span>
+                        <span class="text-xs text-base-content/60">{{t $.Locale "budgets-list-default-currency"}}</span>
                     </div>
                     <div class="card-actions flex items-center gap-2">
                         <a href="/budgets/{{.ID}}/accounts" class="btn btn-outline btn-secondary btn-sm gap-1.5 shadow-xs font-semibold" title="Link Bank Account or manage accounts">
                             <span>🏦</span>
-                            <span>Link Bank</span>
+                            <span>{{t $.Locale "budgets-list-link-bank-btn"}}</span>
                         </a>
                         <a href="/budgets/{{.ID}}/budget" class="btn btn-primary btn-sm gap-1.5 shadow-sm font-semibold">
-                            <span>Open</span>
+                            <span>{{t $.Locale "budgets-list-open-btn"}}</span>
                             <span>➔</span>
                         </a>
                     </div>

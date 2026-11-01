@@ -2,7 +2,7 @@
 {{- template "shared/base" . -}}
 {{- end -}}
 
-{{- define "title" -}}Balance — Accounts{{- end -}}
+{{- define "title" -}}{{t .Locale "app-name"}} — {{t .Locale "accounts-title"}}{{- end -}}
 
 {{- define "modals" -}}
     <!-- New Manual Account Modal -->
@@ -372,17 +372,17 @@
 {{- define "content" -}}
             <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
                 <div>
-                    <h1 class="text-2xl font-black tracking-tight">Financial Accounts</h1>
-                    <p class="text-xs text-base-content/60 mt-1">Manage checking, savings, credit card, and investment accounts.</p>
+                    <h1 class="text-2xl font-black tracking-tight">{{t .Locale "accounts-title"}}</h1>
+                    <p class="text-xs text-base-content/60 mt-1">{{t .Locale "accounts-desc"}}</p>
                 </div>
                 <div class="flex items-center gap-3">
                     <button class="btn btn-secondary btn-sm shadow font-semibold gap-1.5" onclick="link_bank_modal.showModal()">
                         <span>🔄</span>
-                        <span>Link Bank Account</span>
+                        <span>{{t .Locale "accounts-connect-bank-btn"}}</span>
                     </button>
                     <button class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="new_account_modal.showModal()">
                         <span>+</span>
-                        <span>New Account</span>
+                        <span>{{t .Locale "accounts-add-btn"}}</span>
                     </button>
                 </div>
             </div>

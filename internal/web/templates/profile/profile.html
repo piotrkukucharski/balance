@@ -50,7 +50,7 @@
                                 <label class="label pb-1"><span class="label-text font-medium text-xs">{{t .Locale "profile-label-language"}}</span></label>
                                 <select name="locale" id="pref_locale" class="select select-bordered w-full select-md focus:select-primary" onchange="updateLivePreview()">
                                     {{- range .LanguageOptions}}
-                                    <option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>
+                                    <option value="{{.Value}}" {{if .Selected}}selected{{end}} data-date-format="{{(localeDefaults .Value).DateFormat}}" data-time-format="{{(localeDefaults .Value).TimeFormat}}" data-grouping="{{(localeDefaults .Value).NumberGrouping}}" data-decimal="{{(localeDefaults .Value).NumberDecimal}}">{{.Label}}</option>
                                     {{- end}}
                                 </select>
                             </div>

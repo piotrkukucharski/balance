@@ -317,6 +317,8 @@ func (h *DebugHandler) RunAudit(ctx context.Context, tenantDB *sql.DB) (Integrit
 }
 
 type debugViewData struct {
+	Locale                  string
+	NumberFormat            string
 	BudgetID                string
 	BudgetName              string
 	CSRFToken               string
@@ -379,8 +381,10 @@ func (h *DebugHandler) DebugView(c echo.Context) error {
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
-	sidebarHTML := RenderSidebarNavigation(budgetID, "debug")
-	bottomDockHTML := RenderBottomDock(budgetID, "settings")
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
+	sidebarHTML := RenderSidebarNavigation(budgetID, "debug", userLocale)
+	bottomDockHTML := RenderBottomDock(budgetID, "settings", userLocale)
 	dFormat, tFormat := GetUserDateTimePreferences(c)
 
 	// Run initial audit to render initial state
@@ -388,6 +392,8 @@ func (h *DebugHandler) DebugView(c echo.Context) error {
 	auditHTML := RenderAuditCard(budgetID, csrfToken, report)
 
 	data := debugViewData{
+		Locale:                  userLocale,
+		NumberFormat:            userNumberFormat,
 		BudgetID:                budgetID,
 		BudgetName:              name,
 		CSRFToken:               csrfToken,

@@ -24,6 +24,22 @@ func GetUserDateTimePreferences(c echo.Context) (dateFormat, timeFormat string) 
 	return dateFormat, timeFormat
 }
 
+// GetUserLocale extracts the preferred locale for the current request context.
+func GetUserLocale(c echo.Context) string {
+	if loc, ok := c.Get(ContextLocaleKey).(string); ok && loc != "" {
+		return loc
+	}
+	return "en-US"
+}
+
+// GetUserNumberFormat extracts the preferred number format for the current request context.
+func GetUserNumberFormat(c echo.Context) string {
+	if nf, ok := c.Get(ContextNumberFormatKey).(string); ok && nf != "" {
+		return nf
+	}
+	return "auto"
+}
+
 type timeTagTemplateData struct {
 	ISOStr        string
 	DateFormat    string

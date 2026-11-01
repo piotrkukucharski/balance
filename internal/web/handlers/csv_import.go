@@ -29,6 +29,8 @@ type csvImportAccountOption struct {
 }
 
 type csvImportPageData struct {
+	Locale                  string
+	NumberFormat            string
 	DateFormat              string
 	TimeFormat              string
 	BudgetID                string
@@ -87,14 +89,24 @@ func (h *TransactionsHandler) CSVImportPage(c echo.Context) error {
 		}
 	}
 
-	sidebarHTML := RenderSidebarNavigation(budgetID, "transactions")
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
+	dFormat, tFormat := GetUserDateTimePreferences(c)
+	sidebarHTML := RenderSidebarNavigation(budgetID, "transactions", userLocale)
+	bottomDockHTML := RenderBottomDock(budgetID, "transactions", userLocale)
 
 	htmlContent, renderErr := templates.RenderString("transactions/csv_import", csvImportPageData{
-		BudgetID:    budgetID,
-		BudgetName:  budgetName,
-		CSRFToken:   csrfToken,
-		SidebarHTML: template.HTML(sidebarHTML),
-		Accounts:    accounts,
+		Locale:                  userLocale,
+		NumberFormat:            userNumberFormat,
+		DateFormat:              dFormat,
+		TimeFormat:              tFormat,
+		BudgetID:                budgetID,
+		BudgetName:              budgetName,
+		CSRFToken:               csrfToken,
+		SidebarHTML:             template.HTML(sidebarHTML),
+		BottomDockHTML:          template.HTML(bottomDockHTML),
+		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
+		Accounts:                accounts,
 	})
 	if renderErr != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed rendering CSV import template: "+renderErr.Error())

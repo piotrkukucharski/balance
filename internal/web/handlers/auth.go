@@ -9,6 +9,7 @@ import (
 	"github.com/balance/balance/internal/auth"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/i18n"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/service"
 	"github.com/balance/balance/internal/web/templates"
@@ -43,7 +44,11 @@ func (h *AuthHandler) RegisterPage(c echo.Context) error {
 	if !IsRegistrationAllowed() {
 		return echo.NewHTTPError(http.StatusForbidden, "User registration is currently disabled.")
 	}
-	out, err := templates.RenderString("auth/register", nil)
+	locale := i18n.DetectLocaleFromHeader(c.Request().Header.Get("Accept-Language"))
+	data := map[string]any{
+		"Locale": locale,
+	}
+	out, err := templates.RenderString("auth/register", data)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed rendering register page")
 	}
@@ -93,11 +98,12 @@ func (h *AuthHandler) HandleRegister(c echo.Context) error {
 
 		now := time.Now().UTC().UnixMicro()
 		userID = domain.NewUUIDv7()
+		userLocale := i18n.DetectLocaleFromHeader(c.Request().Header.Get("Accept-Language"))
 
 		_, err = h.mainDB.ExecContext(c.Request().Context(), `
-			INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			userID, email, hash, displayName, now, now,
+			INSERT INTO users (id, email, password_hash, display_name, locale, date_format, time_format, number_format, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, 'auto', 'auto', 'auto', ?, ?)`,
+			userID, email, hash, displayName, userLocale, now, now,
 		)
 		if err != nil {
 			logger.Warn(ctx, "Registration conflict: email already registered", "email", email)
@@ -115,13 +121,16 @@ func (h *AuthHandler) LoginPage(c echo.Context) error {
 }
 
 type loginPageData struct {
+	Locale              string
 	ErrorMessage        string
 	EmailValue          string
 	RegistrationAllowed bool
 }
 
 func (h *AuthHandler) renderLoginPage(c echo.Context, status int, errMsg string, emailVal string) error {
+	locale := i18n.DetectLocaleFromHeader(c.Request().Header.Get("Accept-Language"))
 	data := loginPageData{
+		Locale:              locale,
 		ErrorMessage:        errMsg,
 		EmailValue:          emailVal,
 		RegistrationAllowed: IsRegistrationAllowed(),

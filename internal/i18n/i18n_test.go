@@ -55,6 +55,26 @@ func TestTranslationsAndPlurals(t *testing.T) {
 	}
 }
 
+func TestDetectLocaleFromHeader(t *testing.T) {
+	tests := []struct {
+		header   string
+		expected string
+	}{
+		{"pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7", "pl-PL"},
+		{"en-US,en;q=0.9", "en-US"},
+		{"pl", "pl-PL"},
+		{"fr-FR,fr;q=0.9", "en-US"},
+		{"", "en-US"},
+	}
+
+	for _, tc := range tests {
+		got := i18n.DetectLocaleFromHeader(tc.header)
+		if got != tc.expected {
+			t.Errorf("DetectLocaleFromHeader(%q) = %q, expected %q", tc.header, got, tc.expected)
+		}
+	}
+}
+
 func TestFormatMoneyMinor(t *testing.T) {
 	tests := []struct {
 		amount   int64

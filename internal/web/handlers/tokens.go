@@ -51,6 +51,8 @@ type tokenViewRow struct {
 }
 
 type tokensViewData struct {
+	Locale                  string
+	NumberFormat            string
 	BudgetID                string
 	BudgetName              string
 	Role                    string
@@ -140,15 +142,19 @@ func (h *TokensHandler) TokensView(c echo.Context) error {
 	}
 
 	dFormat, tFormat := GetUserDateTimePreferences(c)
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
 
 	data := tokensViewData{
+		Locale:                  userLocale,
+		NumberFormat:            userNumberFormat,
 		BudgetID:                budgetID,
 		Role:                    role,
 		CSRFToken:               csrfToken,
 		DateFormat:              dFormat,
 		TimeFormat:              tFormat,
-		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "tokens")),
-		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "settings")),
+		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "tokens", userLocale)),
+		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "settings", userLocale)),
 		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
 		Tokens:                  tokenRows,
 		NewTokenPlain:           c.QueryParam("new_token"),

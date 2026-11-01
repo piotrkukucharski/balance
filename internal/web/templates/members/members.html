@@ -2,17 +2,17 @@
 {{- template "shared/base" . -}}
 {{- end -}}
 
-{{- define "title" -}}Balance — Members & Access{{- end -}}
+{{- define "title" -}}{{t .Locale "app-name"}} — {{t .Locale "members-title"}}{{- end -}}
 
 {{- define "content" -}}
             <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
                 <div>
-                    <h1 class="text-2xl font-black tracking-tight">Members & Access Control</h1>
-                    <p class="text-xs text-base-content/60 mt-1">Multi-user RBAC hierarchy: OWNER, ADMIN, EDITOR, and VIEWER roles.</p>
+                    <h1 class="text-2xl font-black tracking-tight">{{t .Locale "members-title"}}</h1>
+                    <p class="text-xs text-base-content/60 mt-1">{{t .Locale "members-desc"}}</p>
                 </div>
                 <button class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="invite_modal.showModal()">
                     <span>+</span>
-                    <span>Invite Member</span>
+                    <span>{{t .Locale "members-invite-btn"}}</span>
                 </button>
             </div>
 
@@ -22,9 +22,9 @@
                         <table class="table table-zebra w-full">
                             <thead>
                                 <tr class="bg-base-200/50">
-                                    <th class="font-bold">Collaborator</th>
-                                    <th class="font-bold">Assigned Role</th>
-                                    <th class="font-bold">Member Since</th>
+                                    <th class="font-bold">{{t .Locale "members-col-collaborator"}}</th>
+                                    <th class="font-bold">{{t .Locale "members-col-role"}}</th>
+                                    <th class="font-bold">{{t .Locale "members-col-since"}}</th>
                                 </tr>
                             </thead>
                             <tbody>

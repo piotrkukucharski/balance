@@ -1,10 +1,10 @@
 {{- define "auth/register" -}}
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="{{if .Locale}}{{.Locale}}{{else}}en-US{{end}}" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>Balance — Create Account</title>
+    <title>{{t .Locale "app-name"}} — {{t .Locale "auth-register-title"}}</title>
     <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
     <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
@@ -16,40 +16,40 @@
         <div class="card-body gap-4 p-8">
             <div class="flex flex-col items-center text-center gap-1">
                 <div class="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-3xl font-bold shadow-inner mb-2">⚖️</div>
-                <h1 class="text-2xl font-black tracking-tight">Create your account</h1>
-                <p class="text-xs text-base-content/60">Envelope budgeting with multi-currency clarity.</p>
+                <h1 class="text-2xl font-black tracking-tight">{{t .Locale "auth-register-title"}}</h1>
+                <p class="text-xs text-base-content/60">{{t .Locale "auth-register-subtitle"}}</p>
             </div>
 
-            <div class="divider my-0 text-xs opacity-40">ENTER DETAILS</div>
+            <div class="divider my-0 text-xs opacity-40">{{t .Locale "auth-enter-details"}}</div>
 
             <form method="POST" action="/register" class="flex flex-col gap-4">
                 <div class="form-control">
                     <label class="label pb-1">
-                        <span class="label-text font-medium text-xs">Full Name / Display Name</span>
+                        <span class="label-text font-medium text-xs">{{t .Locale "auth-fullname"}}</span>
                     </label>
                     <input type="text" name="display_name" required placeholder="Jan Kowalski" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
                 <div class="form-control">
                     <label class="label pb-1">
-                        <span class="label-text font-medium text-xs">Email Address</span>
+                        <span class="label-text font-medium text-xs">{{t .Locale "auth-email"}}</span>
                     </label>
                     <input type="email" name="email" required placeholder="jan@example.com" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
                 <div class="form-control">
                     <label class="label pb-1">
-                        <span class="label-text font-medium text-xs">Password</span>
+                        <span class="label-text font-medium text-xs">{{t .Locale "auth-password"}}</span>
                     </label>
                     <input type="password" name="password" minlength="8" required placeholder="Minimum 8 characters" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
 
                 <button type="submit" class="btn btn-primary w-full shadow-lg mt-2 font-semibold">
-                    Get Started Free
+                    {{t .Locale "auth-get-started-btn"}}
                 </button>
             </form>
 
             <div class="text-center pt-2">
-                <span class="text-xs text-base-content/60">Already have an account?</span>
-                <a href="/login" class="link link-primary link-hover text-xs font-bold ml-1">Log in here</a>
+                <span class="text-xs text-base-content/60">{{t .Locale "auth-already-account"}}</span>
+                <a href="/login" class="link link-primary link-hover text-xs font-bold ml-1">{{t .Locale "auth-login-here"}}</a>
             </div>
         </div>
     </div>

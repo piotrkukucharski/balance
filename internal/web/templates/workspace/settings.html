@@ -2,7 +2,7 @@
 {{- template "shared/base" . -}}
 {{- end -}}
 
-{{- define "title" -}}Balance — {{.BudgetName}} Settings{{- end -}}
+{{- define "title" -}}{{t .Locale "app-name"}} — {{.BudgetName}} {{t .Locale "settings-title"}}{{- end -}}
 
 {{- define "navbar_start_extra" -}}
 <span class="badge badge-soft badge-primary font-semibold text-xs">{{.Role}}</span>
@@ -11,49 +11,49 @@
 {{- define "content" -}}
 <div class="max-w-4xl">
     <div class="mb-6">
-        <h1 class="text-2xl font-black tracking-tight">Budget Settings</h1>
-        <p class="text-xs text-base-content/60 mt-1">Configure workspace preferences, default timezones, and ledger parameters.</p>
+        <h1 class="text-2xl font-black tracking-tight">{{t .Locale "settings-title"}}</h1>
+        <p class="text-xs text-base-content/60 mt-1">{{t .Locale "settings-desc"}}</p>
     </div>
 
     <div class="space-y-6">
         <div class="card card-border bg-base-100 border-base-300 shadow-md">
             <div class="card-body p-6">
-                <h2 class="card-title text-lg font-bold mb-2">General Information</h2>
+                <h2 class="card-title text-lg font-bold mb-2">{{t .Locale "settings-general-card"}}</h2>
                 {{- if .IsOwner}}
                 <form method="POST" action="/budgets/{{.BudgetID}}/settings" class="flex flex-col gap-4">
                     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
                     <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Budget Name</span></label>
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">{{t .Locale "settings-budget-name"}}</span></label>
                         <input type="text" name="name" value="{{.BudgetName}}" required class="input input-bordered w-full input-md focus:input-primary font-semibold" />
                     </div>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div class="form-control">
-                            <label class="label pb-1"><span class="label-text font-medium text-xs">Default Currency</span></label>
+                            <label class="label pb-1"><span class="label-text font-medium text-xs">{{t .Locale "settings-default-currency"}}</span></label>
                             <input type="text" value="{{.DefaultCurrency}}" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed font-mono text-xs" />
-                            <label class="label pt-1"><span class="label-text-alt text-base-content/50">Base currency is immutable once provisioned</span></label>
+                            <label class="label pt-1"><span class="label-text-alt text-base-content/50">{{t .Locale "settings-currency-immutable"}}</span></label>
                         </div>
                         <div class="form-control">
-                            <label class="label pb-1"><span class="label-text font-medium text-xs">IANA Timezone</span></label>
+                            <label class="label pb-1"><span class="label-text font-medium text-xs">{{t .Locale "settings-timezone"}}</span></label>
                             <input type="text" name="timezone" value="{{.Timezone}}" class="input input-bordered w-full input-md focus:input-primary text-xs" />
                         </div>
                     </div>
                     <div class="card-actions justify-end mt-4">
-                        <button type="submit" class="btn btn-primary btn-sm shadow font-semibold">Save Settings</button>
+                        <button type="submit" class="btn btn-primary btn-sm shadow font-semibold">{{t .Locale "settings-save-btn"}}</button>
                     </div>
                 </form>
                 {{- else}}
                 <div class="flex flex-col gap-4">
                     <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Budget Name</span></label>
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">{{t .Locale "settings-budget-name"}}</span></label>
                         <input type="text" value="{{.BudgetName}}" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed font-semibold" />
                     </div>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div class="form-control">
-                            <label class="label pb-1"><span class="label-text font-medium text-xs">Default Currency</span></label>
+                            <label class="label pb-1"><span class="label-text font-medium text-xs">{{t .Locale "settings-default-currency"}}</span></label>
                             <input type="text" value="{{.DefaultCurrency}}" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed font-mono text-xs" />
                         </div>
                         <div class="form-control">
-                            <label class="label pb-1"><span class="label-text font-medium text-xs">IANA Timezone</span></label>
+                            <label class="label pb-1"><span class="label-text font-medium text-xs">{{t .Locale "settings-timezone"}}</span></label>
                             <input type="text" value="{{.Timezone}}" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed text-xs" />
                         </div>
                     </div>

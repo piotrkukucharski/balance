@@ -2,16 +2,16 @@
 {{- template "shared/base" . -}}
 {{- end -}}
 
-{{- define "title" -}}Balance — Parties & Counterparties{{- end -}}
+{{- define "title" -}}{{t .Locale "app-name"}} — {{t .Locale "parties-title"}}{{- end -}}
 
 {{- define "navbar_end" -}}
     <a href="/budgets/{{.BudgetID}}/parties/rules" class="btn btn-ghost btn-sm font-semibold gap-1.5">
         <span>⚡</span>
-        <span>All Rules</span>
+        <span>{{t .Locale "parties-all-rules-btn"}}</span>
     </a>
     <form method="POST" action="/logout">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
-        <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
+        <button type="submit" class="btn btn-ghost btn-sm font-medium">{{t .Locale "nav-logout"}}</button>
     </form>
 {{- end -}}
 
@@ -128,17 +128,17 @@
 {{- define "content" -}}
             <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
                 <div>
-                    <h1 class="text-2xl font-black tracking-tight">Parties & Counterparties</h1>
-                    <p class="text-xs text-base-content/60 mt-1">Manage merchants, employers, landlords, and external accounts.</p>
+                    <h1 class="text-2xl font-black tracking-tight">{{t .Locale "parties-title"}}</h1>
+                    <p class="text-xs text-base-content/60 mt-1">{{t .Locale "parties-desc"}}</p>
                 </div>
                 <div class="flex items-center gap-2">
                     <a href="/budgets/{{.BudgetID}}/parties/rules" class="btn btn-outline btn-sm shadow font-semibold gap-1.5">
                         <span>⚡</span>
-                        <span>Manage All Rules</span>
+                        <span>{{t .Locale "parties-all-rules-btn"}}</span>
                     </a>
                     <button class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="new_party_modal.showModal()">
                         <span>+</span>
-                        <span>New Counterparty</span>
+                        <span>{{t .Locale "parties-add-btn"}}</span>
                     </button>
                 </div>
             </div>

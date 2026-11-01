@@ -31,6 +31,8 @@ func NewHistoryHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *HistoryHa
 }
 
 type historyPageViewData struct {
+	Locale                  string
+	NumberFormat            string
 	DateFormat              string
 	TimeFormat              string
 	EntityName              string
@@ -109,7 +111,11 @@ func (h *HistoryHandler) HistoryDrawer(c echo.Context) error {
 	}
 
 	dFormat, tFormat := GetUserDateTimePreferences(c)
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
 	pageData := historyPageViewData{
+		Locale:                  userLocale,
+		NumberFormat:            userNumberFormat,
 		DateFormat:              dFormat,
 		TimeFormat:              tFormat,
 		EntityName:              histResult.EntityName,

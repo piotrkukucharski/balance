@@ -55,6 +55,8 @@ type partyListItem struct {
 }
 
 type partiesViewData struct {
+	Locale                  string
+	NumberFormat            string
 	BudgetID                string
 	BudgetName              string
 	CSRFToken               string
@@ -115,14 +117,21 @@ func (h *PartiesHandler) PartiesView(c echo.Context) error {
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
+	dFormat, tFormat := GetUserDateTimePreferences(c)
 
 	out, err := templates.RenderString("parties/view", partiesViewData{
+		Locale:                  userLocale,
+		NumberFormat:            userNumberFormat,
 		BudgetID:                budgetID,
 		BudgetName:              "Parties",
 		CSRFToken:               csrfToken,
+		DateFormat:              dFormat,
+		TimeFormat:              tFormat,
 		Parties:                 parties,
-		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "parties")),
-		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "parties")),
+		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "parties", userLocale)),
+		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "parties", userLocale)),
 		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
 	})
 	if err != nil {
@@ -398,6 +407,8 @@ type ruleSelectOption struct {
 }
 
 type allRulesPageViewData struct {
+	Locale                  string
+	NumberFormat            string
 	BudgetID                string
 	BudgetName              string
 	CSRFToken               string
@@ -412,6 +423,8 @@ type allRulesPageViewData struct {
 }
 
 type partyRulesPageViewData struct {
+	Locale                  string
+	NumberFormat            string
 	BudgetID                string
 	BudgetName              string
 	PartyID                 string
@@ -482,16 +495,23 @@ func (h *PartiesHandler) AllRulesView(c echo.Context) error {
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
+	dFormat, tFormat := GetUserDateTimePreferences(c)
 
 	out, err := templates.RenderString("parties/all_rules", allRulesPageViewData{
+		Locale:                  userLocale,
+		NumberFormat:            userNumberFormat,
 		BudgetID:                budgetID,
 		BudgetName:              "Rules",
 		CSRFToken:               csrfToken,
+		DateFormat:              dFormat,
+		TimeFormat:              tFormat,
 		Rules:                   rules,
 		BucketOptions:           bucketOptions,
 		PartyOptions:            partyOptions,
-		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "parties")),
-		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "parties")),
+		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "parties", userLocale)),
+		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "parties", userLocale)),
 		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
 	})
 	if err != nil {
@@ -564,17 +584,24 @@ func (h *PartiesHandler) PartyRulesView(c echo.Context) error {
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
+	dFormat, tFormat := GetUserDateTimePreferences(c)
 
 	out, err := templates.RenderString("parties/party_rules", partyRulesPageViewData{
+		Locale:                  userLocale,
+		NumberFormat:            userNumberFormat,
 		BudgetID:                budgetID,
 		BudgetName:              "Parties",
 		PartyID:                 partyID,
 		PartyName:               partyName,
 		CSRFToken:               csrfToken,
+		DateFormat:              dFormat,
+		TimeFormat:              tFormat,
 		Rules:                   rules,
 		BucketOptions:           bucketOptions,
-		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "parties")),
-		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "parties")),
+		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "parties", userLocale)),
+		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "parties", userLocale)),
 		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
 	})
 	if err != nil {

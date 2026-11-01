@@ -90,6 +90,13 @@ func init() {
 			}
 			return i18n.FormatMoneyMinor(amountMinor, currency, locStr, custStr)
 		},
+		"localeDefaults": func(locale any) i18n.LocaleDefaults {
+			locStr := ""
+			if s, ok := locale.(string); ok {
+				locStr = s
+			}
+			return i18n.GetLocaleDefaults(locStr)
+		},
 		"dict": func(values ...any) (map[string]any, error) {
 			if len(values)%2 != 0 {
 				return nil, fmt.Errorf("dict requires even number of arguments")

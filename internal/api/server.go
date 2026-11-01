@@ -17,6 +17,7 @@ import (
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/fx"
 	"github.com/balance/balance/internal/history"
+	"github.com/balance/balance/internal/i18n"
 	"github.com/balance/balance/internal/integration/csv"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/lua"
@@ -302,9 +303,18 @@ func (s *Server) UpdateCurrentUser(ctx echo.Context) error {
 			return sendError(ctx, http.StatusInternalServerError, "Failed updating user", "INTERNAL_ERROR", nil)
 		}
 	}
+	if req.Locale != nil && *req.Locale != "" {
+		normLocale := i18n.NormalizeLocale(*req.Locale)
+		_, err = s.mainDB.ExecContext(ctx.Request().Context(), `
+			UPDATE users SET locale = ?, updated_at = ? WHERE id = ?`,
+			normLocale, now, userID)
+		if err != nil {
+			return sendError(ctx, http.StatusInternalServerError, "Failed updating user locale", "INTERNAL_ERROR", nil)
+		}
+	}
 	if req.DateFormat != nil && *req.DateFormat != "" {
 		switch *req.DateFormat {
-		case "YYYY-MM-DD", "DD.MM.YYYY", "DD/MM/YYYY", "MM/DD/YYYY":
+		case "auto", "YYYY-MM-DD", "DD.MM.YYYY", "DD/MM/YYYY", "MM/DD/YYYY":
 			_, err = s.mainDB.ExecContext(ctx.Request().Context(), `
 				UPDATE users SET date_format = ?, updated_at = ? WHERE id = ?`,
 				*req.DateFormat, now, userID)
@@ -317,7 +327,7 @@ func (s *Server) UpdateCurrentUser(ctx echo.Context) error {
 	}
 	if req.TimeFormat != nil && *req.TimeFormat != "" {
 		switch *req.TimeFormat {
-		case "24h", "12h":
+		case "auto", "24h", "12h":
 			_, err = s.mainDB.ExecContext(ctx.Request().Context(), `
 				UPDATE users SET time_format = ?, updated_at = ? WHERE id = ?`,
 				*req.TimeFormat, now, userID)
@@ -326,6 +336,19 @@ func (s *Server) UpdateCurrentUser(ctx echo.Context) error {
 			}
 		default:
 			return sendError(ctx, http.StatusBadRequest, "Unsupported time format", "INVALID_INPUT", nil)
+		}
+	}
+	if req.NumberFormat != nil && *req.NumberFormat != "" {
+		switch *req.NumberFormat {
+		case "auto", "1,000.99", "1.000,99", "1 000,99", "1 000.99", "1_000.99", "1000.99":
+			_, err = s.mainDB.ExecContext(ctx.Request().Context(), `
+				UPDATE users SET number_format = ?, updated_at = ? WHERE id = ?`,
+				*req.NumberFormat, now, userID)
+			if err != nil {
+				return sendError(ctx, http.StatusInternalServerError, "Failed updating user number format", "INTERNAL_ERROR", nil)
+			}
+		default:
+			return sendError(ctx, http.StatusBadRequest, "Unsupported number format", "INVALID_INPUT", nil)
 		}
 	}
 

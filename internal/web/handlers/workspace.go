@@ -18,6 +18,7 @@ import (
 	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/i18n"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/lua"
 	"github.com/balance/balance/internal/service"
@@ -36,6 +37,8 @@ type budgetCardViewData struct {
 }
 
 type budgetsListViewData struct {
+	Locale                  string
+	NumberFormat            string
 	DateFormat              string
 	TimeFormat              string
 	BudgetName              string
@@ -48,6 +51,8 @@ type budgetsListViewData struct {
 }
 
 type settingsPageViewData struct {
+	Locale                  string
+	NumberFormat            string
 	BudgetID                string
 	BudgetName              string
 	DefaultCurrency         string
@@ -128,10 +133,19 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
+	dFormat, tFormat := GetUserDateTimePreferences(c)
+
 	htmlContent, err := templates.RenderString("workspace/budgets_list", budgetsListViewData{
-		CSRFToken:      csrfToken,
-		Budgets:        budgets,
-		HasOwnerBudget: hasOwnerBudget,
+		Locale:                  userLocale,
+		NumberFormat:            userNumberFormat,
+		DateFormat:              dFormat,
+		TimeFormat:              tFormat,
+		CSRFToken:               csrfToken,
+		Budgets:                 budgets,
+		HasOwnerBudget:          hasOwnerBudget,
+		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
 	})
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed rendering budgets list")
@@ -155,11 +169,15 @@ func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
-	sidebarHTML := RenderSidebarNavigation(budgetID, "settings")
-	bottomDockHTML := RenderBottomDock(budgetID, "settings")
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
+	sidebarHTML := RenderSidebarNavigation(budgetID, "settings", userLocale)
+	bottomDockHTML := RenderBottomDock(budgetID, "settings", userLocale)
 	dFormat, tFormat := GetUserDateTimePreferences(c)
 
 	htmlContent, err := templates.RenderString("workspace/settings", settingsPageViewData{
+		Locale:                  userLocale,
+		NumberFormat:            userNumberFormat,
 		BudgetID:                budgetID,
 		BudgetName:              name,
 		DefaultCurrency:         defaultCurrency,
@@ -557,6 +575,8 @@ type otherBudgetOptionViewData struct {
 }
 
 type budgetPageViewData struct {
+	Locale                       string
+	NumberFormat                 string
 	BudgetID                     string
 	BudgetName                   string
 	Role                         string
@@ -690,6 +710,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	userID, _ := c.Get(ContextUserIDKey).(string)
 	csrfToken, _ := c.Get("csrfToken").(string)
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
 
 	var budgetName, defaultCurr, tz string
 	h.mainDB.QueryRowContext(c.Request().Context(), `SELECT name, default_currency, timezone FROM budgets WHERE id = ?`, budgetID).
@@ -978,9 +1000,9 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 			} else {
 				t.ProgressClass = "progress-warning"
 			}
-			t.FundedFormatted = fmt.Sprintf("%.2f", float64(t.CurrentFundedMinor)/100.0)
-			t.RequiredFormatted = fmt.Sprintf("%.2f", float64(t.RequiredMinor)/100.0)
-			t.NeededFormatted = fmt.Sprintf("%.2f", float64(t.NeededMinor)/100.0)
+			t.FundedFormatted = i18n.FormatMoneyMinor(t.CurrentFundedMinor, "", userLocale, userNumberFormat)
+			t.RequiredFormatted = i18n.FormatMoneyMinor(t.RequiredMinor, "", userLocale, userNumberFormat)
+			t.NeededFormatted = i18n.FormatMoneyMinor(t.NeededMinor, "", userLocale, userNumberFormat)
 
 			targetsByBucket[t.BucketID] = append(targetsByBucket[t.BucketID], t)
 		}
@@ -1101,18 +1123,18 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		b.GroupID = safeDOMID(gName)
 		b.EscapedName = strings.ReplaceAll(b.Name, "'", "\\'")
 		b.EscapedGroupName = strings.ReplaceAll(b.GroupName, "'", "\\'")
-		b.BalanceFormatted = fmt.Sprintf("%.2f", float64(b.BalanceMinor)/100.0)
-		b.TotalRequiredFormatted = fmt.Sprintf("%.2f", float64(b.TotalRequiredMinor)/100.0)
-		b.TotalFundedFormatted = fmt.Sprintf("%.2f", float64(b.TotalFundedMinor)/100.0)
-		b.TotalNeededFormatted = fmt.Sprintf("%.2f", float64(b.TotalNeededMinor)/100.0)
-		b.UnassignedBufferFormatted = fmt.Sprintf("%.2f", float64(b.UnassignedBufferMinor)/100.0)
+		b.BalanceFormatted = i18n.FormatMoneyMinor(b.BalanceMinor, "", userLocale, userNumberFormat)
+		b.TotalRequiredFormatted = i18n.FormatMoneyMinor(b.TotalRequiredMinor, "", userLocale, userNumberFormat)
+		b.TotalFundedFormatted = i18n.FormatMoneyMinor(b.TotalFundedMinor, "", userLocale, userNumberFormat)
+		b.TotalNeededFormatted = i18n.FormatMoneyMinor(b.TotalNeededMinor, "", userLocale, userNumberFormat)
+		b.UnassignedBufferFormatted = i18n.FormatMoneyMinor(b.UnassignedBufferMinor, "", userLocale, userNumberFormat)
 
 		if b.UnassignedBufferMinor > 0 {
-			b.BufferMobileStr = fmt.Sprintf("Buffer: +%.2f %s", float64(b.UnassignedBufferMinor)/100.0, b.Currency)
+			b.BufferMobileStr = fmt.Sprintf("Buffer: +%s %s", i18n.FormatMoneyMinor(b.UnassignedBufferMinor, "", userLocale, userNumberFormat), b.Currency)
 		} else if b.UnassignedBufferMinor < 0 {
-			b.BufferMobileStr = fmt.Sprintf("⚠ Over-allocated: %.2f %s", float64(b.UnassignedBufferMinor)/100.0, b.Currency)
+			b.BufferMobileStr = fmt.Sprintf("⚠ Over-allocated: %s %s", i18n.FormatMoneyMinor(b.UnassignedBufferMinor, "", userLocale, userNumberFormat), b.Currency)
 		} else {
-			b.BufferMobileStr = fmt.Sprintf("Buffer: 0.00 %s", b.Currency)
+			b.BufferMobileStr = fmt.Sprintf("Buffer: %s %s", i18n.FormatMoneyMinor(0, "", userLocale, userNumberFormat), b.Currency)
 		}
 
 		switch b.HealthStatus {
@@ -1297,10 +1319,10 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 			bg.TotalFundedMinor += b.TotalFundedMinor
 			bg.TotalNeededMinor += b.TotalNeededMinor
 		}
-		bg.TotalAvailableFormatted = fmt.Sprintf("%.2f", float64(bg.TotalAvailableMinor)/100.0)
-		bg.TotalRequiredFormatted = fmt.Sprintf("%.2f", float64(bg.TotalRequiredMinor)/100.0)
-		bg.TotalFundedFormatted = fmt.Sprintf("%.2f", float64(bg.TotalFundedMinor)/100.0)
-		bg.TotalNeededFormatted = fmt.Sprintf("%.2f", float64(bg.TotalNeededMinor)/100.0)
+		bg.TotalAvailableFormatted = i18n.FormatMoneyMinor(bg.TotalAvailableMinor, "", userLocale, userNumberFormat)
+		bg.TotalRequiredFormatted = i18n.FormatMoneyMinor(bg.TotalRequiredMinor, "", userLocale, userNumberFormat)
+		bg.TotalFundedFormatted = i18n.FormatMoneyMinor(bg.TotalFundedMinor, "", userLocale, userNumberFormat)
+		bg.TotalNeededFormatted = i18n.FormatMoneyMinor(bg.TotalNeededMinor, "", userLocale, userNumberFormat)
 		if bg.TotalRequiredMinor > 0 {
 			pct := int((bg.TotalFundedMinor * 100) / bg.TotalRequiredMinor)
 			if pct < 0 {
@@ -1354,7 +1376,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		accountSummaries = append(accountSummaries, accountSummaryItem{
 			Name:             aName,
 			Currency:         aCurr,
-			BalanceFormatted: fmt.Sprintf("%.2f", float64(aBalance)/100.0),
+			BalanceFormatted: i18n.FormatMoneyMinor(aBalance, "", userLocale, userNumberFormat),
 			IsURLIcon:        isURL,
 			IconValue:        iconVal,
 		})
@@ -1455,7 +1477,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		}
 		topCurrencies = append(topCurrencies, rtaCurrencyBadgeViewData{
 			Currency:        item.curr,
-			AmountFormatted: fmt.Sprintf("%.2f", float64(item.amt)/100.0),
+			AmountFormatted: i18n.FormatMoneyMinor(item.amt, "", userLocale, userNumberFormat),
 			BadgeColor:      color,
 		})
 	}
@@ -1467,7 +1489,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		}
 		extraCurrencies = append(extraCurrencies, rtaCurrencyBadgeViewData{
 			Currency:        item.curr,
-			AmountFormatted: fmt.Sprintf("%.2f", float64(item.amt)/100.0),
+			AmountFormatted: i18n.FormatMoneyMinor(item.amt, "", userLocale, userNumberFormat),
 			BadgeColor:      color,
 		})
 	}
@@ -1479,6 +1501,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	dateFormat, timeFormat := GetUserDateTimePreferences(c)
 
 	pageData := budgetPageViewData{
+		Locale:                     userLocale,
+		NumberFormat:               userNumberFormat,
 		BudgetID:                   budgetID,
 		BudgetName:                 budgetName,
 		Role:                       role,
@@ -1495,21 +1519,21 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		DateFormat:                 dateFormat,
 		TimeFormat:                 timeFormat,
 		CSRFToken:                  csrfToken,
-		SidebarHTML:                template.HTML(RenderSidebarNavigation(budgetID, "budget")),
-		BottomDockHTML:             template.HTML(RenderBottomDock(budgetID, "budget")),
+		SidebarHTML:                template.HTML(RenderSidebarNavigation(budgetID, "budget", userLocale)),
+		BottomDockHTML:             template.HTML(RenderBottomDock(budgetID, "budget", userLocale)),
 		DateTimeFormatterScript:    template.HTML(DateTimeFormatterScript()),
 		HasAccounts:                hasAccounts,
 		AccountSummaries:           accountSummaries,
 		RTAColor:                   rtaColor,
 		RTADescClass:               rtaDescClass,
 		RTADesc:                    rtaDesc,
-		DefaultRTAFormatted:        fmt.Sprintf("%.2f", float64(defaultRTA)/100.0),
+		DefaultRTAFormatted:        i18n.FormatMoneyMinor(defaultRTA, "", userLocale, userNumberFormat),
 		HasNonDefaultRTACurrencies: len(nonDefaultCurrencies) > 0,
 		TopRTACurrencies:           topCurrencies,
 		ExtraRTACurrencies:         extraCurrencies,
-		TotalNeededFormatted:       fmt.Sprintf("%.2f", float64(totalNeededAcrossAllMinor)/100.0),
+		TotalNeededFormatted:       i18n.FormatMoneyMinor(totalNeededAcrossAllMinor, "", userLocale, userNumberFormat),
 		HasMandatoryP3Needed:       totalMandatoryP3NeededAcrossAllMinor > 0,
-		MandatoryP3NeededFormatted: fmt.Sprintf("%.2f", float64(totalMandatoryP3NeededAcrossAllMinor)/100.0),
+		MandatoryP3NeededFormatted: i18n.FormatMoneyMinor(totalMandatoryP3NeededAcrossAllMinor, "", userLocale, userNumberFormat),
 		CountAll:                   countAll,
 		CountAttention:             countAttention,
 		CountOverspent:             countOverspent,
