@@ -20,22 +20,22 @@
 
 {{- define "shared/sidebar_nav" -}}
             <ul class="menu menu-md w-full p-0 gap-1">
-                <li><a href="/budgets/{{.BudgetID}}/budget"{{if eq .ActiveItem "budget"}} class="active font-bold"{{end}}>📂 1. Budget (Buckets)</a></li>
-                <li><a href="/budgets/{{.BudgetID}}/accounts"{{if eq .ActiveItem "accounts"}} class="active font-bold"{{end}}>💳 2. Accounts</a></li>
-                <li><a href="/budgets/{{.BudgetID}}/transactions"{{if eq .ActiveItem "transactions"}} class="active font-bold"{{end}}>💸 3. Transactions</a></li>
-                <li><a href="/budgets/{{.BudgetID}}/automations"{{if eq .ActiveItem "automations"}} class="active font-bold"{{end}}>⚡ 4. Automations</a></li>
-                <li><a href="/budgets/{{.BudgetID}}/reports"{{if eq .ActiveItem "reports"}} class="active font-bold"{{end}}>📊 5. Reports</a></li>
-                <li><a href="/budgets/{{.BudgetID}}/parties"{{if eq .ActiveItem "parties"}} class="active font-bold"{{end}}>🏢 6. External Parties</a></li>
+                <li><a href="/budgets/{{.BudgetID}}/budget"{{if eq .ActiveItem "budget"}} class="active font-bold"{{end}}>{{t .Locale "nav-budget"}}</a></li>
+                <li><a href="/budgets/{{.BudgetID}}/accounts"{{if eq .ActiveItem "accounts"}} class="active font-bold"{{end}}>{{t .Locale "nav-accounts"}}</a></li>
+                <li><a href="/budgets/{{.BudgetID}}/transactions"{{if eq .ActiveItem "transactions"}} class="active font-bold"{{end}}>{{t .Locale "nav-transactions"}}</a></li>
+                <li><a href="/budgets/{{.BudgetID}}/automations"{{if eq .ActiveItem "automations"}} class="active font-bold"{{end}}>{{t .Locale "nav-automations"}}</a></li>
+                <li><a href="/budgets/{{.BudgetID}}/reports"{{if eq .ActiveItem "reports"}} class="active font-bold"{{end}}>{{t .Locale "nav-reports"}}</a></li>
+                <li><a href="/budgets/{{.BudgetID}}/parties"{{if eq .ActiveItem "parties"}} class="active font-bold"{{end}}>{{t .Locale "nav-parties"}}</a></li>
                 <li>
                     <details open>
                         <summary{{if .IsSettingsGroup}} class="font-bold text-primary"{{end}}>
-                            <a href="/budgets/{{.BudgetID}}/settings" class="grow">⚙️ 7. Settings</a>
+                            <a href="/budgets/{{.BudgetID}}/settings" class="grow">{{t .Locale "nav-settings"}}</a>
                         </summary>
                         <ul class="before:hidden">
-                            <li><a href="/budgets/{{.BudgetID}}/settings"{{if eq .ActiveItem "settings"}} class="active font-bold"{{end}}>General</a></li>
-                            <li><a href="/budgets/{{.BudgetID}}/settings/members"{{if eq .ActiveItem "members"}} class="active font-bold"{{end}}>👥 Members</a></li>
-                            <li><a href="/budgets/{{.BudgetID}}/settings/tokens"{{if eq .ActiveItem "tokens"}} class="active font-bold"{{end}}>🔑 API Tokens</a></li>
-                            <li><a href="{{.ProfileLink}}"{{if eq .ActiveItem "profile"}} class="active font-bold"{{end}}>👤 Profile & Preferences</a></li>
+                            <li><a href="/budgets/{{.BudgetID}}/settings"{{if eq .ActiveItem "settings"}} class="active font-bold"{{end}}>{{t .Locale "nav-settings-general"}}</a></li>
+                            <li><a href="/budgets/{{.BudgetID}}/settings/members"{{if eq .ActiveItem "members"}} class="active font-bold"{{end}}>{{t .Locale "nav-settings-members"}}</a></li>
+                            <li><a href="/budgets/{{.BudgetID}}/settings/tokens"{{if eq .ActiveItem "tokens"}} class="active font-bold"{{end}}>{{t .Locale "nav-settings-tokens"}}</a></li>
+                            <li><a href="{{.ProfileLink}}"{{if eq .ActiveItem "profile"}} class="active font-bold"{{end}}>{{t .Locale "nav-settings-profile"}}</a></li>
                         </ul>
                     </details>
                 </li>
@@ -46,27 +46,27 @@
     <div class="dock dock-md md:hidden bg-base-100/95 backdrop-blur-xs border-t border-base-300 z-40 pb-[env(safe-area-inset-bottom)] shadow-lg" role="navigation" aria-label="Mobile Bottom Navigation">
         <a href="/budgets/{{.BudgetID}}/budget" class="{{if eq .ActiveItem "budget"}}dock-active text-primary font-semibold touch-manipulation min-h-12{{else}}touch-manipulation min-h-12 text-base-content/70{{end}}">
             <span class="text-xl leading-none">📂</span>
-            <span class="dock-label text-[11px]">Budget</span>
+            <span class="dock-label text-[11px]">{{t .Locale "dock-budget"}}</span>
         </a>
         <a href="/budgets/{{.BudgetID}}/accounts" class="{{if eq .ActiveItem "accounts"}}dock-active text-primary font-semibold touch-manipulation min-h-12{{else}}touch-manipulation min-h-12 text-base-content/70{{end}}">
             <span class="text-xl leading-none">💳</span>
-            <span class="dock-label text-[11px]">Accounts</span>
+            <span class="dock-label text-[11px]">{{t .Locale "dock-accounts"}}</span>
         </a>
         <a href="/budgets/{{.BudgetID}}/transactions" class="{{if eq .ActiveItem "transactions"}}dock-active text-primary font-semibold touch-manipulation min-h-12{{else}}touch-manipulation min-h-12 text-base-content/70{{end}}">
             <span class="text-xl leading-none">💸</span>
-            <span class="dock-label text-[11px]">Txns</span>
+            <span class="dock-label text-[11px]">{{t .Locale "dock-transactions"}}</span>
         </a>
         <a href="/budgets/{{.BudgetID}}/automations" class="{{if eq .ActiveItem "automations"}}dock-active text-primary font-semibold touch-manipulation min-h-12{{else}}touch-manipulation min-h-12 text-base-content/70{{end}}">
             <span class="text-xl leading-none">⚡</span>
-            <span class="dock-label text-[11px]">Rules</span>
+            <span class="dock-label text-[11px]">{{t .Locale "dock-automations"}}</span>
         </a>
         <a href="/budgets/{{.BudgetID}}/reports" class="{{if eq .ActiveItem "reports"}}dock-active text-primary font-semibold touch-manipulation min-h-12{{else}}touch-manipulation min-h-12 text-base-content/70{{end}}">
             <span class="text-xl leading-none">📊</span>
-            <span class="dock-label text-[11px]">Reports</span>
+            <span class="dock-label text-[11px]">{{t .Locale "dock-reports"}}</span>
         </a>
         <a href="/budgets/{{.BudgetID}}/settings" class="{{if eq .ActiveItem "settings"}}dock-active text-primary font-semibold touch-manipulation min-h-12{{else}}touch-manipulation min-h-12 text-base-content/70{{end}}">
             <span class="text-xl leading-none">⚙️</span>
-            <span class="dock-label text-[11px]">Settings</span>
+            <span class="dock-label text-[11px]">{{t .Locale "dock-settings"}}</span>
         </a>
     </div>
 {{- end -}}

@@ -34,12 +34,14 @@ tasks:
   dev:build:
     desc: "Build the Balance server binary"
     cmds:
+      - go test -run TestValidateCatalogKeys ./internal/i18n/...
       - go build -o bin/{{.BIN_NAME}} ./cmd/server
 
   dev:up:
     desc: "Start the Balance development server"
     deps: [dev:init]
     cmds:
+      - go test -run TestValidateCatalogKeys ./internal/i18n/...
       - echo "http://localhost:{{.PORT}}"
       - DATA_DIR={{.DATA_DIR}} PORT={{.PORT}} go run ./cmd/server
 
@@ -92,9 +94,9 @@ tasks:
       - go test -v -race ./...
 
   test:unit:
-    desc: "Run algorithmic and domain unit tests (primitives, auth, lua, budget, rule, report)"
+    desc: "Run algorithmic and domain unit tests (primitives, auth, lua, budget, rule, report, i18n)"
     cmds:
-      - go test -v ./internal/domain/... ./internal/auth/... ./internal/lua/... ./internal/budget/... ./internal/rule/... ./internal/report/...
+      - go test -v ./internal/domain/... ./internal/auth/... ./internal/lua/... ./internal/budget/... ./internal/rule/... ./internal/report/... ./internal/i18n/...
 
   test:db:
     desc: "Run database and tenant connection pool tests"
@@ -114,7 +116,7 @@ tasks:
   test:web:
     desc: "Run HTTP web routes and handlers integration tests"
     cmds:
-      - go test -v ./internal/web/handlers/...
+      - AI_PROVIDER=mock go test -v ./internal/web/handlers/...
 
   test:bdd:
     desc: "Run Godog BDD feature test suite"

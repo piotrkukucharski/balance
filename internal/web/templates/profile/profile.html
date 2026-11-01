@@ -2,51 +2,71 @@
 {{- template "shared/base" . -}}
 {{- end -}}
 
-{{- define "title" -}}Balance — User Profile & Preferences{{- end -}}
+{{- define "title" -}}{{t .Locale "app-name"}} — {{t .Locale "profile-title"}}{{- end -}}
 
 {{- define "navbar_end" -}}
-            <a href="{{.BackLink}}" class="btn btn-ghost btn-sm font-medium">← Back</a>
+            <a href="{{.BackLink}}" class="btn btn-ghost btn-sm font-medium">{{t .Locale "nav-back"}}</a>
             <form method="POST" action="/logout">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
-                <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
+                <button type="submit" class="btn btn-ghost btn-sm font-medium">{{t .Locale "nav-logout"}}</button>
             </form>
 {{- end -}}
 
 {{- define "content" -}}
         <div class="max-w-4xl">
             <div class="mb-6">
-                <h1 class="text-2xl font-black tracking-tight">Profile & Preferences</h1>
-                <p class="text-xs text-base-content/60 mt-1">Manage personal account details and regional date/time formatting preferences.</p>
+                <h1 class="text-2xl font-black tracking-tight">{{t .Locale "profile-title"}}</h1>
+                <p class="text-xs text-base-content/60 mt-1">{{t .Locale "profile-desc"}}</p>
             </div>
 
             {{- if .Saved}}
             <div class="alert alert-success alert-soft text-xs shadow-xs mb-4">
-                <span>✓ Preferences updated successfully.</span>
+                <span>{{t .Locale "profile-saved-success"}}</span>
             </div>
             {{- end}}
 
             <div class="card card-border bg-base-100 border-base-300 shadow-md">
                 <div class="card-body p-6">
-                    <h2 class="card-title text-lg font-bold mb-4">Date & Time Personalization</h2>
                     <form method="POST" action="{{.FormAction}}" class="flex flex-col gap-5">
                         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
 
+                        <h2 class="card-title text-sm font-bold text-base-content/80 uppercase tracking-wider">{{t .Locale "profile-section-personal"}}</h2>
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div class="form-control">
-                                <label class="label pb-1"><span class="label-text font-medium text-xs">Display Name</span></label>
+                                <label class="label pb-1"><span class="label-text font-medium text-xs">{{t .Locale "profile-label-display-name"}}</span></label>
                                 <input type="text" name="display_name" value="{{.DisplayName}}" required class="input input-bordered w-full input-md focus:input-primary font-semibold" />
                             </div>
                             <div class="form-control">
-                                <label class="label pb-1"><span class="label-text font-medium text-xs">Email Address</span></label>
+                                <label class="label pb-1"><span class="label-text font-medium text-xs">{{t .Locale "profile-label-email"}}</span></label>
                                 <input type="email" value="{{.Email}}" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed font-mono text-xs" />
                             </div>
                         </div>
 
                         <div class="divider my-1"></div>
 
+                        <h2 class="card-title text-sm font-bold text-base-content/80 uppercase tracking-wider">{{t .Locale "profile-section-localization"}}</h2>
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div class="form-control">
-                                <label class="label pb-1"><span class="label-text font-medium text-xs">Preferred Date Format</span></label>
+                                <label class="label pb-1"><span class="label-text font-medium text-xs">{{t .Locale "profile-label-language"}}</span></label>
+                                <select name="locale" id="pref_locale" class="select select-bordered w-full select-md focus:select-primary" onchange="updateLivePreview()">
+                                    {{- range .LanguageOptions}}
+                                    <option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>
+                                    {{- end}}
+                                </select>
+                            </div>
+                            <div class="form-control">
+                                <label class="label pb-1"><span class="label-text font-medium text-xs">{{t .Locale "profile-label-number-format"}}</span></label>
+                                <select name="number_format" id="pref_number_format" class="select select-bordered w-full select-md focus:select-primary" onchange="updateLivePreview()">
+                                    {{- range .NumberOptions}}
+                                    <option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>
+                                    {{- end}}
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div class="form-control">
+                                <label class="label pb-1"><span class="label-text font-medium text-xs">{{t .Locale "profile-label-date-format"}}</span></label>
                                 <select name="date_format" id="pref_date_format" class="select select-bordered w-full select-md focus:select-primary" onchange="updateLivePreview()">
                                     {{- range .DateOptions}}
                                     <option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>
@@ -54,7 +74,7 @@
                                 </select>
                             </div>
                             <div class="form-control">
-                                <label class="label pb-1"><span class="label-text font-medium text-xs">Preferred Time Format</span></label>
+                                <label class="label pb-1"><span class="label-text font-medium text-xs">{{t .Locale "profile-label-time-format"}}</span></label>
                                 <select name="time_format" id="pref_time_format" class="select select-bordered w-full select-md focus:select-primary" onchange="updateLivePreview()">
                                     {{- range .TimeOptions}}
                                     <option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>
@@ -65,21 +85,29 @@
 
                         <!-- Live Preview Card -->
                         <div class="bg-base-200 rounded-xl p-4 border border-base-300 flex flex-col gap-2 mt-2">
-                            <div class="text-xs font-bold text-base-content/70 uppercase tracking-wider">Live Preview</div>
-                            <div class="flex flex-wrap items-center gap-6">
+                            <div class="text-xs font-bold text-base-content/70 uppercase tracking-wider">{{t .Locale "profile-live-preview"}}</div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                                 <div>
-                                    <div class="text-xs text-base-content/50">Date Preview:</div>
+                                    <div class="text-xs text-base-content/50">{{t .Locale "profile-preview-date"}}</div>
                                     <div id="preview_date" class="font-mono text-sm font-semibold text-primary">...</div>
                                 </div>
                                 <div>
-                                    <div class="text-xs text-base-content/50">Timestamp Preview:</div>
+                                    <div class="text-xs text-base-content/50">{{t .Locale "profile-preview-timestamp"}}</div>
                                     <div id="preview_time" class="font-mono text-sm font-semibold text-secondary">...</div>
+                                </div>
+                                <div>
+                                    <div class="text-xs text-base-content/50">{{t .Locale "profile-preview-number"}}</div>
+                                    <div id="preview_number" class="font-mono text-sm font-semibold text-accent">...</div>
+                                </div>
+                                <div>
+                                    <div class="text-xs text-base-content/50">{{t .Locale "profile-preview-currency"}}</div>
+                                    <div id="preview_currency" class="font-mono text-sm font-semibold text-success">...</div>
                                 </div>
                             </div>
                         </div>
 
                         <div class="card-actions justify-end mt-4">
-                            <button type="submit" class="btn btn-primary btn-sm shadow font-semibold">Save Preferences</button>
+                            <button type="submit" class="btn btn-primary btn-sm shadow font-semibold">{{t .Locale "profile-btn-save"}}</button>
                         </div>
                     </form>
                 </div>

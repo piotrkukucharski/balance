@@ -39,8 +39,8 @@ func TestProfileViewAndUpdate(t *testing.T) {
 	userID := domain.NewUUIDv7()
 	now := time.Now().UTC().UnixMicro()
 	_, err = mainDB.Exec(`
-		INSERT INTO users (id, email, password_hash, display_name, date_format, time_format, created_at, updated_at)
-		VALUES (?, 'user@test.com', 'dummyhash', 'Original Name', 'YYYY-MM-DD', '24h', ?, ?)`, userID, now, now)
+		INSERT INTO users (id, email, password_hash, display_name, locale, date_format, time_format, number_format, created_at, updated_at)
+		VALUES (?, 'user@test.com', 'dummyhash', 'Original Name', 'en-US', 'YYYY-MM-DD', '24h', 'auto', ?, ?)`, userID, now, now)
 	if err != nil {
 		t.Fatalf("failed inserting user: %v", err)
 	}
@@ -83,8 +83,10 @@ func TestProfileViewAndUpdate(t *testing.T) {
 		form := url.Values{}
 		form.Set("csrf_token", "test-csrf")
 		form.Set("display_name", "Updated Name")
+		form.Set("locale", "pl-PL")
 		form.Set("date_format", "DD.MM.YYYY")
 		form.Set("time_format", "12h")
+		form.Set("number_format", "1 000,99")
 
 		req := httptest.NewRequest(http.MethodPost, "/settings/profile", strings.NewReader(form.Encode()))
 		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
@@ -104,14 +106,14 @@ func TestProfileViewAndUpdate(t *testing.T) {
 		}
 
 		// Verify database
-		var dbName, dbDateFormat, dbTimeFormat string
+		var dbName, dbLocale, dbDateFormat, dbTimeFormat, dbNumberFormat string
 		err := mainDB.QueryRowContext(context.Background(), `
-			SELECT display_name, date_format, time_format FROM users WHERE id = ?`, userID).Scan(&dbName, &dbDateFormat, &dbTimeFormat)
+			SELECT display_name, locale, date_format, time_format, number_format FROM users WHERE id = ?`, userID).Scan(&dbName, &dbLocale, &dbDateFormat, &dbTimeFormat, &dbNumberFormat)
 		if err != nil {
 			t.Fatalf("query failed: %v", err)
 		}
-		if dbName != "Updated Name" || dbDateFormat != "DD.MM.YYYY" || dbTimeFormat != "12h" {
-			t.Fatalf("database not updated properly: name=%s, df=%s, tf=%s", dbName, dbDateFormat, dbTimeFormat)
+		if dbName != "Updated Name" || dbLocale != "pl-PL" || dbDateFormat != "DD.MM.YYYY" || dbTimeFormat != "12h" || dbNumberFormat != "1 000,99" {
+			t.Fatalf("database not updated properly: name=%s, loc=%s, df=%s, tf=%s, nf=%s", dbName, dbLocale, dbDateFormat, dbTimeFormat, dbNumberFormat)
 		}
 	})
 

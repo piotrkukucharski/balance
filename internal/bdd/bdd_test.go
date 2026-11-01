@@ -421,8 +421,10 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		form := url.Values{}
 		form.Set("csrf_token", tc.activeCSRF)
 		form.Set("display_name", "Updated Display Name")
+		form.Set("locale", "en-US")
 		form.Set("date_format", dateFormat)
 		form.Set("time_format", timeFormat)
+		form.Set("number_format", "auto")
 
 		req := httptest.NewRequest(http.MethodPost, "/settings/profile", strings.NewReader(form.Encode()))
 		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
@@ -435,6 +437,61 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 			return err
 		}
 		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^I update my profile settings with display name "([^"]*)", locale "([^"]*)", date format "([^"]*)", time format "([^"]*)" and number format "([^"]*)"$`, func(displayName, locale, dateFormat, timeFormat, numberFormat string) error {
+		form := url.Values{}
+		form.Set("csrf_token", tc.activeCSRF)
+		form.Set("display_name", displayName)
+		form.Set("locale", locale)
+		form.Set("date_format", dateFormat)
+		form.Set("time_format", timeFormat)
+		form.Set("number_format", numberFormat)
+
+		req := httptest.NewRequest(http.MethodPost, "/settings/profile", strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		if err := tc.profileHandler.UpdateProfile(c); err != nil {
+			return err
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^the profile preferences should be persisted in the "users" table with locale "([^"]*)"$`, func(expectedLocale string) error {
+		var dbLocale, dbDate, dbTime, dbNum string
+		err := tc.mainDB.QueryRow("SELECT locale, date_format, time_format, number_format FROM users WHERE id = ?", tc.activeUserID).Scan(&dbLocale, &dbDate, &dbTime, &dbNum)
+		if err != nil {
+			return err
+		}
+		if dbLocale != expectedLocale {
+			return fmt.Errorf("expected locale=%q, got %q", expectedLocale, dbLocale)
+		}
+		return nil
+	})
+
+	ctx.Step(`^navigating to "([^"]*)" should display interface elements localized in Polish$`, func(path string) error {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set("csrfToken", tc.activeCSRF)
+
+		if err := tc.profileHandler.ProfileView(c); err != nil {
+			return err
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "Profil i Preferencje") {
+			return fmt.Errorf("expected Polish header 'Profil i Preferencje', got body: %s", body)
+		}
+		if !strings.Contains(body, "Zapisz preferencje") {
+			return fmt.Errorf("expected Polish submit button 'Zapisz preferencje', got body: %s", body)
+		}
 		return nil
 	})
 

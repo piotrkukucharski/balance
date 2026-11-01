@@ -11,8 +11,10 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"reflect"
 	"strings"
 
+	"github.com/balance/balance/internal/i18n"
 	"github.com/labstack/echo/v4"
 )
 
@@ -70,6 +72,65 @@ func init() {
 
 	funcMap := template.FuncMap{
 		"staticPath": StaticPath,
+		"t": func(locale any, key string, args ...any) string {
+			locStr := ""
+			if s, ok := locale.(string); ok {
+				locStr = s
+			}
+			return i18n.T(locStr, key, args...)
+		},
+		"formatMoney": func(amountMinor int64, currency string, locale any, customFormat any) string {
+			locStr := ""
+			if s, ok := locale.(string); ok {
+				locStr = s
+			}
+			custStr := ""
+			if s, ok := customFormat.(string); ok {
+				custStr = s
+			}
+			return i18n.FormatMoneyMinor(amountMinor, currency, locStr, custStr)
+		},
+		"dict": func(values ...any) (map[string]any, error) {
+			if len(values)%2 != 0 {
+				return nil, fmt.Errorf("dict requires even number of arguments")
+			}
+			m := make(map[string]any, len(values)/2)
+			for i := 0; i < len(values); i += 2 {
+				key, ok := values[i].(string)
+				if !ok {
+					return nil, fmt.Errorf("dict keys must be strings")
+				}
+				m[key] = values[i+1]
+			}
+			return m, nil
+		},
+		"field": func(data any, fieldName string) any {
+			if data == nil {
+				return nil
+			}
+			v := reflect.ValueOf(data)
+			for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+				if v.IsNil() {
+					return nil
+				}
+				v = v.Elem()
+			}
+			if v.Kind() == reflect.Map {
+				kv := reflect.ValueOf(fieldName)
+				mv := v.MapIndex(kv)
+				if mv.IsValid() {
+					return mv.Interface()
+				}
+				return nil
+			}
+			if v.Kind() == reflect.Struct {
+				f := v.FieldByName(fieldName)
+				if f.IsValid() {
+					return f.Interface()
+				}
+			}
+			return nil
+		},
 	}
 
 	// 2. Parse shared base & component templates first

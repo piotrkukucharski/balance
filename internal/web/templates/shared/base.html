@@ -1,14 +1,29 @@
 {{- define "shared/base" -}}
+{{- $locale := field . "Locale" -}}
+{{- $dateFormat := field . "DateFormat" -}}
+{{- $timeFormat := field . "TimeFormat" -}}
+{{- $numberFormat := field . "NumberFormat" -}}
+{{- $budgetName := field . "BudgetName" -}}
+{{- $csrfToken := field . "CSRFToken" -}}
+{{- $sidebarHTML := field . "SidebarHTML" -}}
+{{- $bottomDockHTML := field . "BottomDockHTML" -}}
+{{- $dtFormatterScript := field . "DateTimeFormatterScript" -}}
 <!DOCTYPE html>
-<html lang="en" data-theme="{{block "theme" .}}dark{{end}}"{{if .DateFormat}} data-date-format="{{.DateFormat}}"{{end}}{{if .TimeFormat}} data-time-format="{{.TimeFormat}}"{{end}}>
+<html lang="{{if $locale}}{{$locale}}{{else}}en-US{{end}}" data-theme="{{block "theme" .}}dark{{end}}"{{if $dateFormat}} data-date-format="{{$dateFormat}}"{{end}}{{if $timeFormat}} data-time-format="{{$timeFormat}}"{{end}}{{if $numberFormat}} data-number-format="{{$numberFormat}}"{{end}}>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    {{- if .DateFormat}}
-    <meta name="user-date-format" content="{{.DateFormat}}">
+    {{- if $locale}}
+    <meta name="user-locale" content="{{$locale}}">
     {{- end}}
-    {{- if .TimeFormat}}
-    <meta name="user-time-format" content="{{.TimeFormat}}">
+    {{- if $dateFormat}}
+    <meta name="user-date-format" content="{{$dateFormat}}">
+    {{- end}}
+    {{- if $timeFormat}}
+    <meta name="user-time-format" content="{{$timeFormat}}">
+    {{- end}}
+    {{- if $numberFormat}}
+    <meta name="user-number-format" content="{{$numberFormat}}">
     {{- end}}
     <title>{{block "title" .}}Balance{{end}}</title>
     <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
@@ -27,12 +42,12 @@
         <div class="navbar-start gap-4 items-center">
             <a href="/budgets" class="text-2xl font-black tracking-tight text-primary flex items-center gap-2">
                 <span>⚖️</span>
-                <span>Balance</span>
+                <span>{{t $locale "app-name"}}</span>
             </a>
-            {{- if .BudgetName}}
+            {{- if $budgetName}}
             <div class="badge badge-neutral font-semibold gap-1.5 py-3">
                 <span class="w-2 h-2 rounded-full bg-success"></span>
-                <span>{{.BudgetName}}</span>
+                <span>{{$budgetName}}</span>
             </div>
             {{- end}}
             {{- block "navbar_start_extra" .}}{{end}}
@@ -40,17 +55,17 @@
         <div class="navbar-end gap-3">
             {{- block "navbar_end" .}}
             <form method="POST" action="/logout">
-                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
-                <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
+                <input type="hidden" name="csrf_token" value="{{field . "CSRFToken"}}" />
+                <button type="submit" class="btn btn-ghost btn-sm font-medium">{{t (field . "Locale") "nav-logout"}}</button>
             </form>
             {{- end}}
         </div>
     </header>
 
     <div class="flex-1 flex overflow-hidden">
-        {{- if .SidebarHTML}}
+        {{- if $sidebarHTML}}
         <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
-            {{.SidebarHTML}}
+            {{$sidebarHTML}}
             {{- block "sidebar_extra" .}}{{end}}
         </aside>
         {{- end}}
@@ -62,13 +77,13 @@
 
     {{- block "modals" .}}{{end}}
 
-    {{- if .BottomDockHTML}}
-    {{.BottomDockHTML}}
+    {{- if $bottomDockHTML}}
+    {{$bottomDockHTML}}
     {{- end}}
 
     {{- block "scripts" .}}{{end}}
-    {{- if .DateTimeFormatterScript}}
-    {{.DateTimeFormatterScript}}
+    {{- if $dtFormatterScript}}
+    {{$dtFormatterScript}}
     {{- end}}
 </body>
 </html>

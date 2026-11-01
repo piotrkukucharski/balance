@@ -12,18 +12,21 @@ import (
 	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/i18n"
 	"github.com/balance/balance/internal/logger"
 	"github.com/labstack/echo/v4"
 )
 
 const (
-	SessionCookieName   = "balance_session"
-	ContextUserIDKey    = "userID"
-	ContextSessionKey   = "sessionToken"
-	ContextRoleKey      = "budgetRole"
-	ContextBudgetDBKey  = "budgetDB"
-	ContextDateFormatKey = "dateFormat"
-	ContextTimeFormatKey = "timeFormat"
+	SessionCookieName     = "balance_session"
+	ContextUserIDKey      = "userID"
+	ContextSessionKey     = "sessionToken"
+	ContextRoleKey        = "budgetRole"
+	ContextBudgetDBKey    = "budgetDB"
+	ContextDateFormatKey  = "dateFormat"
+	ContextTimeFormatKey  = "timeFormat"
+	ContextNumberFormatKey = "numberFormat"
+	ContextLocaleKey      = "locale"
 )
 
 // CorrelationIDMiddleware assigns or propagates correlation ID and attaches it to request context.
@@ -134,17 +137,30 @@ func SessionOrBearerAuthMiddleware(mainDB *sql.DB) echo.MiddlewareFunc {
 
 				c.Set(ContextUserIDKey, userID)
 
-				var userDateFormat, userTimeFormat string
+				var userLocale, userDateFormat, userTimeFormat, userNumberFormat string
 				_ = mainDB.QueryRowContext(c.Request().Context(), `
-					SELECT date_format, time_format FROM users WHERE id = ?`, userID).Scan(&userDateFormat, &userTimeFormat)
-				if userDateFormat == "" {
-					userDateFormat = "YYYY-MM-DD"
+					SELECT locale, date_format, time_format, number_format FROM users WHERE id = ?`, userID).Scan(&userLocale, &userDateFormat, &userTimeFormat, &userNumberFormat)
+				if userLocale == "" {
+					userLocale = i18n.DefaultLocale
 				}
-				if userTimeFormat == "" {
-					userTimeFormat = "24h"
+				userLocale = i18n.NormalizeLocale(userLocale)
+				locDefaults := i18n.GetLocaleDefaults(userLocale)
+
+				if userDateFormat == "" || userDateFormat == "auto" {
+					userDateFormat = locDefaults.DateFormat
 				}
+				if userTimeFormat == "" || userTimeFormat == "auto" {
+					userTimeFormat = locDefaults.TimeFormat
+				}
+				if userNumberFormat == "" {
+					userNumberFormat = "auto"
+				}
+
+				c.Set(ContextLocaleKey, userLocale)
 				c.Set(ContextDateFormatKey, userDateFormat)
 				c.Set(ContextTimeFormatKey, userTimeFormat)
+				c.Set(ContextNumberFormatKey, userNumberFormat)
+				c.SetRequest(c.Request().WithContext(i18n.WithLocale(c.Request().Context(), userLocale)))
 
 				return next(c)
 			}
@@ -200,17 +216,30 @@ func SessionOrBearerAuthMiddleware(mainDB *sql.DB) echo.MiddlewareFunc {
 			c.Set(ContextSessionKey, cookie.Value)
 			c.Set("csrfToken", csrfToken)
 
-			var userDateFormat, userTimeFormat string
+			var userLocale, userDateFormat, userTimeFormat, userNumberFormat string
 			_ = mainDB.QueryRowContext(c.Request().Context(), `
-				SELECT date_format, time_format FROM users WHERE id = ?`, userID).Scan(&userDateFormat, &userTimeFormat)
-			if userDateFormat == "" {
-				userDateFormat = "YYYY-MM-DD"
+				SELECT locale, date_format, time_format, number_format FROM users WHERE id = ?`, userID).Scan(&userLocale, &userDateFormat, &userTimeFormat, &userNumberFormat)
+			if userLocale == "" {
+				userLocale = i18n.DefaultLocale
 			}
-			if userTimeFormat == "" {
-				userTimeFormat = "24h"
+			userLocale = i18n.NormalizeLocale(userLocale)
+			locDefaults := i18n.GetLocaleDefaults(userLocale)
+
+			if userDateFormat == "" || userDateFormat == "auto" {
+				userDateFormat = locDefaults.DateFormat
 			}
+			if userTimeFormat == "" || userTimeFormat == "auto" {
+				userTimeFormat = locDefaults.TimeFormat
+			}
+			if userNumberFormat == "" {
+				userNumberFormat = "auto"
+			}
+
+			c.Set(ContextLocaleKey, userLocale)
 			c.Set(ContextDateFormatKey, userDateFormat)
 			c.Set(ContextTimeFormatKey, userTimeFormat)
+			c.Set(ContextNumberFormatKey, userNumberFormat)
+			c.SetRequest(c.Request().WithContext(i18n.WithLocale(c.Request().Context(), userLocale)))
 
 			return next(c)
 		}

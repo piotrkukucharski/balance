@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"strings"
 
+	"github.com/balance/balance/internal/i18n"
 	"github.com/balance/balance/internal/web/templates"
 )
 
@@ -83,10 +84,11 @@ type sidebarNavTemplateData struct {
 	ActiveItem      string
 	IsSettingsGroup bool
 	ProfileLink     string
+	Locale          string
 }
 
 // RenderSidebarNavigation renders the standard left sidebar menu with subelements.
-func RenderSidebarNavigation(budgetID string, activeItem string) string {
+func RenderSidebarNavigation(budgetID string, activeItem string, optionalLocale ...string) string {
 	isSettingsGroup := activeItem == "settings" || activeItem == "members" || activeItem == "tokens" || activeItem == "profile" || activeItem == "debug"
 
 	profileLink := "/settings/profile"
@@ -94,11 +96,17 @@ func RenderSidebarNavigation(budgetID string, activeItem string) string {
 		profileLink = fmt.Sprintf("/budgets/%s/settings/profile", budgetID)
 	}
 
+	locale := i18n.DefaultLocale
+	if len(optionalLocale) > 0 && optionalLocale[0] != "" {
+		locale = optionalLocale[0]
+	}
+
 	rendered, err := templates.RenderString("shared/sidebar_nav", sidebarNavTemplateData{
 		BudgetID:        budgetID,
 		ActiveItem:      activeItem,
 		IsSettingsGroup: isSettingsGroup,
 		ProfileLink:     profileLink,
+		Locale:          locale,
 	})
 	if err != nil {
 		return ""
@@ -109,13 +117,20 @@ func RenderSidebarNavigation(budgetID string, activeItem string) string {
 type bottomDockTemplateData struct {
 	BudgetID   string
 	ActiveItem string
+	Locale     string
 }
 
 // RenderBottomDock renders the mobile responsive bottom navigation bar.
-func RenderBottomDock(budgetID string, activeItem string) string {
+func RenderBottomDock(budgetID string, activeItem string, optionalLocale ...string) string {
+	locale := i18n.DefaultLocale
+	if len(optionalLocale) > 0 && optionalLocale[0] != "" {
+		locale = optionalLocale[0]
+	}
+
 	rendered, err := templates.RenderString("shared/bottom_dock", bottomDockTemplateData{
 		BudgetID:   budgetID,
 		ActiveItem: activeItem,
+		Locale:     locale,
 	})
 	if err != nil {
 		return ""
