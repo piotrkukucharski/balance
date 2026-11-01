@@ -1,0 +1,179 @@
+{{- define "parties/party_rules" -}}
+{{- template "shared/base" . -}}
+{{- end -}}
+
+{{- define "title" -}}Balance — Matching Rules for {{.PartyName}}{{- end -}}
+
+{{- define "navbar_end" -}}
+    <a href="/budgets/{{.BudgetID}}/parties/rules" class="btn btn-ghost btn-sm font-semibold gap-1.5">
+        <span>⚡</span>
+        <span>All Rules</span>
+    </a>
+    <form method="POST" action="/logout">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+        <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
+    </form>
+{{- end -}}
+
+{{- define "modals" -}}
+    <!-- Universal Rule Modal (Create & Edit) -->
+    <dialog id="rule_modal" class="modal">
+        <div class="modal-box">
+            <h3 id="rule_modal_title" class="font-bold text-lg mb-2">Auto-Matching Rule</h3>
+            <p class="text-xs text-base-content/60 mb-4">When a raw bank transaction matches this pattern, it will automatically link to <strong>{{.PartyName}}</strong>.</p>
+            <form id="rule_modal_form" method="POST" action="/budgets/{{.BudgetID}}/parties/{{.PartyID}}/rules" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                
+                <div class="form-control">
+                    <label class="label"><span class="label-text font-semibold text-xs">Rule Name</span></label>
+                    <input type="text" id="rule_name" name="name" required placeholder="e.g. Zabka Grocery Store" class="input input-bordered w-full" />
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="form-control">
+                        <label class="label"><span class="label-text font-semibold text-xs">Match Field</span></label>
+                        <select id="rule_match_field" name="match_field" class="select select-bordered w-full">
+                            <option value="RAW_PAYEE" selected>RAW_PAYEE (Bank Payee Name)</option>
+                            <option value="COUNTERPARTY_IBAN">COUNTERPARTY_IBAN (Account Number)</option>
+                            <option value="REFERENCE">REFERENCE (Remittance Info)</option>
+                            <option value="ANY">ANY (All Fields)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-control">
+                        <label class="label"><span class="label-text font-semibold text-xs">Match Operator</span></label>
+                        <select id="rule_match_operator" name="match_operator" class="select select-bordered w-full">
+                            <option value="CONTAINS" selected>CONTAINS (Substring)</option>
+                            <option value="PREFIX">PREFIX (Starts With)</option>
+                            <option value="EXACT">EXACT (Full Match)</option>
+                            <option value="REGEX">REGEX (RE2 Regular Expression)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-control">
+                    <label class="label"><span class="label-text font-semibold text-xs">Pattern</span></label>
+                    <input type="text" id="rule_match_pattern" name="match_pattern" required placeholder="e.g. ZABKA or ^ŻABKA.*" class="input input-bordered w-full font-mono text-sm" />
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="form-control">
+                        <label class="label"><span class="label-text font-semibold text-xs">Default Envelope (Optional)</span></label>
+                        <select id="rule_default_bucket_id" name="default_bucket_id" class="select select-bordered w-full">
+                            <option value="">— None (Classification Only) —</option>
+                            {{- range .BucketOptions -}}
+                            <option value="{{.ID}}">{{.Name}}</option>
+                            {{- end -}}
+                        </select>
+                    </div>
+
+                    <div class="form-control">
+                        <label class="label"><span class="label-text font-semibold text-xs">Priority</span></label>
+                        <input type="number" id="rule_priority" name="priority" value="100" min="1" max="999" class="input input-bordered w-full font-mono" />
+                        <span class="text-[10px] text-base-content/50 mt-1">Lower numbers are evaluated first.</span>
+                    </div>
+                </div>
+
+                <div class="modal-action">
+                    <button type="button" class="btn btn-ghost" onclick="rule_modal.close()">Cancel</button>
+                    <button type="submit" id="rule_submit_btn" class="btn btn-primary font-semibold shadow-md">Create Rule</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+{{- end -}}
+
+{{- define "scripts" -}}
+    <script>
+        window.budgetID = "{{.BudgetID}}";
+        window.partyID = "{{.PartyID}}";
+    </script>
+    <script src="{{staticPath "parties/rules.js"}}"></script>
+{{- end -}}
+
+{{- define "content" -}}
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+                <div>
+                    <div class="flex items-center gap-2 text-xs text-base-content/60 mb-1">
+                        <a href="/budgets/{{.BudgetID}}/parties" class="hover:underline flex items-center gap-1">
+                            <span>←</span>
+                            <span>All Counterparties</span>
+                        </a>
+                        <span>/</span>
+                        <span class="font-medium text-base-content">{{.PartyName}}</span>
+                    </div>
+                    <h1 class="text-2xl font-black tracking-tight">Auto-Matching Rules</h1>
+                    <p class="text-xs text-base-content/60 mt-1">Configure patterns to automatically classify raw bank transactions into <strong>{{.PartyName}}</strong>.</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="openCreateRuleModal()">
+                        <span>+</span>
+                        <span>New Rule</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="card bg-base-100 border border-base-300 shadow-sm overflow-hidden mb-6">
+                <div class="overflow-x-auto">
+                    <table class="table table-zebra w-full">
+                        <thead>
+                            <tr class="bg-base-200/50 text-base-content/70">
+                                <th>Rule Name</th>
+                                <th>Field</th>
+                                <th>Operator</th>
+                                <th>Pattern</th>
+                                <th>Default Envelope</th>
+                                <th class="text-center">Priority</th>
+                                <th class="text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {{- if .Rules -}}
+                            {{- range .Rules -}}
+                            <tr class="hover">
+                                <td>
+                                    <div class="font-bold text-sm">{{.Name}}</div>
+                                </td>
+                                <td>
+                                    <span class="badge badge-neutral badge-sm font-mono">{{.MatchField}}</span>
+                                </td>
+                                <td>
+                                    <span class="badge badge-ghost badge-sm font-semibold">{{.MatchOperator}}</span>
+                                </td>
+                                <td>
+                                    <code class="text-xs bg-base-300/60 px-2 py-0.5 rounded font-mono">{{.MatchPattern}}</code>
+                                </td>
+                                <td>
+                                    {{- if .BucketName -}}
+                                    <span class="badge badge-soft badge-primary badge-sm font-semibold">{{.BucketName}}</span>
+                                    {{- else -}}
+                                    <span class="badge badge-ghost badge-sm text-base-content/50">None</span>
+                                    {{- end -}}
+                                </td>
+                                <td class="text-center font-mono font-bold text-sm">{{.Priority}}</td>
+                                <td class="text-right">
+                                    <div class="flex items-center justify-end gap-1">
+                                        <button type="button" class="btn btn-ghost btn-xs text-info font-semibold" onclick='openEditRuleModal({{.RuleJSON}})'>
+                                            Edit
+                                        </button>
+                                        <form method="POST" action="/budgets/{{$.BudgetID}}/parties/{{$.PartyID}}/rules/{{.ID}}/delete" onsubmit="return confirm('Are you sure you want to delete this matching rule?')">
+                                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
+                                            <button type="submit" class="btn btn-ghost btn-xs text-error font-semibold">Delete</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                            {{- end -}}
+                            {{- else -}}
+                            <tr>
+                                <td colspan="7" class="text-center py-8 text-base-content/50">
+                                    No auto-matching rules configured for this counterparty. Add a rule below to automatically map bank payees.
+                                </td>
+                            </tr>
+                            {{- end -}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+{{- end -}}

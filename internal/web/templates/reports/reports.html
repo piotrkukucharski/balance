@@ -1,0 +1,272 @@
+{{- define "reports/view" -}}
+{{- template "shared/base" . -}}
+{{- end -}}
+
+{{- define "title" -}}Balance — Reports & Analytics{{- end -}}
+
+{{- define "head_extra" -}}
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+{{- end -}}
+
+{{- define "scripts" -}}
+    <script>
+        window.budgetId = '{{.BudgetID}}';
+    </script>
+    <script src="{{staticPath "reports/reports.js"}}"></script>
+{{- end -}}
+
+{{- define "content" -}}
+            <div class="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                    <h1 class="text-3xl font-black tracking-tight">Reports & Analytics</h1>
+                    <p class="text-sm text-base-content/60 mt-1">10 interactive financial insights, forecasting models, and Monte Carlo longevity simulations.</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button type="button" id="btn-recalculate-all" class="btn btn-sm btn-outline gap-1.5" onclick="recalculateAllReports()">
+                        <span id="recalc-all-icon">🔄</span>
+                        <span>Przelicz wszystkie</span>
+                    </button>
+                </div>
+            </div>
+
+            {{.SavedReportsHTML}}
+
+            <!-- Reports Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- 1. Age of Money -->
+                <div class="card card-border bg-base-100 border-base-300 shadow-md">
+                    <div class="card-body p-6">
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/{{.BudgetID}}/reports/age-of-money" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>1. Age of Money</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_aom" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('aom', true)">🔄</button>
+                                <span id="badge_aom" class="badge badge-accent badge-soft font-bold">{{.AOMHeadline}} days</span>
+                            </div>
+                        </div>
+                        <p class="text-xs text-base-content/60 mb-4">Weighted average age of money spent across liquid outflows.</p>
+                        <div id="chart_aom" style="height: 200px; width: 100%;"></div>
+                    </div>
+                </div>
+
+                <!-- 2. Income vs. Expense -->
+                <div class="card card-border bg-base-100 border-base-300 shadow-md">
+                    <div class="card-body p-6">
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/{{.BudgetID}}/reports/income-expense" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>2. Income v. Expense</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_ive" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('ive', true)">🔄</button>
+                                <span id="badge_ive" class="badge badge-success badge-soft font-bold">--</span>
+                            </div>
+                        </div>
+                        <p class="text-xs text-base-content/60 mb-4">Monthly cashflow P&L comparison.</p>
+                        <div id="chart_ive" style="height: 200px; width: 100%;"></div>
+                    </div>
+                </div>
+
+                <!-- 3. Spending Trends -->
+                <div class="card card-border bg-base-100 border-base-300 shadow-md">
+                    <div class="card-body p-6">
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/{{.BudgetID}}/reports/spending-trends" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>3. Spending Trends</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_trends" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('trends', true)">🔄</button>
+                            </div>
+                        </div>
+                        <p class="text-xs text-base-content/60 mb-4">Category drift and monthly moving average.</p>
+                        <div id="chart_trends" style="height: 200px; width: 100%;"></div>
+                    </div>
+                </div>
+
+                <!-- 4. Spending Breakdown -->
+                <div class="card card-border bg-base-100 border-base-300 shadow-md">
+                    <div class="card-body p-6">
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/{{.BudgetID}}/reports/spending-breakdown" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>4. Spending Breakdown</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_breakdown" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('breakdown', true)">🔄</button>
+                            </div>
+                        </div>
+                        <p class="text-xs text-base-content/60 mb-4">Proportional category composition.</p>
+                        <div id="chart_breakdown" style="height: 200px; width: 100%;"></div>
+                    </div>
+                </div>
+
+                <!-- 5. Net Worth -->
+                <div class="card card-border bg-base-100 border-base-300 shadow-md">
+                    <div class="card-body p-6">
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/{{.BudgetID}}/reports/net-worth" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>5. Net Worth</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_nw" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('nw', true)">🔄</button>
+                            </div>
+                        </div>
+                        <p class="text-xs text-base-content/60 mb-4">Assets minus liabilities trajectory over time.</p>
+                        <div id="chart_networth" style="height: 200px; width: 100%;"></div>
+                    </div>
+                </div>
+
+                <!-- 6. Sankey Diagram -->
+                <div class="card card-border bg-base-100 border-base-300 shadow-md">
+                    <div class="card-body p-6">
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/{{.BudgetID}}/reports/sankey" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>6. Sankey Flow</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_sankey" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('sankey', true)">🔄</button>
+                            </div>
+                        </div>
+                        <p class="text-xs text-base-content/60 mb-4">Visual multi-layer cash movement from income to envelopes.</p>
+                        <div id="chart_sankey" style="height: 200px; width: 100%;"></div>
+                    </div>
+                </div>
+
+                <!-- 7. Balance Forecast -->
+                <div class="card card-border bg-base-100 border-base-300 shadow-md">
+                    <div class="card-body p-6">
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/{{.BudgetID}}/reports/forecast" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>7. Balance Forecast</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_forecast" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('forecast', true)">🔄</button>
+                            </div>
+                        </div>
+                        <p class="text-xs text-base-content/60 mb-4">365-day cashflow runway with scheduled recurrences.</p>
+                        <div id="chart_forecast" style="height: 200px; width: 100%;"></div>
+                    </div>
+                </div>
+
+                <!-- 8. Budget Analysis -->
+                <div class="card card-border bg-base-100 border-base-300 shadow-md">
+                    <div class="card-body p-6">
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/{{.BudgetID}}/reports/budget-analysis" class="card-title text-base font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>8. Budget Analysis</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_analysis" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('analysis', true)">🔄</button>
+                            </div>
+                        </div>
+                        <p class="text-xs text-base-content/60 mb-4">Envelope rollover mechanics and strategy tracking.</p>
+                        <div id="chart_analysis" style="height: 200px; width: 100%;"></div>
+                    </div>
+                </div>
+
+                <!-- 9. Monte Carlo Analysis -->
+                <div class="card card-border bg-base-100 border-base-300 shadow-md col-span-1 md:col-span-2">
+                    <div class="card-body p-6">
+                        <div class="flex justify-between items-center mb-2">
+                            <div>
+                                <a href="/budgets/{{.BudgetID}}/reports/monte-carlo" class="card-title text-lg font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                    <span>9. Monte Carlo Simulator</span>
+                                    <span class="text-xs text-base-content/40">↗</span>
+                                </a>
+                                <p class="text-xs text-base-content/60">5,000 multi-pot stochastic runs with Guyton-Klinger dynamic withdrawal rules.</p>
+                            </div>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_mc" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('mc', true)">🔄</button>
+                                <span id="badge_mc" class="badge badge-success badge-soft font-bold text-sm py-3 px-4">--% Success Rate</span>
+                            </div>
+                        </div>
+                        <div id="chart_mc" style="height: 260px; width: 100%;"></div>
+                    </div>
+                </div>
+
+                <!-- 10. Party Cashflow -->
+                <div class="card card-border bg-base-100 border-base-300 shadow-md col-span-1 md:col-span-2">
+                    <div class="card-body p-6">
+                        <div class="flex justify-between items-center mb-2">
+                            <a href="/budgets/{{.BudgetID}}/reports/party-cashflow" class="card-title text-lg font-bold hover:text-primary transition-colors flex items-center gap-1.5">
+                                <span>10. Counterparty Cashflow</span>
+                                <span class="text-xs text-base-content/40">↗</span>
+                            </a>
+                            <div class="flex items-center gap-1.5">
+                                <span id="cache_status_party" class="badge badge-xs badge-neutral" title="Cache Status">--</span>
+                                <button type="button" class="btn btn-ghost btn-xs btn-circle" title="Przelicz" onclick="reloadReport('party', true)">🔄</button>
+                            </div>
+                        </div>
+                        <p class="text-xs text-base-content/60 mb-4">Net cashflow and volume aggregated per merchant (Żabka, Employer, Landlord).</p>
+                        <div id="chart_party" style="height: 220px; width: 100%;"></div>
+                    </div>
+                </div>
+            </div>
+{{- end -}}
+
+{{- define "reports/saved_section" -}}
+{{- if .Items -}}
+<div class="mb-8 p-6 bg-base-100 rounded-2xl border border-base-300">
+    <div class="flex items-center justify-between mb-4">
+        <div>
+            <h2 class="text-lg font-bold">Saved Report Configurations</h2>
+            <p class="text-xs text-base-content/60">Active saved reports and pinned dashboard widgets.</p>
+        </div>
+        <span class="badge badge-neutral font-mono">{{len .Items}} saved</span>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {{- range .Items -}}
+        <div class="card bg-base-100 border border-base-300 shadow-sm p-4 flex flex-row items-center justify-between gap-4">
+            <div class="flex items-center gap-3">
+                <div class="text-xl">📊</div>
+                <div>
+                    <div class="flex items-center gap-2">
+                        <span class="font-bold text-sm">{{.Name}}</span>
+                        {{- if .IsPinned -}}
+                        <span class="badge badge-primary badge-sm">Pinned</span>
+                        {{- end -}}
+                    </div>
+                    <span class="text-xs text-base-content/60 font-mono">{{.ReportType}}</span>
+                </div>
+            </div>
+            <div class="flex items-center gap-2">
+                <form method="POST" action="/budgets/{{$.BudgetID}}/reports/saved/{{.ID}}/toggle-pin">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
+                    <button type="submit" class="btn btn-ghost btn-xs">{{if .IsPinned}}Unpin{{else}}Pin{{end}}</button>
+                </form>
+                <form method="POST" action="/budgets/{{$.BudgetID}}/reports/saved/{{.ID}}/delete" onsubmit="return confirm('Delete this saved report?')">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
+                    <button type="submit" class="btn btn-ghost btn-xs text-error">Delete</button>
+                </form>
+            </div>
+        </div>
+        {{- end -}}
+    </div>
+</div>
+{{- else -}}
+<div class="mb-8 p-6 bg-base-100 rounded-2xl border border-base-300">
+    <div class="flex items-center justify-between">
+        <div>
+            <h2 class="text-lg font-bold">Saved Report Configurations</h2>
+            <p class="text-xs text-base-content/60">No saved reports yet. Customize any report and click Save Configuration.</p>
+        </div>
+    </div>
+</div>
+{{- end -}}
+{{- end -}}

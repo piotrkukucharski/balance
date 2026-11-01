@@ -1,0 +1,75 @@
+{{- define "shared/base" -}}
+<!DOCTYPE html>
+<html lang="en" data-theme="{{block "theme" .}}dark{{end}}"{{if .DateFormat}} data-date-format="{{.DateFormat}}"{{end}}{{if .TimeFormat}} data-time-format="{{.TimeFormat}}"{{end}}>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    {{- if .DateFormat}}
+    <meta name="user-date-format" content="{{.DateFormat}}">
+    {{- end}}
+    {{- if .TimeFormat}}
+    <meta name="user-time-format" content="{{.TimeFormat}}">
+    {{- end}}
+    <title>{{block "title" .}}Balance{{end}}</title>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4/dist/ext/sse.js"></script>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="manifest" href="/manifest.webmanifest">
+    {{- block "head_extra" .}}{{end}}
+</head>
+<body class="bg-base-200 text-base-content min-h-screen flex flex-col">
+    {{- block "body_start" .}}{{end}}
+
+    <header class="navbar bg-base-100 border-b border-base-300 px-6 sticky top-0 z-30 shadow-xs">
+        <div class="navbar-start gap-4 items-center">
+            <a href="/budgets" class="text-2xl font-black tracking-tight text-primary flex items-center gap-2">
+                <span>⚖️</span>
+                <span>Balance</span>
+            </a>
+            {{- if .BudgetName}}
+            <div class="badge badge-neutral font-semibold gap-1.5 py-3">
+                <span class="w-2 h-2 rounded-full bg-success"></span>
+                <span>{{.BudgetName}}</span>
+            </div>
+            {{- end}}
+            {{- block "navbar_start_extra" .}}{{end}}
+        </div>
+        <div class="navbar-end gap-3">
+            {{- block "navbar_end" .}}
+            <form method="POST" action="/logout">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
+            </form>
+            {{- end}}
+        </div>
+    </header>
+
+    <div class="flex-1 flex overflow-hidden">
+        {{- if .SidebarHTML}}
+        <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
+            {{.SidebarHTML}}
+            {{- block "sidebar_extra" .}}{{end}}
+        </aside>
+        {{- end}}
+
+        <main class="flex-1 p-4 sm:p-6 md:p-8 overflow-y-auto pb-24 md:pb-8">
+            {{- block "content" .}}{{end}}
+        </main>
+    </div>
+
+    {{- block "modals" .}}{{end}}
+
+    {{- if .BottomDockHTML}}
+    {{.BottomDockHTML}}
+    {{- end}}
+
+    {{- block "scripts" .}}{{end}}
+    {{- if .DateTimeFormatterScript}}
+    {{.DateTimeFormatterScript}}
+    {{- end}}
+</body>
+</html>
+{{- end -}}

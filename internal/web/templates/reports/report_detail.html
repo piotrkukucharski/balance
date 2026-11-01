@@ -1,0 +1,221 @@
+{{- define "reports/detail" -}}
+{{- template "shared/base" . -}}
+{{- end -}}
+
+{{- define "title" -}}Balance — {{.Meta.Title}}{{- end -}}
+
+{{- define "head_extra" -}}
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+{{- end -}}
+
+{{- define "navbar_start_extra" -}}
+    <div class="breadcrumbs text-sm font-medium">
+        <ul>
+            <li><a href="/budgets/{{.BudgetID}}/reports" class="text-base-content/70 hover:text-primary">Reports</a></li>
+            <li class="font-bold text-primary">{{.Meta.Title}}</li>
+        </ul>
+    </div>
+{{- end -}}
+
+{{- define "navbar_end" -}}
+    <a href="/budgets/{{.BudgetID}}/reports" class="btn btn-ghost btn-sm gap-1">
+        <span>←</span>
+        <span>Back to Dashboard</span>
+    </a>
+    <form method="POST" action="/logout">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+        <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
+    </form>
+{{- end -}}
+
+{{- define "modals" -}}
+    <!-- Save Report Modal -->
+    <dialog id="save_report_modal" class="modal">
+        <div class="modal-box">
+            <form method="dialog">
+                <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2">✕</button>
+            </form>
+            <h3 class="font-bold text-lg mb-4">Save Report Configuration</h3>
+            <form method="POST" action="/budgets/{{.BudgetID}}/reports/saved" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <input type="hidden" name="report_type" value="{{.ReportTypeEnum}}" />
+                <input type="hidden" id="save_config_json" name="config_json" value='{"range":"{{.SelectedRange}}","currency":"{{.SelectedCurrency}}","exclude_internal":{{.ExcludeInternal}}}' />
+                
+                <div class="form-control">
+                    <label class="label"><span class="label-text font-semibold">Report Name</span></label>
+                    <input type="text" name="name" class="input input-bordered w-full" placeholder="e.g. Monthly Operations" required />
+                </div>
+
+                <div class="form-control">
+                    <label class="label cursor-pointer justify-start gap-3">
+                        <input type="checkbox" name="is_pinned_widget" value="true" class="checkbox checkbox-primary" />
+                        <span class="label-text">Pin as favorite widget on Reports Dashboard</span>
+                    </label>
+                </div>
+
+                <div class="modal-action">
+                    <button type="button" class="btn btn-ghost" onclick="document.getElementById('save_report_modal').close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Widget</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop">
+            <button>close</button>
+        </form>
+    </dialog>
+{{- end -}}
+
+{{- define "scripts" -}}
+    <script>
+        window.budgetId = '{{.BudgetID}}';
+        window.endpoint = '{{.Meta.Endpoint}}';
+        window.chartId = '{{.Meta.ChartID}}';
+        window.reportType = '{{.Meta.Type}}';
+    </script>
+    <script src="{{staticPath "reports/report_detail.js"}}"></script>
+{{- end -}}
+
+{{- define "content" -}}
+        <div class="flex flex-col gap-6">
+            <!-- Header & Filter Controls Bar -->
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-base-100 p-6 rounded-2xl border border-base-300 shadow-sm">
+                <div>
+                    <h1 class="text-2xl md:text-3xl font-black tracking-tight">{{.Meta.Title}}</h1>
+                    <p class="text-sm text-base-content/60 mt-1">{{.Meta.Description}}</p>
+                    <div class="flex items-center gap-2 mt-2">
+                        <span id="cache-status-pill" class="badge badge-xs badge-neutral">Checking...</span>
+                        <span id="cache-calc-time" class="text-xs text-base-content/60 font-mono"></span>
+                    </div>
+                </div>
+
+                <!-- Filters Form -->
+                <form id="report-filters-form" method="GET" class="flex flex-wrap items-center gap-3">
+                    <!-- Presets Selector -->
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs font-semibold">Preset</span></label>
+                        <select id="saved-presets-select" class="select select-bordered select-sm font-medium">
+                            <option value="">-- Presets --</option>
+                            {{- range .SavedPresets -}}
+                            <option value="{{.ID}}" data-config="{{.ConfigJSON}}">{{.Name}}{{if .IsPinned}} ⭐{{end}}</option>
+                            {{- end -}}
+                        </select>
+                    </div>
+
+                    <!-- Date Range Selector -->
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs font-semibold">Range</span></label>
+                        <select name="range" class="select select-bordered select-sm font-medium">
+                            <option value="30d" {{if eq .SelectedRange "30d"}}selected{{end}}>Last 30 Days</option>
+                            <option value="90d" {{if eq .SelectedRange "90d"}}selected{{end}}>Last 90 Days</option>
+                            <option value="180d" {{if eq .SelectedRange "180d"}}selected{{end}}>Last 180 Days</option>
+                            <option value="YTD" {{if eq .SelectedRange "YTD"}}selected{{end}}>Year to Date (YTD)</option>
+                            <option value="1y" {{if eq .SelectedRange "1y"}}selected{{end}}>Last 1 Year</option>
+                            <option value="all" {{if eq .SelectedRange "all"}}selected{{end}}>All Time</option>
+                        </select>
+                    </div>
+
+                    <!-- Display Currency Selector -->
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs font-semibold">Currency</span></label>
+                        <select name="currency" class="select select-bordered select-sm font-medium">
+                            <option value="PLN" {{if eq .SelectedCurrency "PLN"}}selected{{end}}>PLN</option>
+                            <option value="EUR" {{if eq .SelectedCurrency "EUR"}}selected{{end}}>EUR</option>
+                            <option value="USD" {{if eq .SelectedCurrency "USD"}}selected{{end}}>USD</option>
+                            <option value="GBP" {{if eq .SelectedCurrency "GBP"}}selected{{end}}>GBP</option>
+                        </select>
+                    </div>
+
+                    <!-- Exclude Internal Transfers Toggle -->
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs font-semibold">Transfers</span></label>
+                        <label class="label cursor-pointer gap-2 border border-base-300 px-3 py-1.5 rounded-lg bg-base-200">
+                            <span class="label-text text-xs">Exclude Internal</span>
+                            <input type="checkbox" name="exclude_internal" value="true" class="checkbox checkbox-sm checkbox-primary" {{if .ExcludeInternal}}checked{{end}} />
+                        </label>
+                    </div>
+
+                    <!-- Recalculate Button -->
+                    <div class="form-control self-end">
+                        <button type="button" id="btn-recalculate-report" class="btn btn-outline btn-sm gap-1.5" onclick="updateReport(true)">
+                            <span id="recalc-detail-icon">🔄</span>
+                            <span>Przelicz</span>
+                        </button>
+                    </div>
+
+                    <!-- Save Report Modal Trigger -->
+                    <div class="form-control self-end">
+                        <button type="button" class="btn btn-primary btn-sm gap-1" onclick="document.getElementById('save_report_modal').showModal()">
+                            <span>💾</span>
+                            <span>Save Configuration</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            {{- if eq .Meta.Type "monte-carlo" -}}
+            <div id="monte-carlo-settings" class="card card-border bg-base-100 border-base-300 p-6 rounded-2xl shadow-xs">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-base font-bold flex items-center gap-2">
+                        <span>🎲</span>
+                        <span>Retirement Plan & Longevity Simulation Parameters</span>
+                    </h2>
+                    <span class="badge badge-primary badge-soft text-xs">Multi-Pot & Dynamic Withdrawals</span>
+                </div>
+                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs">Current Age</span></label>
+                        <input type="number" id="mc_current_age" name="current_age" value="40" min="18" max="100" class="input input-bordered input-sm font-mono" />
+                    </div>
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs">Target Age</span></label>
+                        <input type="number" id="mc_target_age" name="target_age" value="65" min="30" max="120" class="input input-bordered input-sm font-mono" />
+                    </div>
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs">Annual Spend</span></label>
+                        <input type="number" id="mc_annual_spend" name="annual_spend" value="50000" min="1000" step="5000" class="input input-bordered input-sm font-mono" />
+                    </div>
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs">Return (%)</span></label>
+                        <input type="number" id="mc_expected_return" name="expected_return_pct" value="7.0" step="0.5" class="input input-bordered input-sm font-mono" />
+                    </div>
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs">Inflation (%)</span></label>
+                        <input type="number" id="mc_inflation" name="inflation_pct" value="2.5" step="0.5" class="input input-bordered input-sm font-mono" />
+                    </div>
+                    <div class="form-control">
+                        <label class="label py-1"><span class="label-text text-xs">Withdrawal Rule</span></label>
+                        <select id="mc_withdrawal_rule" name="withdrawal_rule" class="select select-bordered select-sm">
+                            <option value="FIXED_REAL">Fixed Real</option>
+                            <option value="GUARDRAILS_GUYTON_KLINGER">Guyton-Klinger</option>
+                            <option value="RATCHETING_KITCES">Kitces Ratchet</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 pt-3 border-t border-base-200">
+                    <div class="flex items-center gap-2">
+                        <label class="text-xs font-semibold whitespace-nowrap">External Pension (e.g. ZUS):</label>
+                        <input type="number" id="mc_pension_amount" placeholder="Annual Amount (e.g. 36000)" class="input input-bordered input-sm font-mono flex-1" />
+                        <label class="text-xs whitespace-nowrap">From age:</label>
+                        <input type="number" id="mc_pension_from" value="65" min="50" max="100" class="input input-bordered input-sm font-mono w-20" />
+                    </div>
+                    <div class="flex justify-end gap-2">
+                        <button type="button" id="btn-run-simulation" class="btn btn-sm btn-primary gap-1">
+                            <span>▶</span>
+                            <span>Run Stochastic Simulation</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            {{- end -}}
+
+            <!-- KPI Metric Cards Grid -->
+            <div id="report-kpi-cards" class="grid grid-cols-2 md:grid-cols-4 gap-4"></div>
+
+            <!-- Full-Screen Interactive Chart Container -->
+            <div class="card card-border bg-base-100 border-base-300 shadow-md flex-1 min-h-[500px]">
+                <div class="card-body p-6 flex flex-col">
+                    <div id="{{.Meta.ChartID}}" class="w-full flex-1 min-h-[460px]"></div>
+                </div>
+            </div>
+        </div>
+{{- end -}}

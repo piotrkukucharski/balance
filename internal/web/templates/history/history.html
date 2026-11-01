@@ -1,0 +1,199 @@
+{{- define "history/page" -}}
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-date-format="{{.DateFormat}}" data-time-format="{{.TimeFormat}}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="user-date-format" content="{{.DateFormat}}">
+    <meta name="user-time-format" content="{{.TimeFormat}}">
+    <title>Balance — History of {{.EntityName}}</title>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+</head>
+<body class="bg-base-200 text-base-content min-h-screen flex flex-col justify-center items-center p-4">
+    <div class="w-full max-w-2xl bg-base-100 rounded-2xl shadow-xl border border-base-300 p-6">
+        <div class="mb-4">
+            <a href="/budgets/{{.BudgetID}}/budget" class="btn btn-ghost btn-sm gap-2">
+                ← Back to Budget
+            </a>
+        </div>
+        {{.DrawerHTML}}
+    </div>
+    {{.DateTimeFormatterScript}}
+</body>
+</html>
+{{- end -}}
+
+{{- define "history/drawer" -}}
+<div id="history_drawer_backdrop" class="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex justify-end" onclick="if(event.target === this) this.remove()">
+<div class="w-full max-w-xl h-full bg-base-100 border-l border-base-300 shadow-2xl flex flex-col overflow-y-auto p-6 animate-in slide-in-from-right duration-200">
+    <div class="flex items-start justify-between pb-4 border-b border-base-300 mb-4">
+        <div>
+            <div class="flex items-center gap-2 mb-1">
+                <span class="badge badge-neutral text-xs font-mono uppercase tracking-wider">{{.EntityType}}</span>
+                {{- if .IsDeleted}}
+                <span class="badge badge-error badge-soft text-xs font-semibold">DELETED</span>
+                {{- else}}
+                <span class="badge badge-success badge-soft text-xs font-semibold">ACTIVE (v{{.CurrentVersion}})</span>
+                {{- end}}
+            </div>
+            <h3 class="font-extrabold text-xl tracking-tight text-base-content break-words">{{.EntityName}}</h3>
+            <div class="text-xs text-base-content/50 font-mono mt-0.5">ID: {{.EntityID}}</div>
+        </div>
+        <button type="button" class="btn btn-sm btn-circle btn-ghost" onclick="document.getElementById('history_drawer_backdrop')?.remove()" aria-label="Close">✕</button>
+    </div>
+
+    {{- if .FlashMsg}}
+    <div class="alert alert-success text-sm py-2 mb-4 flex items-center gap-2 shadow-xs">
+        <span>✓</span>
+        <span>{{.FlashMsg}}</span>
+    </div>
+    {{- end}}
+
+    {{- if not .CanRestore}}
+    <div class="alert alert-info text-xs py-2 mb-4 bg-info/10 text-info border-info/20">
+        <span>ℹ</span>
+        <span>Viewing history. Restoring prior versions requires ADMIN or OWNER role.</span>
+    </div>
+    {{- end}}
+
+    <div class="flex-1">
+        {{- if .ShowMultiSquash}}
+        <div id="multi_squash_panel" class="bg-base-200 border border-primary/30 p-3 rounded-xl mb-4 text-xs">
+            <div class="flex items-center justify-between mb-2">
+                <span class="font-bold flex items-center gap-1.5 text-primary">
+                    <span>🗜️</span> Multi-Version Squash
+                </span>
+                <span id="squash_selection_badge" class="badge badge-sm badge-neutral">Select versions below</span>
+            </div>
+            <form id="multi_squash_form" hx-post="/budgets/{{.BudgetID}}/automations/{{.EntityID}}/squash" hx-target="#history_drawer_backdrop" hx-swap="outerHTML" class="space-y-2">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <input type="hidden" id="squash_start_ver" name="start_version" value="">
+                <input type="hidden" id="squash_end_ver" name="end_version" value="">
+                <div class="flex gap-2">
+                    <input type="text" id="squash_comment_input" name="comment" placeholder="Summary comment for squashed versions..." class="input input-xs input-bordered flex-1" />
+                    <button type="button" id="btn_ai_squash_comment" class="btn btn-xs btn-outline btn-secondary gap-1" disabled onclick="generateAISquashComment('{{.BudgetID}}', '{{.EntityID}}')">
+                        ✨ AI Summary
+                    </button>
+                </div>
+                <div class="flex justify-between items-center pt-1">
+                    <span class="text-[11px] text-base-content/60">Selected range will be consolidated into the highest version.</span>
+                    <button type="submit" id="btn_submit_squash" class="btn btn-xs btn-primary font-bold" disabled>
+                        Squash Selected
+                    </button>
+                </div>
+            </form>
+        </div>
+        {{- end}}
+
+        <ul class="timeline timeline-vertical timeline-compact">
+            {{- range .Items}}
+            <li>
+                <div class="timeline-middle">{{.ActionIconHTML}}</div>
+                <div class="timeline-end timeline-box w-full bg-base-200 border-base-300 p-4 mb-4 rounded-xl shadow-xs">
+                    <div class="flex items-center justify-between gap-2 mb-2">
+                        <div class="flex items-center gap-1.5">
+                            {{- if $.IsAutomations}}
+                            <input type="checkbox" class="checkbox checkbox-xs checkbox-primary squash-check mr-2" value="{{.Version}}" onchange="handleSquashCheckChange()">
+                            {{- end}}
+                            <span class="font-extrabold font-mono text-sm text-primary">v{{.Version}}</span>
+                            {{.ActionBadgeHTML}}
+                            {{- if .IsCurrent}}
+                            <span class="badge badge-primary badge-outline text-xs font-bold">CURRENT</span>
+                            {{- end}}
+                        </div>
+                        <div class="text-xs text-base-content/50 font-mono">{{.CreatedAtTag}}</div>
+                    </div>
+
+                    <div class="text-xs text-base-content/60 font-mono mb-3 flex flex-wrap gap-x-4 gap-y-1">
+                        <span>Agent: {{.ShortAgentID}}</span>
+                        <span>Corr: {{.ShortCorrID}}</span>
+                    </div>
+
+                    {{- if .FieldDiffs}}
+                    <div class="space-y-1.5 my-2">
+                        {{- range .FieldDiffs}}
+                        {{- if .IsLuaScript}}
+                        <div class="text-xs bg-base-100 p-2.5 rounded-lg border border-base-300/60 my-1">
+                            <div class="flex justify-between items-center mb-1 font-semibold text-base-content/70">
+                                <span>{{.Label}}</span>
+                                <span class="badge badge-xs badge-neutral font-mono">Lua</span>
+                            </div>
+                            {{- if .OldValue}}
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mt-1 font-mono text-[11px]">
+                                <div class="bg-error/10 border border-error/20 p-2 rounded text-error overflow-x-auto">
+                                    <div class="font-bold text-[10px] uppercase opacity-70 mb-0.5">Previous</div>
+                                    <pre class="whitespace-pre-wrap">{{.OldValue}}</pre>
+                                </div>
+                                <div class="bg-success/10 border border-success/20 p-2 rounded text-success overflow-x-auto">
+                                    <div class="font-bold text-[10px] uppercase opacity-70 mb-0.5">Updated</div>
+                                    <pre class="whitespace-pre-wrap">{{.NewValue}}</pre>
+                                </div>
+                            </div>
+                            {{- else}}
+                            <div class="bg-success/10 border border-success/20 p-2 rounded text-success font-mono text-[11px] overflow-x-auto">
+                                <pre class="whitespace-pre-wrap">{{.NewValue}}</pre>
+                            </div>
+                            {{- end}}
+                        </div>
+                        {{- else}}
+                        <div class="text-xs bg-base-100 p-2 rounded-lg border border-base-300/60 flex items-start justify-between gap-2">
+                            <span class="font-semibold text-base-content/70">{{.Label}}:</span>
+                            <div class="text-right font-mono">
+                                {{- if .OldValue}}
+                                <span class="line-through text-error/70 mr-1.5">{{.OldValue}}</span> ➔ 
+                                {{- end}}
+                                <span class="text-success font-bold">{{.NewValue}}</span>
+                            </div>
+                        </div>
+                        {{- end}}
+                        {{- end}}
+                    </div>
+                    {{- else if eq .Action "SOFT_DELETE"}}
+                    <div class="text-xs text-error font-semibold italic my-1">Entity soft-deleted from current projection.</div>
+                    {{- else if eq .Action "RESTORE"}}
+                    <div class="text-xs text-primary font-semibold italic my-1">Restored from prior state.</div>
+                    {{- else if eq .Action "SQUASH"}}
+                    <div class="text-xs text-primary font-semibold italic my-1">Consolidated multi-version squash.</div>
+                    {{- end}}
+
+                    {{- if or $.IsAutomations .CanRestoreItem}}
+                    <div class="mt-3 pt-2 border-t border-base-300 flex items-center justify-end gap-2">
+                        {{- if $.IsAutomations}}
+                        <button type="button" class="btn btn-xs btn-outline btn-info gap-1" onclick="loadHistoricalVersionIntoEditor('{{$.BudgetID}}', '{{$.EntityID}}', {{.Version}})">
+                            📥 Load into Editor
+                        </button>
+                        {{- end}}
+                        {{- if .CanRestoreItem}}
+                        <form hx-post="/budgets/{{$.BudgetID}}/history/{{$.EntityType}}/{{$.EntityID}}/restore" hx-target="#history_drawer_backdrop" hx-swap="outerHTML">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <input type="hidden" name="target_version" value="{{.Version}}">
+                            <button type="submit" class="btn btn-xs btn-outline btn-warning gap-1.5 font-bold">
+                                ↺ Restore v{{.Version}}
+                            </button>
+                        </form>
+                        {{- end}}
+                    </div>
+                    {{- end}}
+                </div>
+                <hr class="bg-base-300"/>
+            </li>
+            {{- end}}
+        </ul>
+    </div>
+
+    <div class="pt-4 border-t border-base-300 flex justify-end mt-4">
+        <button type="button" class="btn btn-sm btn-ghost" onclick="document.getElementById('history_drawer_backdrop')?.remove()">
+            Close
+        </button>
+    </div>
+
+    {{- if .IsAutomations}}
+    <script>window.HISTORY_CSRF_TOKEN = '{{.CSRFToken}}';</script>
+    <script src="{{staticPath "history/history.js"}}"></script>
+    {{- end}}
+</div></div>
+{{- end -}}

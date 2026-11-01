@@ -24,6 +24,7 @@ import (
 	"github.com/balance/balance/internal/service"
 	webassets "github.com/balance/balance/internal/web/assets"
 	"github.com/balance/balance/internal/web/handlers"
+	"github.com/balance/balance/internal/web/templates"
 	"github.com/cucumber/godog"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
@@ -162,6 +163,7 @@ func (tc *e2eScenarioContext) setup() error {
 
 	e.GET("/manifest.webmanifest", pwaHandler.Manifest)
 	e.GET("/sw.js", pwaHandler.ServiceWorker)
+	templates.RegisterStaticRoutes(e)
 	e.GET("/favicon.ico", func(c echo.Context) error {
 		return c.Blob(http.StatusOK, "image/x-icon", webassets.FaviconICO)
 	})

@@ -1,0 +1,141 @@
+{{- define "transactions/csv_import" -}}
+{{- template "shared/base" . -}}
+{{- end -}}
+
+{{- define "theme" -}}emerald{{- end -}}
+{{- define "title" -}}Import Bank Statement CSV - Balance{{- end -}}
+
+{{- define "navbar_end" -}}
+            <a href="/budgets/{{.BudgetID}}/transactions" class="btn btn-ghost btn-sm font-medium">← Back to Ledger</a>
+{{- end -}}
+
+{{- define "content" -}}
+            <div class="max-w-4xl mx-auto space-y-6">
+                <!-- Header -->
+                <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                    <div>
+                        <h1 class="text-2xl font-black tracking-tight flex items-center gap-2">
+                            <span>📄</span>
+                            <span>Import Bank Statement CSV</span>
+                        </h1>
+                        <p class="text-xs text-base-content/60 mt-0.5">Upload transactions directly from CSV files exported from your bank.</p>
+                    </div>
+                    <a href="/budgets/{{.BudgetID}}/transactions" class="btn btn-outline btn-sm">Cancel</a>
+                </div>
+
+                <!-- Wizard Form -->
+                <form id="csv-import-form" method="POST" action="/budgets/{{.BudgetID}}/transactions/import-csv" enctype="multipart/form-data" class="space-y-6">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+
+                    <!-- Step 1: Account & File Configuration -->
+                    <div class="card bg-base-100 border border-base-300 shadow-sm">
+                        <div class="card-body p-6 space-y-4">
+                            <h2 class="card-title text-base font-bold flex items-center gap-2 border-b border-base-300 pb-2">
+                                <span class="badge badge-primary badge-sm">1</span>
+                                <span>Target Account & Statement File</span>
+                            </h2>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div class="form-control">
+                                    <label class="label font-semibold text-xs"><span class="label-text">Target Account</span></label>
+                                    <select name="account_id" id="account_id" required class="select select-bordered w-full select-md focus:select-primary">
+                                        <option value="" disabled selected>-- Select an account --</option>
+                                        {{- range .Accounts}}
+                                        <option value="{{.ID}}">{{.Name}} ({{.Currency}} - {{.AccountType}})</option>
+                                        {{- end}}
+                                    </select>
+                                </div>
+
+                                <div class="form-control">
+                                    <label class="label font-semibold text-xs"><span class="label-text">Bank Profile</span></label>
+                                    <select name="bank_profile" id="bank_profile" class="select select-bordered w-full select-md focus:select-primary" onchange="applyBankProfile(this.value)">
+                                        <option value="GENERIC" selected>Standard / Generic CSV (Auto-detect)</option>
+                                        <option value="MBANK">mBank (Polska)</option>
+                                        <option value="PKOBP">PKO Bank Polski</option>
+                                        <option value="SANTANDER">Santander Bank Polska</option>
+                                        <option value="ING">ING Bank Śląski</option>
+                                        <option value="MILLENNIUM">Bank Millennium</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="form-control">
+                                <label class="label font-semibold text-xs"><span class="label-text">CSV File (up to 10 MB / 50 000 rows)</span></label>
+                                <input type="file" name="csv_file" id="csv_file" required accept=".csv,text/csv,text/plain" class="file-input file-input-bordered w-full file-input-md focus:file-input-primary" onchange="previewCSVFile(this)" />
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 2: Interactive Column Mapping & Live Preview -->
+                    <div id="preview-card" class="card bg-base-100 border border-base-300 shadow-sm hidden">
+                        <div class="card-body p-6 space-y-4">
+                            <div class="flex justify-between items-center border-b border-base-300 pb-2">
+                                <h2 class="card-title text-base font-bold flex items-center gap-2">
+                                    <span class="badge badge-primary badge-sm">2</span>
+                                    <span>Column Mapping & Statement Preview</span>
+                                </h2>
+                                <div id="detection-badges" class="flex gap-2">
+                                    <span id="encoding-badge" class="badge badge-outline badge-xs font-mono">UTF-8</span>
+                                    <span id="delimiter-badge" class="badge badge-outline badge-xs font-mono">Delimiter: ;</span>
+                                </div>
+                            </div>
+
+                            <!-- Column Mapping Selectors -->
+                            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 bg-base-200/50 p-4 rounded-lg border border-base-300 text-xs">
+                                <div>
+                                    <label class="font-bold block mb-1">Date Column</label>
+                                    <select name="date_col" id="date_col" class="select select-bordered select-xs w-full"></select>
+                                </div>
+                                <div>
+                                    <label class="font-bold block mb-1">Amount Column (+/-)</label>
+                                    <select name="amount_col" id="amount_col" class="select select-bordered select-xs w-full"></select>
+                                </div>
+                                <div>
+                                    <label class="font-bold block mb-1">Payee Column</label>
+                                    <select name="payee_col" id="payee_col" class="select select-bordered select-xs w-full"></select>
+                                </div>
+                                <div>
+                                    <label class="font-bold block mb-1">Reference / Title</label>
+                                    <select name="reference_col" id="reference_col" class="select select-bordered select-xs w-full"></select>
+                                </div>
+                                <div>
+                                    <label class="font-bold block mb-1">Counterparty IBAN</label>
+                                    <select name="iban_col" id="iban_col" class="select select-bordered select-xs w-full"></select>
+                                </div>
+                            </div>
+
+                            <!-- Preview Table -->
+                            <div class="overflow-x-auto border border-base-300 rounded-lg">
+                                <table class="table table-xs table-zebra w-full" id="preview-table">
+                                    <thead class="bg-base-200/80 font-bold" id="preview-thead">
+                                        <!-- Dynamic headers -->
+                                    </thead>
+                                    <tbody id="preview-tbody">
+                                        <!-- Dynamic rows -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 3: Confirmation & Auto-Match -->
+                    <div class="card bg-base-100 border border-base-300 shadow-sm">
+                        <div class="card-body p-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                            <label class="label cursor-pointer gap-3">
+                                <input type="checkbox" name="auto_match" value="1" checked="checked" class="checkbox checkbox-primary checkbox-sm" />
+                                <span class="label-text text-sm font-semibold">Automatically run Matching Rules on imported transactions</span>
+                            </label>
+
+                            <button type="submit" id="submit-btn" class="btn btn-primary font-semibold shadow-md gap-2 w-full sm:w-auto">
+                                <span>📥</span>
+                                <span>Import Transactions</span>
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+{{- end -}}
+
+{{- define "scripts" -}}
+    <script src="{{staticPath "transactions/csv_import.js"}}"></script>
+{{- end -}}

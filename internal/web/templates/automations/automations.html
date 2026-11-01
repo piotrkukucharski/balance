@@ -1,0 +1,370 @@
+{{- define "automations/view" -}}
+{{- template "shared/base" . -}}
+{{- end -}}
+
+{{- define "title" -}}Balance — Automations{{- end -}}
+
+{{- define "content" -}}
+        <div class="max-w-5xl mx-auto w-full">
+            <div class="flex items-center justify-between mb-6 flex-wrap gap-4">
+                <div>
+                    <h1 class="text-2xl md:text-3xl font-extrabold tracking-tight flex items-center gap-2">
+                        <span>⚡</span> Automations
+                    </h1>
+                    <p class="text-xs text-base-content/60 mt-1">
+                        Custom Lua rules (Judge + Executor) executing sequentially to automate transaction categories, splits, and updates.
+                    </p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button class="btn btn-primary btn-sm gap-2 shadow-sm" onclick="openNewAutomationModal()">
+                        <span>+</span> New Automation
+                    </button>
+                </div>
+            </div>
+
+            <!-- LIST CONTAINER -->
+            <div id="automations-list-container">
+                {{.ListMarkup}}
+            </div>
+        </div>
+{{- end -}}
+
+{{- define "modals" -}}
+    <!-- NEW / EDIT AUTOMATION MODAL -->
+    <dialog id="automation_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6 max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div class="flex justify-between items-center mb-4">
+                <h3 id="modal_title" class="font-extrabold text-xl tracking-tight flex items-center gap-2">
+                    <span>⚡</span> <span>New Automation</span>
+                </h3>
+                <div class="flex items-center gap-2">
+                    <button type="button" id="modal_history_btn" class="btn btn-ghost btn-xs text-info gap-1 hidden" onclick="openHistoryFromModal()">
+                        🕒 History
+                    </button>
+                    <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+                </div>
+            </div>
+
+            <!-- UNIFIED AI PROMPT GENERATOR -->
+            <div class="bg-base-200/60 border border-primary/30 rounded-xl p-3 mb-4">
+                <div class="flex items-center justify-between mb-1.5">
+                    <span class="text-xs font-bold text-primary flex items-center gap-1.5">
+                        <span>✨</span> AI Assistant: Generate Full Rule
+                    </span>
+                    <span class="text-[10px] text-base-content/60">Selected test transactions & existing code are sent as context</span>
+                </div>
+                <div class="flex flex-col gap-2">
+                    <textarea id="ai_pair_prompt" rows="3" placeholder="Describe rule logic, e.g.:&#10;When notes mention Uber or Taxi, assign to Transport bucket. If amount is greater than 100, set note to 'High fare taxi'." class="textarea textarea-bordered textarea-sm w-full text-xs"></textarea>
+                    <div class="flex justify-between items-center">
+                        <span id="ai_few_shot_badge" class="text-[10px] text-info hidden"></span>
+                        <button type="button" id="ai_generate_btn" class="btn btn-primary btn-sm text-xs gap-1 ml-auto" onclick="generatePairWithAI()">
+                            <span>🤖</span> Generate Rule
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <form id="automation_form" method="POST" hx-post="/budgets/{{.BudgetID}}/automations" hx-target="#automations-list-container">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <input type="hidden" id="form_auto_id" value="" />
+
+                <!-- NAME -->
+                <div class="form-control mb-3">
+                    <label class="label py-1"><span class="label-text text-xs font-bold">Rule Name</span></label>
+                    <input type="text" name="name" id="form_name" placeholder="e.g. Auto Categorize Uber Trips" required class="input input-sm input-bordered w-full text-xs font-semibold" />
+                </div>
+
+                <!-- JUDGE SCRIPT -->
+                <div class="form-control mb-3">
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="label py-0"><span class="label-text text-xs font-bold">1. Judge Script (Conditional trigger)</span></label>
+                        <button type="button" class="btn btn-ghost btn-xs text-primary gap-1" onclick="generateJudgeWithAI()">
+                            <span>🤖</span> AI Judge
+                        </button>
+                    </div>
+                    <textarea name="judge_script" id="form_judge_script" rows="2" placeholder="text.contains(tx.notes, 'Uber')" required class="textarea textarea-bordered font-mono text-xs w-full"></textarea>
+                    <div class="text-[10px] text-base-content/50 mt-1">Evaluates tx.* (notes, amount, party, bucket, date) and text.* helpers. Returns true to run Executor.</div>
+                </div>
+
+                <!-- EXECUTOR SCRIPT -->
+                <div class="form-control mb-4">
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="label py-0"><span class="label-text text-xs font-bold">2. Executor Script (Mutations & Actions)</span></label>
+                        <button type="button" class="btn btn-ghost btn-xs text-primary gap-1" onclick="generateExecutorWithAI()">
+                            <span>🤖</span> AI Executor
+                        </button>
+                    </div>
+                    <textarea name="executor_script" id="form_executor_script" rows="3" placeholder="tx.set_bucket('Transport')" required class="textarea textarea-bordered font-mono text-xs w-full"></textarea>
+                    <div class="text-[10px] text-base-content/50 mt-1">Actions: tx.set_bucket("Name"), tx.set_target("Target"), tx.set_notes("..."), tx.split({...}), tx.delete().</div>
+                </div>
+
+                <!-- DRY RUN VALIDATION & PREVIEW SECTION -->
+                <div class="card bg-base-200/50 border border-base-300 p-3 rounded-xl mb-4">
+                    <div class="text-xs font-bold mb-2 flex items-center justify-between">
+                        <span>🧪 Multi-transaction Dry-Run & Few-Shot Examples</span>
+                        <div class="flex items-center gap-2">
+                            <button type="button" class="btn btn-ghost btn-xs text-[10px]" onclick="toggleSelectAllDryRun(true)">All</button>
+                            <button type="button" class="btn btn-ghost btn-xs text-[10px]" onclick="toggleSelectAllDryRun(false)">None</button>
+                            <span class="text-[10px] text-base-content/60">No database writes</span>
+                        </div>
+                    </div>
+                    <div class="border border-base-300 bg-base-100 rounded-lg max-h-40 overflow-y-auto p-1 mb-2">
+                        {{- range .RecentTxs}}
+                        <label class="label cursor-pointer justify-start gap-2 py-1 px-2 hover:bg-base-300/40 rounded border border-transparent hover:border-base-300">
+                            <input type="checkbox" name="target_tx_ids" value="{{.ID}}" class="checkbox checkbox-xs checkbox-primary dry-run-tx-cb" />
+                            <span class="label-text text-xs flex-1 truncate">
+                                <span class="font-mono text-[10px] text-base-content/60 mr-1">{{.DateStr}}</span>
+                                <strong class="font-medium text-base-content">{{.NotesDisplay}}</strong>
+                                <span class="text-base-content/60">({{.AmountFormatted}} {{.Currency}})</span>
+                                <span class="badge badge-xs badge-neutral">{{.BucketDisplay}}</span>{{- if .PartyName}} | {{.PartyName}}{{- end}}
+                            </span>
+                        </label>
+                        {{- end}}
+                    </div>
+                    <div class="flex justify-between items-center mb-2">
+                        <span id="dry_run_selected_count" class="text-[11px] text-base-content/60">0 transactions selected</span>
+                        <button type="button" class="btn btn-neutral btn-sm text-xs gap-1" onclick="runDryRunTest()">
+                            <span>▶️</span> Run Dry-Run on Selected
+                        </button>
+                    </div>
+                    <div id="dry_run_results" class="text-xs">
+                        <div class="text-[11px] text-base-content/50 italic">Select one or more transactions and click Run Dry-Run to test Judge & Executor.</div>
+                    </div>
+                </div>
+
+                <!-- VERSION COMMENT & SQUASH -->
+                <div class="form-control mb-4">
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="label py-0"><span class="label-text text-xs font-bold">Version Comment (Optional)</span></label>
+                        <button type="button" class="btn btn-ghost btn-xs text-primary gap-1" onclick="generateCommentWithAI()">
+                            <span>✨</span> AI Comment
+                        </button>
+                    </div>
+                    <input type="text" name="comment" id="form_comment" placeholder="Describe what changed in this version" class="input input-sm input-bordered w-full text-xs" />
+                </div>
+
+                <!-- SQUASH CHECKBOX (HIDDEN ON V1 OR NEW) -->
+                <div id="squash_container" class="form-control mb-5 hidden">
+                    <label class="label cursor-pointer justify-start gap-3 py-1">
+                        <input type="checkbox" name="squash" id="form_squash" class="checkbox checkbox-sm checkbox-warning" />
+                        <div>
+                            <span class="label-text text-xs font-bold">Squash with predecessor</span>
+                            <div class="text-[10px] text-base-content/60">Replaces version N-1 and saves as current version, reducing version count.</div>
+                        </div>
+                    </label>
+                </div>
+
+                <div class="modal-action">
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="closeAutomationModal()">Cancel</button>
+                    <button type="submit" id="modal_submit_btn" class="btn btn-primary btn-sm">Save Automation</button>
+                </div>
+            </form>
+        </div>
+    </dialog>
+
+    <!-- DELETE CONFIRMATION MODAL -->
+    <dialog id="delete_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <h3 class="font-extrabold text-xl tracking-tight flex items-center gap-2 text-error mb-2">
+                <span>⚠️</span> <span>Delete Automation</span>
+            </h3>
+            <p class="text-xs text-base-content/70 mb-4">
+                Are you sure you want to delete <strong id="delete_auto_name" class="text-base-content"></strong>? This will soft-delete the rule from active processing.
+            </p>
+            <form id="delete_form" method="POST" hx-target="#automations-list-container">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <div class="modal-action">
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="document.getElementById('delete_modal').close()">Cancel</button>
+                    <button type="submit" class="btn btn-error btn-sm">Yes, Delete</button>
+                </div>
+            </form>
+        </div>
+    </dialog>
+{{- end -}}
+
+{{- define "scripts" -}}
+    <script>
+        var budgetID = "{{.BudgetID}}";
+        var csrfToken = "{{.CSRFToken}}";
+    </script>
+    <script src="{{staticPath "automations/automations.js"}}"></script>
+{{- end -}}
+
+{{- define "automations/list" -}}
+{{- if not .Automations}}
+        <div class="card bg-base-100 border border-base-300 p-8 text-center rounded-2xl shadow-sm">
+            <div class="text-4xl mb-2">⚡</div>
+            <h3 class="font-bold text-lg mb-1">No automations configured</h3>
+            <p class="text-xs text-base-content/60 max-w-md mx-auto mb-4">
+                Automations run Lua scripts to categorize transactions into buckets, attach targets, split receipts, or clean up payees automatically.
+            </p>
+            <div>
+                <button class="btn btn-primary btn-sm gap-2" onclick="openNewAutomationModal()">
+                    <span>+</span> Create First Automation
+                </button>
+            </div>
+        </div>
+{{- else}}
+        <div id="automations-list" class="space-y-3">
+        {{- range .Automations}}
+        <div class="card bg-base-100 border border-base-300 shadow-xs rounded-xl p-4 transition-all hover:border-primary/40">
+            <div class="flex items-center justify-between gap-4 flex-wrap">
+                <div class="flex items-center gap-3">
+                    <div class="flex flex-col gap-0.5">
+                        <button class="btn btn-ghost btn-xs p-0.5 h-auto min-h-0"
+                                hx-post="/budgets/{{$.BudgetID}}/automations/{{.ID}}/move?dir=up"
+                                hx-target="#automations-list-container"
+                                hx-headers='{"X-CSRF-Token": "{{$.CSRFToken}}"}'
+                                title="Move Up">▲</button>
+                        <button class="btn btn-ghost btn-xs p-0.5 h-auto min-h-0"
+                                hx-post="/budgets/{{$.BudgetID}}/automations/{{.ID}}/move?dir=down"
+                                hx-target="#automations-list-container"
+                                hx-headers='{"X-CSRF-Token": "{{$.CSRFToken}}"}'
+                                title="Move Down">▼</button>
+                    </div>
+                    <div class="badge badge-neutral font-mono text-xs">#{{.Index}}</div>
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <a href="javascript:void(0)" onclick='openEditAutomationModal({{.JSONAttr}})' class="font-bold text-base hover:text-primary transition-colors">
+                                {{.Name}}
+                            </a>
+                            {{- if .IsActive}}
+                            <span class="badge badge-xs badge-success">Active</span>
+                            {{- else}}
+                            <span class="badge badge-xs badge-ghost">Inactive</span>
+                            {{- end}}
+                            <span class="badge badge-xs badge-outline font-mono">v{{.Version}}</span>
+                        </div>
+                        <div class="text-xs text-base-content/60 font-mono mt-0.5 truncate max-w-md">
+                            Judge: <span class="text-info">{{.JudgeScript}}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex items-center gap-3">
+                    <input type="checkbox" class="toggle toggle-success toggle-sm"{{if .IsActive}} checked{{end}}
+                           hx-post="/budgets/{{$.BudgetID}}/automations/{{.ID}}/toggle"
+                           hx-target="#automations-list-container"
+                           hx-headers='{"X-CSRF-Token": "{{$.CSRFToken}}"}'
+                           title="Toggle Active" />
+
+                    <button class="btn btn-ghost btn-sm" onclick='openEditAutomationModal({{.JSONAttr}})'>
+                        ✏️ Edit
+                    </button>
+
+                    <button class="btn btn-ghost btn-sm text-secondary" onclick='duplicateAutomation({{.JSONAttr}})' title="Duplicate automation">
+                        📋 Duplicate
+                    </button>
+
+                    <button class="btn btn-ghost btn-sm text-info"
+                            hx-get="/budgets/{{$.BudgetID}}/automations/{{.ID}}/history"
+                            hx-target="body" hx-swap="beforeend">
+                        🕒 History
+                    </button>
+
+                    <button class="btn btn-ghost btn-sm text-error" onclick="openDeleteAutomationModal('{{.ID}}', '{{.Name}}')">
+                        🗑️
+                    </button>
+                </div>
+            </div>
+        </div>
+        {{- end}}
+        </div>
+{{- end}}
+{{- end -}}
+
+{{- define "automations/dry_run" -}}
+        <div class="mb-3">
+            <div class="stats stats-horizontal shadow-xs border border-base-300 w-full mb-3 text-center">
+                <div class="stat p-2">
+                    <div class="stat-title text-[10px]">Tested</div>
+                    <div class="stat-value text-base text-base-content">{{.TestedCount}}</div>
+                </div>
+                <div class="stat p-2">
+                    <div class="stat-title text-[10px]">Matched</div>
+                    <div class="stat-value text-base text-success">{{.MatchCount}}</div>
+                </div>
+                <div class="stat p-2">
+                    <div class="stat-title text-[10px]">No Match</div>
+                    <div class="stat-value text-base text-base-content/60">{{.NonMatchCount}}</div>
+                </div>
+            </div>
+        </div>
+        <div class="space-y-2 max-h-60 overflow-y-auto pr-1">
+        {{- range .Items}}
+            {{- if .ErrorMsg}}
+                <div class="alert alert-error py-1.5 px-3 text-xs">
+                    <span class="font-mono text-[10px]">#{{.Index}}</span> ❌ Execution Error: {{.ErrorMsg}}
+                </div>
+            {{- else if not .Matched}}
+                <div class="card bg-base-200/40 border border-base-300 p-2 text-xs flex flex-row items-center justify-between gap-2">
+                    <div class="truncate">
+                        <span class="font-mono text-[10px] text-base-content/50">#{{.Index}}</span>
+                        <span class="text-base-content/70">{{.TxInfo}}</span>
+                    </div>
+                    <span class="badge badge-xs badge-neutral shrink-0">No Match</span>
+                </div>
+            {{- else}}
+                <div class="card bg-success/5 border border-success/30 p-2 text-xs">
+                    <div class="flex items-center justify-between gap-2 mb-1">
+                        <div class="font-semibold truncate">
+                            <span class="font-mono text-[10px] text-base-content/50">#{{.Index}}</span>
+                            <span>{{.TxInfo}}</span>
+                        </div>
+                        <span class="badge badge-xs badge-success shrink-0">Judge Match</span>
+                    </div>
+                    <div class="text-[11px] text-base-content/80 pl-4 border-l-2 border-success/40">
+                        {{.ChangesDescHTML}}
+                    </div>
+                </div>
+            {{- end}}
+        {{- end}}
+        </div>
+{{- end -}}
+
+{{- define "automations/batch_dry_run" -}}
+        <div class="mb-4">
+            <div class="stats stats-horizontal shadow-sm border border-base-300 w-full mb-3 text-center">
+                <div class="stat p-3">
+                    <div class="stat-title text-xs">Selected</div>
+                    <div class="stat-value text-lg">{{.ProcessedCount}}</div>
+                </div>
+                <div class="stat p-3 text-success">
+                    <div class="stat-title text-xs">Modified</div>
+                    <div class="stat-value text-lg">{{.ModifiedCount}}</div>
+                </div>
+                <div class="stat p-3 text-info">
+                    <div class="stat-title text-xs">Splits</div>
+                    <div class="stat-value text-lg">{{.SplitCount}}</div>
+                </div>
+                <div class="stat p-3 text-error">
+                    <div class="stat-title text-xs">Deleted</div>
+                    <div class="stat-value text-lg">{{.DeletedCount}}</div>
+                </div>
+            </div>
+            {{- if not .Changes}}
+            <div class="alert alert-neutral text-xs">ℹ️ None of the selected transactions matched active automation rules.</div>
+            {{- else}}
+            <div class="overflow-x-auto max-h-60 rounded border border-base-300">
+                <table class="table table-xs table-pin-rows">
+                    <thead>
+                        <tr>
+                            <th>Action</th>
+                            <th>Notes</th>
+                            <th>Bucket Change</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{- range .Changes}}
+                        <tr>
+                            <td>{{.ActionBadgeHTML}}</td>
+                            <td class="font-mono text-[11px] truncate max-w-xs">{{.OriginalNotes}}</td>
+                            <td class="text-xs">{{.OriginalBucket}} → <strong class="text-primary">{{.NewBucket}}</strong></td>
+                        </tr>
+                        {{- end}}
+                    </tbody>
+                </table>
+            </div>
+            {{- end}}
+        </div>
+{{- end -}}

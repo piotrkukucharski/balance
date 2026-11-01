@@ -1,0 +1,260 @@
+{{- define "workspace/budgets_list" -}}
+{{- template "shared/base" . -}}
+{{- end -}}
+
+{{- define "title" -}}Balance — Budgets{{- end -}}
+
+{{- define "content" -}}
+<div class="max-w-5xl w-full mx-auto">
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
+        <div>
+            <h1 class="text-3xl font-black tracking-tight">Your Budgets</h1>
+            <p class="text-sm text-base-content/60 mt-1">Select an active budget or create a new envelope workspace.</p>
+        </div>
+        <button class="btn btn-primary shadow-md font-semibold gap-2" onclick="openNewBudgetModal('empty')">
+            <span>+</span>
+            <span>New Budget</span>
+        </button>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {{- if .Budgets}}
+        {{- range .Budgets}}
+        <div class="card card-border bg-base-100 shadow-md hover:shadow-xl transition-all duration-200 border-base-300">
+            <div class="card-body p-6 gap-3">
+                <div class="flex justify-between items-start">
+                    <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center font-bold text-lg">💰</div>
+                        <div>
+                            <h3 class="card-title text-xl font-bold tracking-tight">{{.Name}}</h3>
+                            <div class="text-xs text-base-content/60">Timezone: {{.Timezone}}</div>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="badge badge-soft badge-primary font-semibold text-xs">{{.Role}}</span>
+                        {{- if .IsOwner}}
+                        <div class="dropdown dropdown-end">
+                            <div tabindex="0" role="button" class="btn btn-ghost btn-xs btn-square" title="Budget Options">
+                                <span>⋮</span>
+                            </div>
+                            <ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-10 w-44 p-2 shadow-lg border border-base-300 gap-1 text-xs">
+                                <li>
+                                    <button type="button" class="flex items-center gap-2 py-1.5" onclick="openEditBudgetModal('{{.ID}}', '{{.EscapedName}}')">
+                                        <span>✏️</span>
+                                        <span>Rename</span>
+                                    </button>
+                                </li>
+                                <li>
+                                    <button type="button" class="flex items-center gap-2 py-1.5" onclick="openCloneBudgetModal('{{.ID}}', '{{.EscapedName}}')">
+                                        <span>📋</span>
+                                        <span>Clone Budget</span>
+                                    </button>
+                                </li>
+                                <li>
+                                    <form method="POST" action="/budgets/{{.ID}}/delete" onsubmit="return confirm('Are you sure you want to delete budget \'{{.EscapedName}}\'? This action is permanent and deletes all ledger data.')" class="p-0">
+                                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
+                                        <button type="submit" class="flex items-center gap-2 text-error py-1.5 w-full hover:bg-error/10">
+                                            <span>🗑️</span>
+                                            <span>Delete Budget</span>
+                                        </button>
+                                    </form>
+                                </li>
+                            </ul>
+                        </div>
+                        {{- end}}
+                    </div>
+                </div>
+                <div class="divider my-0"></div>
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <span class="badge badge-neutral badge-sm">{{.Currency}}</span>
+                        <span class="text-xs text-base-content/60">Default Currency</span>
+                    </div>
+                    <div class="card-actions flex items-center gap-2">
+                        <a href="/budgets/{{.ID}}/accounts" class="btn btn-outline btn-secondary btn-sm gap-1.5 shadow-xs font-semibold" title="Link Bank Account or manage accounts">
+                            <span>🏦</span>
+                            <span>Link Bank</span>
+                        </a>
+                        <a href="/budgets/{{.ID}}/budget" class="btn btn-primary btn-sm gap-1.5 shadow-sm font-semibold">
+                            <span>Open</span>
+                            <span>➔</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {{- end}}
+        {{- else}}
+        <div class="col-span-full card card-border bg-base-100 border-dashed border-base-300 p-8 text-center flex flex-col items-center justify-center gap-4">
+            <div class="w-16 h-16 rounded-full bg-base-200 flex items-center justify-center text-3xl">📂</div>
+            <div>
+                <h3 class="font-bold text-lg">No Budgets Found</h3>
+                <p class="text-xs text-base-content/60 max-w-sm mt-1">Create your first budget envelope workspace to begin tracking your cashflow and targets.</p>
+            </div>
+            <div class="flex flex-wrap items-center justify-center gap-2">
+                <button class="btn btn-primary btn-sm shadow font-semibold" onclick="openNewBudgetModal('empty')">+ Create Budget</button>
+                <button class="btn btn-outline btn-primary btn-sm shadow font-semibold gap-1.5" onclick="openNewBudgetModal('ai')"><span>✨</span><span>Create with AI</span></button>
+            </div>
+        </div>
+        {{- end}}
+    </div>
+</div>
+{{- end -}}
+
+{{- define "modals" -}}
+{{- if .HasOwnerBudget}}
+    <!-- Edit Budget Modal -->
+    <dialog id="edit_budget_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Rename Budget</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form id="edit_budget_form" method="POST" action="" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">New Budget Name</span></label>
+                    <input type="text" id="edit_budget_name" name="name" required placeholder="Budget Name" class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="edit_budget_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Changes</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Clone Budget Modal -->
+    <dialog id="clone_budget_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <div>
+                    <h3 class="font-extrabold text-xl tracking-tight">Clone Budget</h3>
+                    <p class="text-xs text-base-content/60 mt-0.5">Duplicate budget workspace with selective resource checklist</p>
+                </div>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form id="clone_budget_form" method="POST" action="" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">New Budget Name</span></label>
+                    <input type="text" id="clone_budget_name" name="name" required placeholder="e.g. My Budget (Copy)" class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                
+                <div class="divider my-0 text-xs text-base-content/60 font-semibold uppercase tracking-wider">Resources to Include</div>
+                <div class="flex flex-col gap-2.5 bg-base-200/50 p-4 rounded-xl border border-base-300">
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" id="clone_include_members" name="include_members" value="1" checked class="checkbox checkbox-primary checkbox-sm" />
+                        <span class="text-xs font-medium">Team Members <span class="text-base-content/50 font-normal">(roles and permissions)</span></span>
+                    </label>
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" id="clone_include_accounts" name="include_accounts" value="1" checked onchange="syncCloneDependencies()" class="checkbox checkbox-primary checkbox-sm" />
+                        <span class="text-xs font-medium">Accounts <span class="text-base-content/50 font-normal">(checking, cash, savings, external parties)</span></span>
+                    </label>
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" id="clone_include_buckets" name="include_buckets" value="1" checked onchange="syncCloneDependencies()" class="checkbox checkbox-primary checkbox-sm" />
+                        <span class="text-xs font-medium">Buckets & Groups <span class="text-base-content/50 font-normal">(envelope structure and categories)</span></span>
+                    </label>
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" id="clone_include_targets" name="include_targets" value="1" checked onchange="syncCloneDependencies()" class="checkbox checkbox-primary checkbox-sm" />
+                        <span class="text-xs font-medium">Targets <span class="text-base-content/50 font-normal">(funding goals and formulas; requires Buckets)</span></span>
+                    </label>
+                    <label class="flex items-center gap-3 cursor-pointer">
+                        <input type="checkbox" id="clone_include_transactions" name="include_transactions" value="1" checked onchange="syncCloneDependencies()" class="checkbox checkbox-primary checkbox-sm" />
+                        <span class="text-xs font-medium">Transactions <span class="text-base-content/50 font-normal">(ledger history; requires Accounts & Buckets)</span></span>
+                    </label>
+                </div>
+
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="clone_budget_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md gap-1.5">
+                        <span>📋</span>
+                        <span>Clone Budget</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+{{- end}}
+
+    <!-- New Budget Modal -->
+    <dialog id="new_budget_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Create New Budget</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form method="POST" action="/budgets" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Budget Name</span></label>
+                    <input type="text" name="name" required placeholder="Personal & Family Budget" class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Primary Currency</span></label>
+                        <select name="default_currency" class="select select-bordered w-full select-md focus:select-primary">
+                            <option value="PLN" selected>PLN (zł)</option>
+                            <option value="EUR">EUR (€)</option>
+                            <option value="USD">USD ($)</option>
+                            <option value="GBP">GBP (£)</option>
+                        </select>
+                    </div>
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">IANA Timezone</span></label>
+                        <input type="text" name="timezone" value="Europe/Warsaw" required class="input input-bordered w-full input-md focus:input-primary" />
+                    </div>
+                </div>
+
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Initial Structure</span></label>
+                    <div class="grid grid-cols-3 gap-2">
+                        <label class="cursor-pointer label border border-base-300 rounded-lg p-2 flex items-center gap-2 hover:bg-base-200">
+                            <input type="radio" name="creation_mode" value="empty" class="radio radio-xs radio-primary" checked onchange="toggleCreationMode('empty')" />
+                            <span class="label-text text-xs font-semibold">Empty</span>
+                        </label>
+                        <label class="cursor-pointer label border border-base-300 rounded-lg p-2 flex items-center gap-2 hover:bg-base-200">
+                            <input type="radio" name="creation_mode" value="ai" class="radio radio-xs radio-primary" id="creation_mode_ai" onchange="toggleCreationMode('ai')" />
+                            <span class="label-text text-xs font-semibold">✨ AI Gen</span>
+                        </label>
+                        <label class="cursor-pointer label border border-base-300 rounded-lg p-2 flex items-center gap-2 hover:bg-base-200{{if not .Budgets}} opacity-50 cursor-not-allowed{{end}}">
+                            <input type="radio" name="creation_mode" value="copy" class="radio radio-xs radio-primary" id="creation_mode_copy" onchange="toggleCreationMode('copy')"{{if not .Budgets}} disabled{{end}} />
+                            <span class="label-text text-xs font-semibold">📥 Copy</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div id="ai_prompt_container" class="hidden form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">AI Budget Description</span></label>
+                    <textarea name="ai_prompt" id="ai_prompt_input" rows="3" placeholder="e.g. Rodzina 2+1, mieszkanie i kredyt 2500 PLN, jedzenie 1600 PLN, rachunki 400 PLN, oszczędności 500 PLN..." class="textarea textarea-bordered w-full text-xs focus:textarea-primary"></textarea>
+                    <span class="text-[10px] text-base-content/50 mt-1">AI will automatically create envelopes, calculate targets and assign priority rules.</span>
+                </div>
+
+                <div id="copy_budget_container" class="hidden form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Source Budget to Copy From</span></label>
+                    <select name="source_budget_id" class="select select-bordered w-full select-sm focus:select-primary">
+                        {{- if .Budgets}}
+                        {{- range .Budgets}}
+                        <option value="{{.ID}}">{{.Name}} ({{.Currency}})</option>
+                        {{- end}}
+                        {{- else}}
+                        <option value="" disabled selected>No existing budgets available</option>
+                        {{- end}}
+                    </select>
+                </div>
+
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="new_budget_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Create Budget</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+{{- end -}}
+
+{{- define "scripts" -}}
+<script src="{{staticPath "workspace/budgets_list.js"}}"></script>
+{{- end -}}

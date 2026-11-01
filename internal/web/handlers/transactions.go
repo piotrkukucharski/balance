@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
+	"html/template"
 	"math"
 	"net/http"
 	"os"
@@ -23,6 +23,7 @@ import (
 	"github.com/balance/balance/internal/rule"
 	"github.com/balance/balance/internal/service"
 	"github.com/balance/balance/internal/transaction"
+	"github.com/balance/balance/internal/web/templates"
 	"github.com/labstack/echo/v4"
 )
 
@@ -64,6 +65,80 @@ func (h *TransactionsHandler) SetService(svc *service.AppService) {
 	h.appService = svc
 }
 
+type txBucketOption struct {
+	ID   string
+	Name string
+}
+
+type txAccountItem struct {
+	ID               string
+	Name             string
+	Currency         string
+	BalanceFormatted string
+	IsActiveFilter   bool
+	IsBankLinked     bool
+}
+
+type txLedgerRow struct {
+	ID                string
+	AmountMinor       int64
+	Currency          string
+	DateTag           template.HTML
+	BucketName        string
+	TargetName        string
+	Notes             string
+	SourceAccountName string
+	DestAccountName   string
+	IsIncome          bool
+	IsTransfer        bool
+	AmountClass       string
+	AmountPrefix      string
+	AmountFormatted   string
+	ActionMenuHTML    template.HTML
+}
+
+type txRawRow struct {
+	ID                string
+	AmountMinor       int64
+	Currency          string
+	DateTag           template.HTML
+	AccountName       string
+	Payee             string
+	Reference         string
+	IsPendingHold     bool
+	IsMatchedRule     bool
+	SuggestedBucketID string
+	AmountBadgeClass  string
+	AmountPrefix      string
+	AmountFormatted   string
+	ActionMenuHTML    template.HTML
+}
+
+type transactionsViewData struct {
+	DateFormat              string
+	TimeFormat              string
+	BudgetID                string
+	BudgetName              string
+	CSRFToken               string
+	SidebarHTML             template.HTML
+	BottomDockHTML          template.HTML
+	DateTimeFormatterScript template.HTML
+	HasLinkedBankAccounts   bool
+	IsAllAccountsActive     bool
+	FilterPartyID           string
+	FilteredPartyName       string
+	PendingRawCount         int
+	MatchedRulesCount       int
+	TodayDateStr            string
+	PartySuggestions        []string
+	Buckets                 []txBucketOption
+	Accounts                []txAccountItem
+	RawTransactions         []txRawRow
+	LedgerTransactions      []txLedgerRow
+	PageConfigJSON          template.JS
+	AllTargetsJSON          template.JS
+}
+
 // TransactionsView renders the unified transactions ledger, triage workbench, and rapid entry toolbar.
 func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 	budgetID := c.Param("budgetId")
@@ -81,25 +156,17 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 	filterPartyID := c.QueryParam("party_id")
 
 	// 1. Fetch buckets and targets for dropdowns
+	var buckets []txBucketOption
 	bucketRows, err := tenantDB.QueryContext(c.Request().Context(), `
-		SELECT id, name FROM buckets_projection 
-		WHERE is_archived = 0 
+		SELECT id, name FROM buckets_projection
+		WHERE is_archived = 0
 		ORDER BY name ASC`)
-	var bucketOptions strings.Builder
-	var editBucketOptions strings.Builder
-	var qaBucketOptions strings.Builder
-	bucketOptions.WriteString(`<option value="">Unassigned</option>`)
-	editBucketOptions.WriteString(`<option value="">Unassigned</option>`)
-	qaBucketOptions.WriteString(`<option value="">📂 Select Envelope (Bucket)</option>`)
 	if err == nil {
 		defer bucketRows.Close()
 		for bucketRows.Next() {
 			var bID, bName string
 			bucketRows.Scan(&bID, &bName)
-			opt := fmt.Sprintf(`<option value="%s">%s</option>`, bID, bName)
-			bucketOptions.WriteString(opt)
-			editBucketOptions.WriteString(opt)
-			qaBucketOptions.WriteString(opt)
+			buckets = append(buckets, txBucketOption{ID: bID, Name: bName})
 		}
 	}
 
@@ -126,7 +193,10 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		}
 	}
 	targetsJSONBytes, _ := json.Marshal(targetsList)
-	targetsJSON := string(targetsJSONBytes)
+	pageConfigBytes, _ := json.Marshal(map[string]any{
+		"activeBudgetId": budgetID,
+		"allTargets":     targetsList,
+	})
 
 	// 2. Fetch user checking/cash accounts with balances for pills & dropdowns
 	acctRows, err := tenantDB.QueryContext(c.Request().Context(), `
@@ -138,124 +208,51 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		LEFT JOIN account_integration_links ail ON a.id = ail.account_id
 		WHERE p.is_user_owned = 1 AND a.is_closed = 0
 		ORDER BY a.name ASC`)
-	var acctOptions strings.Builder
-	var editAcctOptions strings.Builder
-	var qaDestAcctOptions strings.Builder
-	var acctCheckboxes strings.Builder
-	var acctPills strings.Builder
+	var accounts []txAccountItem
 	linkedBankAcctCount := 0
 
-	// All accounts filter pill
-	allActiveCls := "btn-primary font-bold shadow-xs"
-	if filterAcctID != "" || filterPartyID != "" {
-		allActiveCls = "btn-ghost border border-base-300"
-	}
-	acctPills.WriteString(fmt.Sprintf(`
-		<a href="/budgets/%s/transactions" class="btn btn-sm %s">
-			<span>🏦 All Accounts</span>
-		</a>`, budgetID, allActiveCls))
-
+	var filteredPartyName string
 	if filterPartyID != "" {
-		var filteredPartyName string
 		tenantDB.QueryRowContext(c.Request().Context(), `SELECT name FROM parties_current WHERE id = ?`, filterPartyID).Scan(&filteredPartyName)
-		if filteredPartyName != "" {
-			acctPills.WriteString(fmt.Sprintf(`
-				<a href="/budgets/%s/transactions?party_id=%s" class="btn btn-sm btn-primary font-bold shadow-xs flex items-center gap-1.5">
-					<span>🏢 Party: %s</span>
-					<span class="badge badge-xs badge-neutral">Filtered</span>
-				</a>`, budgetID, filterPartyID, html.EscapeString(filteredPartyName)))
-		}
 	}
 
-	firstUserAcctID := ""
 	if err == nil {
 		defer acctRows.Close()
 		for acctRows.Next() {
 			var aID, aName, aCurr, ailID string
 			var aBalMinor int64
 			acctRows.Scan(&aID, &aName, &aCurr, &aBalMinor, &ailID)
-			if firstUserAcctID == "" {
-				firstUserAcctID = aID
-			}
 
 			aBalMajor := float64(aBalMinor) / 100.0
-
-			optSelected := ""
-			if filterAcctID != "" && filterAcctID == aID {
-				optSelected = "selected"
-			}
-			opt := fmt.Sprintf(`<option value="%s" %s>%s (%s)</option>`, aID, optSelected, aName, aCurr)
-			acctOptions.WriteString(opt)
-			editAcctOptions.WriteString(opt)
-			qaDestAcctOptions.WriteString(fmt.Sprintf(`<option value="%s">⇄ %s (%s)</option>`, aID, aName, aCurr))
-
-			if ailID != "" {
+			isBankLinked := ailID != ""
+			if isBankLinked {
 				linkedBankAcctCount++
-				checkbox := fmt.Sprintf(`
-					<label class="label cursor-pointer justify-start gap-3 py-1.5 px-2 hover:bg-base-200 rounded-lg transition-colors">
-						<input type="checkbox" name="account_ids" value="%s" checked class="checkbox checkbox-primary checkbox-sm" />
-						<span class="label-text font-medium text-sm">%s <span class="text-xs text-base-content/60">(%.2f %s)</span></span>
-					</label>`, aID, aName, aBalMajor, aCurr)
-				acctCheckboxes.WriteString(checkbox)
 			}
 
-			// Account filter pill
-			pillActiveCls := "btn-ghost border border-base-300"
-			if filterAcctID == aID {
-				pillActiveCls = "btn-primary font-bold shadow-xs"
-			}
-			acctPills.WriteString(fmt.Sprintf(`
-				<a href="/budgets/%s/transactions?account_id=%s" class="btn btn-sm %s flex items-center gap-1.5">
-					<span class="font-medium">%s</span>
-					<span class="font-mono text-xs opacity-75">(%.2f %s)</span>
-				</a>`, budgetID, aID, pillActiveCls, aName, aBalMajor, aCurr))
+			accounts = append(accounts, txAccountItem{
+				ID:               aID,
+				Name:             aName,
+				Currency:         aCurr,
+				BalanceFormatted: fmt.Sprintf("%.2f", aBalMajor),
+				IsActiveFilter:   filterAcctID != "" && filterAcctID == aID,
+				IsBankLinked:     isBankLinked,
+			})
 		}
 	}
 
-	toolbarSyncBtnHTML := `<button type="button" class="btn btn-secondary btn-sm shadow font-semibold gap-1.5" onclick="bank_sync_modal.showModal()">
-                        <span>🔄</span>
-                        <span>Sync with Bank</span>
-                    </button>`
-	modalSyncBtnHTML := `<button type="submit" class="btn btn-primary font-semibold shadow-md gap-1.5">
-                        <span>🔄</span>
-                        <span>Start Sync</span>
-                    </button>`
-
-	if linkedBankAcctCount == 0 {
-		acctCheckboxes.WriteString(fmt.Sprintf(`
-			<div class="p-4 text-center text-xs text-base-content/60 flex flex-col items-center gap-2">
-				<span>No bank-linked accounts found in this budget.</span>
-				<a href="/budgets/%s/accounts" class="btn btn-outline btn-xs btn-primary gap-1">
-					<span>🔗</span>
-					<span>Connect a Bank Account</span>
-				</a>
-			</div>`, budgetID))
-		toolbarSyncBtnHTML = fmt.Sprintf(`<div class="tooltip tooltip-bottom" data-tip="No bank-linked accounts. Connect an account first.">
-                        <button type="button" class="btn btn-secondary btn-sm shadow font-semibold gap-1.5 btn-disabled opacity-60" disabled>
-                            <span>🔄</span>
-                            <span>Sync with Bank</span>
-                        </button>
-                    </div>`)
-		modalSyncBtnHTML = `<button type="submit" class="btn btn-primary font-semibold shadow-md gap-1.5 btn-disabled opacity-60" disabled>
-                        <span>🔄</span>
-                        <span>Start Sync</span>
-                    </button>`
-	}
-
 	// 3. Fetch external parties for autocomplete suggestions
-	var partySuggestions strings.Builder
+	var partySuggestions []string
 	partyRows, pErr := tenantDB.QueryContext(c.Request().Context(), `
-		SELECT DISTINCT name FROM parties_current 
-		WHERE is_user_owned = 0 AND name != '' 
-		ORDER BY name ASC 
+		SELECT DISTINCT name FROM parties_current
+		WHERE is_user_owned = 0 AND name != ''
+		ORDER BY name ASC
 		LIMIT 100`)
 	if pErr == nil {
 		defer partyRows.Close()
 		for partyRows.Next() {
 			var pName string
 			partyRows.Scan(&pName)
-			escaped := strings.ReplaceAll(pName, `"`, `&quot;`)
-			partySuggestions.WriteString(fmt.Sprintf(`<option value="%s"></option>`, escaped))
+			partySuggestions = append(partySuggestions, pName)
 		}
 	}
 
@@ -294,12 +291,10 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 	}
 	defer rows.Close()
 
-	var txRows strings.Builder
-	hasTxs := false
+	var ledgerRows []txLedgerRow
 	csrfToken, _ := c.Get("csrfToken").(string)
 
 	for rows.Next() {
-		hasTxs = true
 		var id, curr, notes, bucketName, bucketIDVal, targetIDVal, targetName, srcAcctID, dstAcctID, srcAcctName, dstAcctName string
 		var amountMinor, txDate int64
 		var srcUserOwned, dstUserOwned int
@@ -314,28 +309,21 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		escapedNotes := strings.ReplaceAll(notes, "'", "\\'")
 		escapedNotes = strings.ReplaceAll(escapedNotes, "\"", "&quot;")
 
-		// Format amount & account display based on double-entry type
-		amountDisplay := fmt.Sprintf(`-%.2f <span class="text-xs font-normal text-base-content/60">%s</span>`, amountMajor, curr)
 		amountClass := "text-error"
-		accountDisplay := fmt.Sprintf(`<span class="text-xs font-medium">%s</span>`, srcAcctName)
+		amountPrefix := "-"
+		isIncome := false
+		isTransfer := false
 
 		if srcUserOwned == 0 && dstUserOwned == 1 {
 			// Income: external party -> user account
-			amountDisplay = fmt.Sprintf(`+%.2f <span class="text-xs font-normal text-base-content/60">%s</span>`, amountMajor, curr)
+			amountPrefix = "+"
 			amountClass = "text-success"
-			accountDisplay = fmt.Sprintf(`<span class="text-xs font-medium text-success">%s</span>`, dstAcctName)
+			isIncome = true
 		} else if srcUserOwned == 1 && dstUserOwned == 1 {
 			// Internal transfer
-			amountDisplay = fmt.Sprintf(`⇄ %.2f <span class="text-xs font-normal text-base-content/60">%s</span>`, amountMajor, curr)
+			amountPrefix = "⇄ "
 			amountClass = "text-info"
-			accountDisplay = fmt.Sprintf(`<span class="text-xs font-medium text-info">%s → %s</span>`, srcAcctName, dstAcctName)
-		}
-
-		bucketBadge := fmt.Sprintf(`<span class="badge badge-soft badge-primary font-semibold text-xs">%s</span>`, bucketName)
-		if targetName != "" {
-			bucketBadge = fmt.Sprintf(`<div class="flex flex-col gap-0.5"><span class="badge badge-soft badge-primary font-semibold text-xs">%s</span><span class="text-[10px] text-base-content/60 font-medium">🎯 %s</span></div>`, bucketName, html.EscapeString(targetName))
-		} else if bucketName == "Unassigned" {
-			bucketBadge = `<span class="badge badge-soft badge-ghost text-xs">Unassigned</span>`
+			isTransfer = true
 		}
 
 		actionMenu := RenderPopoverActionMenu("tx", id, []TableActionItem{
@@ -356,46 +344,23 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 			},
 		})
 
-		budgetCheckboxHTML := fmt.Sprintf(`
-			<input type="checkbox" name="selected_tx_ids" value="%s" 
-			       data-tx-id="%s" data-amount="%d" data-currency="%s"
-			       class="checkbox checkbox-primary checkbox-xs budget-tx-select-cb" 
-			       onchange="updateLedgerFloatingActionBar()" />`,
-			id, id, amountMinor, curr,
-		)
-
-		txRows.WriteString(fmt.Sprintf(`
-			<tr class="hover group transition-colors">
-				<td class="w-10 text-center">
-					%s
-				</td>
-				<td class="font-mono text-xs text-base-content/80 whitespace-nowrap">%s</td>
-				<td>%s</td>
-				<td class="text-sm font-semibold max-w-xs truncate" title="%s">%s</td>
-				<td>%s</td>
-				<td class="font-mono text-right font-bold text-sm whitespace-nowrap %s">
-					%s
-				</td>
-				<td class="text-right">
-					%s
-				</td>
-			</tr>`,
-			budgetCheckboxHTML,
-			dateTag, bucketBadge, escapedNotes, notes, accountDisplay,
-			amountClass, amountDisplay, actionMenu,
-		))
-	}
-
-	if !hasTxs {
-		txRows.WriteString(`
-			<tr>
-				<td colspan="7" class="text-center py-12 text-base-content/50">
-					<div class="text-3xl mb-2">💸</div>
-					<div class="font-semibold text-sm">No transactions recorded yet.</div>
-					<div class="text-xs text-base-content/40 mt-1">Use 🔄 Sync with Bank or enter one via the quick-add row above.</div>
-				</td>
-			</tr>
-		`)
+		ledgerRows = append(ledgerRows, txLedgerRow{
+			ID:                id,
+			AmountMinor:       amountMinor,
+			Currency:          curr,
+			DateTag:           template.HTML(dateTag),
+			BucketName:        bucketName,
+			TargetName:        targetName,
+			Notes:             notes,
+			SourceAccountName: srcAcctName,
+			DestAccountName:   dstAcctName,
+			IsIncome:          isIncome,
+			IsTransfer:        isTransfer,
+			AmountClass:       amountClass,
+			AmountPrefix:      amountPrefix,
+			AmountFormatted:   fmt.Sprintf("%.2f", amountMajor),
+			ActionMenuHTML:    template.HTML(actionMenu),
+		})
 	}
 
 	// 5. Fetch pending raw transactions (unresolved bank feeds)
@@ -408,7 +373,7 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 		WHERE r.status = 'PENDING'
 		ORDER BY r.booking_date DESC
 		LIMIT 100`)
-	var rawTxRows strings.Builder
+	var rawTxRows []txRawRow
 	pendingRawCount := 0
 	matchedRulesCount := 0
 
@@ -435,13 +400,12 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 
 			// Suggest rule match if available
 			suggestedBucketID := ""
-			suggestedBadge := `<span class="badge badge-soft badge-ghost text-xs">Unmatched</span>`
-			if rBookingStatus == "PENDING" {
-				suggestedBadge = `<span class="badge badge-warning text-xs font-semibold gap-1"><span>⏳</span><span>Pending Hold</span></span>`
-			} else if rulesEngine != nil {
+			isPendingHold := rBookingStatus == "PENDING"
+			isMatchedRule := false
+			if !isPendingHold && rulesEngine != nil {
 				if match := rulesEngine.Match(rPayee, rIBAN, rRef); match != nil && match.DefaultBucketID != nil {
 					suggestedBucketID = *match.DefaultBucketID
-					suggestedBadge = `<span class="badge badge-soft badge-success text-xs font-semibold">Matched Rule</span>`
+					isMatchedRule = true
 					matchedRulesCount++
 				}
 			}
@@ -449,26 +413,8 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 			escapedPayee := strings.ReplaceAll(rPayee, "'", "\\'")
 			escapedPayee = strings.ReplaceAll(escapedPayee, "\"", "&quot;")
 
-			// Build bucket options with pre-selected suggested bucket
-			var inlineBucketOptions strings.Builder
-			inlineBucketOptions.WriteString(`<option value="">Unassigned</option>`)
-			// We can reconstruct bucket options with suggested pre-selected
-			bRows2, _ := tenantDB.QueryContext(c.Request().Context(), `SELECT id, name FROM buckets_projection WHERE is_archived = 0 ORDER BY name ASC`)
-			if bRows2 != nil {
-				for bRows2.Next() {
-					var bID, bName string
-					bRows2.Scan(&bID, &bName)
-					sel := ""
-					if bID == suggestedBucketID {
-						sel = "selected"
-					}
-					inlineBucketOptions.WriteString(fmt.Sprintf(`<option value="%s" %s>%s</option>`, bID, sel, bName))
-				}
-				bRows2.Close()
-			}
-
 			var rawActionItems []TableActionItem
-			if rBookingStatus == "PENDING" {
+			if isPendingHold {
 				rawActionItems = []TableActionItem{
 					{
 						Label: "🕒 History",
@@ -503,1231 +449,60 @@ func (h *TransactionsHandler) TransactionsView(c echo.Context) error {
 			}
 			rawActionMenu := RenderPopoverActionMenu("raw", rID, rawActionItems)
 
-			checkboxHTML := fmt.Sprintf(`
-				<input type="checkbox" name="selected_raw_ids" value="%s" 
-				       data-raw-id="%s" data-amount="%d" data-currency="%s" data-payee="%s"
-				       class="checkbox checkbox-primary checkbox-xs raw-select-cb" 
-				       onchange="updateFloatingActionBar()" />`,
-				rID, rID, rAmountMinor, rCurrency, escapedPayee,
-			)
-			approveActionHTML := fmt.Sprintf(`
-				<form method="POST" action="/budgets/%s/transactions/raw/%s/resolve" class="flex items-center gap-1.5 justify-end">
-					<input type="hidden" name="csrf_token" value="%s" />
-					<input type="hidden" name="party_name" value="%s" />
-					<input type="hidden" name="notes" value="%s" />
-					<select name="bucket_id" class="select select-xs select-bordered w-36 focus:select-primary text-xs font-medium">
-						%s
-					</select>
-					<button type="submit" class="btn btn-success btn-xs font-bold gap-1 shadow-xs" title="1-Click Approve (Direct Move)">
-						<span>✓</span>
-						<span>Approve</span>
-					</button>
-				</form>`,
-				budgetID, rID, csrfToken, escapedPayee, escapedPayee, inlineBucketOptions.String(),
-			)
-
-			if rBookingStatus == "PENDING" {
-				checkboxHTML = `<input type="checkbox" disabled class="checkbox checkbox-xs opacity-30 cursor-not-allowed" title="Pending bank holds cannot be reconciled until booked by bank" />`
-				approveActionHTML = `<div class="flex items-center gap-1.5 justify-end"><span class="badge badge-ghost text-xs text-base-content/60 gap-1" title="Waiting for bank to clear/book transaction"><span>⏳</span><span>Awaiting Booked</span></span></div>`
-			}
-
-			rawTxRows.WriteString(fmt.Sprintf(`
-				<tr class="hover group transition-colors">
-					<td class="w-10 text-center">
-						%s
-					</td>
-					<td class="font-mono text-xs whitespace-nowrap">%s</td>
-					<td class="text-xs font-medium text-base-content/80 whitespace-nowrap">%s</td>
-					<td class="max-w-xs">
-						<div class="font-bold text-sm truncate" title="%s">%s</div>
-						<div class="text-xs text-base-content/50 truncate" title="%s">%s</div>
-					</td>
-					<td>%s</td>
-					<td class="font-mono text-right font-bold text-sm whitespace-nowrap %s">
-						%s%.2f <span class="text-xs font-normal text-base-content/60">%s</span>
-					</td>
-					<td>
-						%s
-					</td>
-					<td class="text-right">
-						%s
-					</td>
-				</tr>`,
-				checkboxHTML,
-				rDateTag, rAcctName, rPayee, rPayee, rRef, rRef, suggestedBadge,
-				amountBadgeClass, amountPrefix, rAmountMajor, rCurrency,
-				approveActionHTML, rawActionMenu,
-			))
+			rawTxRows = append(rawTxRows, txRawRow{
+				ID:                rID,
+				AmountMinor:       rAmountMinor,
+				Currency:          rCurrency,
+				DateTag:           template.HTML(rDateTag),
+				AccountName:       rAcctName,
+				Payee:             rPayee,
+				Reference:         rRef,
+				IsPendingHold:     isPendingHold,
+				IsMatchedRule:     isMatchedRule,
+				SuggestedBucketID: suggestedBucketID,
+				AmountBadgeClass:  amountBadgeClass,
+				AmountPrefix:      amountPrefix,
+				AmountFormatted:   fmt.Sprintf("%.2f", rAmountMajor),
+				ActionMenuHTML:    template.HTML(rawActionMenu),
+			})
 		}
 	}
 
-	if pendingRawCount == 0 {
-		rawTxRows.WriteString(`
-			<tr>
-				<td colspan="8" class="text-center py-10 text-base-content/50">
-					<div class="text-3xl mb-2">🎉</div>
-					<div class="font-bold text-base text-base-content/80">All bank transactions are reconciled. No pending bank feeds!</div>
-					<div class="text-xs text-base-content/50 mt-1">Use 🔄 Sync with Bank to fetch newly cleared transactions from your accounts.</div>
-				</td>
-			</tr>
-		`)
-	}
-
 	todayDateStr := time.Now().UTC().Format("2006-01-02")
-
 	dFormat, tFormat := GetUserDateTimePreferences(c)
 
-	html := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en" data-theme="dark" data-date-format="%s" data-time-format="%s">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <meta name="user-date-format" content="%s">
-    <meta name="user-time-format" content="%s">
-    <title>Balance — Transactions</title>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-    <script src="https://unpkg.com/htmx.org@2.0.4/dist/ext/sse.js"></script>
-    <link rel="icon" type="image/x-icon" href="/favicon.ico">
-    <link rel="manifest" href="/manifest.webmanifest">
-</head>
-<body class="bg-base-200 text-base-content min-h-screen flex flex-col">
-    <!-- Party Autocomplete Suggestions -->
-    <datalist id="party_suggestions">
-        %s
-    </datalist>
-
-    <header class="navbar bg-base-100 border-b border-base-300 px-6 sticky top-0 z-30 shadow-xs">
-        <div class="navbar-start gap-4 items-center">
-            <a href="/budgets" class="text-2xl font-black tracking-tight text-primary flex items-center gap-2">
-                <span>⚖️</span>
-                <span>Balance</span>
-            </a>
-            <div class="badge badge-neutral font-semibold gap-1.5 py-3">
-                <span class="w-2 h-2 rounded-full bg-success"></span>
-                <span>%s</span>
-            </div>
-        </div>
-        <div class="navbar-end gap-3">
-            <form method="POST" action="/logout">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
-            </form>
-        </div>
-    </header>
-
-    <div class="flex-1 flex overflow-hidden">
-        <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
-            %s
-        </aside>
-
-        <main class="flex-1 p-4 md:p-8 overflow-y-auto pb-28">
-            <!-- Primary Header Toolbar -->
-            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-5">
-                <div>
-                    <h1 class="text-2xl font-black tracking-tight flex items-center gap-2">
-                        <span>💸</span>
-                        <span>Transactions Ledger</span>
-                    </h1>
-                    <p class="text-xs text-base-content/60 mt-0.5">Unified double-entry cashflow workbench and rapid bank reconciliation.</p>
-                </div>
-                <div class="flex items-center gap-2.5">
-                    %s
-                    <button type="button" class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="focusQuickAdd()">
-                        <span>➕</span>
-                        <span>Add Transaction <kbd class="kbd kbd-xs bg-primary-content/20 text-primary-content border-none">N</kbd></span>
-                    </button>
-                </div>
-            </div>
-
-            <!-- Account Filter Bar (Pills) -->
-            <div class="flex items-center gap-2 overflow-x-auto pb-3 mb-4 scrollbar-none">
-                %s
-            </div>
-
-            <!-- Sync Alerts Container -->
-            <div id="sync-alerts" class="mb-4"></div>
-
-            <!-- 1. PENDING BANK FEEDS SECTION (Triage Queue) -->
-            <div class="card card-border bg-base-100 border-base-300 shadow-md mb-6">
-                <div class="card-header bg-base-200/50 px-5 py-3.5 border-b border-base-300 flex flex-wrap justify-between items-center gap-3">
-                    <div class="flex items-center gap-2.5">
-                        <span class="text-lg">🏦</span>
-                        <h2 class="font-extrabold text-sm tracking-wide">
-                            Pending Bank Feeds
-                        </h2>
-                        <span class="badge badge-primary font-bold text-xs">%d</span>
-                        <span class="text-xs text-base-content/50 hidden sm:inline">• Review and resolve bank imports into budget envelopes</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <form method="POST" action="/budgets/%s/transactions/reconcile/auto-match">
-                            <input type="hidden" name="csrf_token" value="%s" />
-                            <button type="submit" class="btn btn-secondary btn-xs shadow-xs font-semibold gap-1" title="Auto-match pending feeds matching existing rules">
-                                <span>⚡</span>
-                                <span>Auto-Match (%d)</span>
-                            </button>
-                        </form>
-                    </div>
-                </div>
-                <div class="card-body p-0">
-                    <div class="overflow-x-auto">
-                        <table class="table table-zebra table-sm w-full">
-                            <thead>
-                                <tr class="bg-base-200/30 text-xs text-base-content/70">
-                                    <th class="w-10 text-center">
-                                        <input type="checkbox" class="checkbox checkbox-primary checkbox-xs" onclick="toggleAllRawCbs(this)" title="Select all" />
-                                    </th>
-                                    <th class="font-bold">Booking Date</th>
-                                    <th class="font-bold">Account</th>
-                                    <th class="font-bold">Raw Payee / Description</th>
-                                    <th class="font-bold">Rule Match</th>
-                                    <th class="font-bold text-right">Amount</th>
-                                    <th class="font-bold text-right">Assign & 1-Click Resolve</th>
-                                    <th class="font-bold text-right w-12">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                %s
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 2. BUDGET TRANSACTIONS LEDGER (Main Journal) -->
-            <div class="card card-border bg-base-100 border-base-300 shadow-md">
-                <div class="card-header bg-base-200/50 px-5 py-3.5 border-b border-base-300 flex justify-between items-center">
-                    <div class="flex items-center gap-2">
-                        <span class="text-lg">📒</span>
-                        <h2 class="font-extrabold text-sm tracking-wide">Budget Transactions Ledger</h2>
-                        <span class="text-xs text-base-content/50 hidden sm:inline">• Active double-entry envelope activity</span>
-                    </div>
-                    <div class="text-xs text-base-content/60 font-mono">
-                        Press <kbd class="kbd kbd-xs">N</kbd> or <kbd class="kbd kbd-xs">A</kbd> to quick-add
-                    </div>
-                </div>
-                <div class="card-body p-0">
-                    <div class="overflow-x-auto">
-                        <table class="table table-zebra table-sm w-full">
-                            <thead>
-                                <tr class="bg-base-200/30 text-xs text-base-content/70">
-                                    <th class="w-10 text-center">
-                                        <input type="checkbox" id="budget-master-cb" class="checkbox checkbox-primary checkbox-xs" onchange="toggleAllBudgetCbs(this)" title="Select all" />
-                                    </th>
-                                    <th class="font-bold">Date</th>
-                                    <th class="font-bold">Envelope (Bucket)</th>
-                                    <th class="font-bold">Notes / Payee</th>
-                                    <th class="font-bold">Account Flow</th>
-                                    <th class="font-bold text-right">Amount</th>
-                                    <th class="font-bold text-right w-12">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <!-- INLINE QUICK-ADD ROW -->
-                                <tr id="quick-add-row" class="bg-base-200/80 border-b-2 border-primary/40">
-                                    <td colspan="7" class="p-3">
-                                        <form id="quick_add_form" method="POST" action="/budgets/%s/transactions" class="flex flex-col gap-2.5">
-                                            <input type="hidden" name="csrf_token" value="%s" />
-                                            <input type="hidden" id="qa_tx_type" name="tx_type" value="EXPENSE" />
-
-                                            <div class="flex flex-wrap items-center justify-between gap-2">
-                                                <div class="join shadow-xs">
-                                                    <button type="button" class="join-item btn btn-xs qa-type-btn btn-active btn-error font-bold" onclick="setQuickAddType('EXPENSE', this)">🔴 Outflow (Expense)</button>
-                                                    <button type="button" class="join-item btn btn-xs qa-type-btn btn-ghost font-bold" onclick="setQuickAddType('INCOME', this)">🟢 Inflow (Income)</button>
-                                                    <button type="button" class="join-item btn btn-xs qa-type-btn btn-ghost font-bold" onclick="setQuickAddType('TRANSFER', this)">🔵 Transfer / FX</button>
-                                                </div>
-                                                <div class="text-xs text-base-content/50 font-medium">
-                                                    <kbd class="kbd kbd-xs">Tab</kbd> navigate • <kbd class="kbd kbd-xs">Enter</kbd> save • <kbd class="kbd kbd-xs">Shift+Enter</kbd> save & next
-                                                </div>
-                                            </div>
-
-                                            <div class="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
-                                                <div class="sm:col-span-2">
-                                                    <input type="date" id="qa_date" name="transaction_date" value="%s" required class="input input-sm input-bordered w-full font-mono text-xs focus:input-primary" />
-                                                </div>
-                                                <div class="sm:col-span-2">
-                                                    <select id="qa_account_id" name="account_id" class="select select-sm select-bordered w-full text-xs focus:select-primary">
-                                                        %s
-                                                    </select>
-                                                </div>
-                                                <div class="sm:col-span-2">
-                                                    <input type="text" id="qa_payee" name="notes" placeholder="Payee / Merchant (e.g. Żabka)" list="party_suggestions" class="input input-sm input-bordered w-full text-xs focus:input-primary" />
-                                                    <select id="qa_dest_account_id" name="dest_account_id" class="select select-sm select-bordered w-full text-xs focus:select-primary hidden">
-                                                        %s
-                                                    </select>
-                                                </div>
-                                                <div class="sm:col-span-3 flex gap-1.5" id="qa_bucket_wrapper">
-                                                    <select id="qa_bucket_id" name="bucket_id" class="select select-sm select-bordered w-1/2 text-xs focus:select-primary" onchange="syncQaTargets()">
-                                                        %s
-                                                    </select>
-                                                    <select id="qa_target_id" name="target_id" class="select select-sm select-bordered w-1/2 text-xs focus:select-primary">
-                                                        <option value="">🎯 Target (opt)</option>
-                                                    </select>
-                                                </div>
-                                                <div class="sm:col-span-2">
-                                                    <input type="text" id="qa_amount" name="amount" required placeholder="50.00 or 15+4.50" class="input input-sm input-bordered w-full font-mono font-bold text-xs focus:input-primary text-right" />
-                                                </div>
-                                                <div class="sm:col-span-1 flex justify-end">
-                                                    <button type="submit" class="btn btn-primary btn-sm font-bold w-full shadow-xs">
-                                                        Save
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        </form>
-                                    </td>
-                                </tr>
-
-                                %s
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </main>
-    </div>
-
-    <!-- FLOATING ACTION BAR FOR BATCH RECONCILIATION -->
-    <div id="floating-action-bar" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-base-100/95 backdrop-blur-md border-2 border-primary/40 shadow-2xl rounded-2xl px-5 py-3 items-center gap-4 hidden flex-wrap">
-        <div class="flex items-center gap-2">
-            <span id="fab-count" class="badge badge-primary font-bold">0</span>
-            <span class="text-xs font-medium text-base-content/70">bank feeds selected</span>
-        </div>
-        <div class="divider divider-horizontal my-0"></div>
-        <div id="fab-net-display" class="font-mono font-bold text-sm text-primary">Net: 0.00 PLN</div>
-        <div class="divider divider-horizontal my-0"></div>
-        <div class="flex items-center gap-2">
-            <form method="POST" action="/budgets/%s/transactions/resolve/batch" id="fab-batch-approve-form">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <input type="hidden" name="operation_type" value="APPROVE" />
-                <div id="fab-approve-inputs"></div>
-                <button type="submit" class="btn btn-success btn-sm gap-1.5 font-bold shadow-xs">
-                    <span>✓</span>
-                    <span>Approve</span>
-                </button>
-            </form>
-            <button type="button" class="btn btn-primary btn-sm gap-1.5 font-bold shadow-xs" onclick="openMergeModal()">
-                <span>🔗</span>
-                <span>Merge (N-to-1)</span>
-            </button>
-            <button id="fab-split-btn" type="button" class="btn btn-secondary btn-sm gap-1.5 font-bold shadow-xs" onclick="openSplitModal()" disabled>
-                <span>✂️</span>
-                <span>Split Receipt</span>
-            </button>
-            <form method="POST" action="/budgets/%s/transactions/raw/batch-delete" id="fab-batch-delete-form" onsubmit="return confirm('Permanently delete selected bank feeds?')">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <div id="fab-delete-inputs"></div>
-                <button type="submit" class="btn btn-ghost btn-sm text-error font-semibold">
-                    <span>🗑️</span>
-                    <span>Delete</span>
-                </button>
-            </form>
-            <button type="button" class="btn btn-ghost btn-sm btn-circle" onclick="clearAllSelections()" title="Clear selection">✕</button>
-        </div>
-    </div>
-
-    <!-- FLOATING ACTION BAR FOR BUDGET TRANSACTIONS LEDGER -->
-    <div id="ledger-floating-action-bar" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-base-100/95 backdrop-blur-md border-2 border-error/40 shadow-2xl rounded-2xl px-5 py-3 items-center gap-4 hidden flex-wrap">
-        <div class="flex items-center gap-2">
-            <span id="ledger-fab-count" class="badge badge-error text-error-content font-bold">0</span>
-            <span class="text-xs font-medium text-base-content/70">transactions selected</span>
-        </div>
-        <div class="divider divider-horizontal my-0"></div>
-        <div id="ledger-fab-total-display" class="font-mono font-bold text-sm text-base-content">Total: 0.00 PLN</div>
-        <div class="divider divider-horizontal my-0"></div>
-        <div class="flex items-center gap-2">
-            <button type="button" class="btn btn-secondary btn-sm gap-1.5 font-bold shadow-xs" onclick="openBatchAutomationsModal()">
-                <span>⚡</span>
-                <span>Run Automations</span>
-            </button>
-            <button type="button" class="btn btn-error btn-sm gap-1.5 font-bold shadow-xs" onclick="openBatchDeleteConfirmModal()">
-                <span>🗑️</span>
-                <span>Delete Selected</span>
-            </button>
-            <button type="button" class="btn btn-ghost btn-sm btn-circle" onclick="clearAllLedgerSelections()" title="Clear selection">✕</button>
-        </div>
-    </div>
-
-    <!-- BATCH DELETE BUDGET TRANSACTIONS MODAL -->
-    <dialog id="batch_delete_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
-            <div class="flex justify-between items-center mb-3">
-                <h3 class="font-extrabold text-xl tracking-tight flex items-center gap-2 text-error">
-                    <span>⚠️</span>
-                    <span>Confirm Batch Deletion</span>
-                </h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <p class="text-sm text-base-content/70 mb-4">
-                Are you sure you want to delete <span id="batch_delete_modal_count" class="font-bold text-base-content">0</span> selected transaction(s)?
-                This will revert all associated account balances and envelope assignments.
-            </p>
-            <form id="ledger_batch_delete_form" method="POST" action="/budgets/%s/transactions/batch-delete" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <div id="batch_delete_tx_inputs"></div>
-                <div class="modal-action mt-2 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="batch_delete_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-error font-bold shadow-md">Yes, Delete Transactions</button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <!-- BATCH AUTOMATIONS DRY-RUN MODAL -->
-    <dialog id="batch_automations_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6 max-w-xl">
-            <div class="flex justify-between items-center mb-3">
-                <h3 class="font-extrabold text-xl tracking-tight flex items-center gap-2 text-primary">
-                    <span>⚡</span>
-                    <span>Run Automations on Selected</span>
-                </h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <p class="text-xs text-base-content/70 mb-4">
-                Execute all active Lua rules sequentially on <span id="batch_auto_count" class="font-bold text-base-content">0</span> selected transaction(s).
-                Review the dry-run preview below before applying permanent changes.
-            </p>
-            <div id="batch_auto_preview_area" class="mb-4">
-                <div class="text-xs text-base-content/60 italic text-center py-4">Loading preview...</div>
-            </div>
-            <div class="modal-action flex justify-between items-center">
-                <button type="button" class="btn btn-ghost btn-sm" onclick="batch_automations_modal.close()">Cancel</button>
-                <button type="button" id="batch_auto_apply_btn" class="btn btn-primary btn-sm gap-2" onclick="applyBatchAutomations()">
-                    <span>⚡</span> Apply Changes
-                </button>
-            </div>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    %s
-
-    <!-- MERGE MODAL -->
-    <dialog id="merge_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
-            <div class="flex justify-between items-center mb-3">
-                <h3 class="font-extrabold text-xl tracking-tight flex items-center gap-2">
-                    <span>🔗</span>
-                    <span>Merge Selected Bank Feeds</span>
-                </h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <p class="text-xs text-base-content/60 mb-4">
-                Combines multiple selected bank transactions (e.g. shared restaurant bill and friend reimbursements) into a single net budget ledger transaction.
-            </p>
-            <form id="merge_form" method="POST" action="/budgets/%s/transactions/resolve/batch" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <input type="hidden" name="operation_type" value="MERGE" />
-                <div id="merge_raw_ids_container"></div>
-
-                <div class="bg-base-200/70 p-3 rounded-xl border border-base-300 flex justify-between items-center">
-                    <div>
-                        <div class="text-xs text-base-content/60 font-medium">Net Amount to Post</div>
-                        <div id="merge_count_label" class="text-sm font-bold">0 transactions</div>
-                    </div>
-                    <div id="merge_net_amount_label" class="font-mono font-black text-lg text-primary">0.00 PLN</div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-4">
-                    <fieldset class="fieldset">
-                        <legend class="fieldset-legend font-semibold">Account</legend>
-                        <select name="account_id" class="select select-bordered w-full select-md focus:select-primary">
-                            %s
-                        </select>
-                    </fieldset>
-                    <fieldset class="fieldset">
-                        <legend class="fieldset-legend font-semibold">Envelope (Bucket)</legend>
-                        <select name="bucket_id" class="select select-bordered w-full select-md focus:select-primary" required>
-                            %s
-                        </select>
-                    </fieldset>
-                </div>
-
-                <fieldset class="fieldset">
-                    <legend class="fieldset-legend font-semibold">Counterparty / Merchant</legend>
-                    <input type="text" name="party_name" placeholder="e.g. Restauracja Pod Baranem" list="party_suggestions" class="input input-bordered w-full input-md focus:input-primary" />
-                </fieldset>
-
-                <fieldset class="fieldset">
-                    <legend class="fieldset-legend font-semibold">Ledger Description</legend>
-                    <input type="text" name="notes" placeholder="e.g. Dinner with friends net share" class="input input-bordered w-full input-md focus:input-primary" />
-                </fieldset>
-
-                <div class="modal-action mt-4 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="merge_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-bold shadow-md gap-1.5">
-                        <span>🔗</span>
-                        <span>Confirm Merge</span>
-                    </button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <!-- SPLIT MODAL -->
-    <dialog id="split_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6 max-w-xl">
-            <div class="flex justify-between items-center mb-3">
-                <h3 class="font-extrabold text-xl tracking-tight flex items-center gap-2">
-                    <span>✂️</span>
-                    <span>Split Transaction</span>
-                </h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <p class="text-xs text-base-content/60 mb-3">
-                Splits one raw bank receipt into multiple budget transactions across different envelopes.
-            </p>
-            <form id="split_form" method="POST" action="/budgets/%s/transactions/resolve/batch" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <input type="hidden" name="operation_type" value="SPLIT" />
-                <input type="hidden" id="split_raw_id" name="raw_id" value="" />
-
-                <div class="bg-base-200/70 p-3 rounded-xl border border-base-300 flex justify-between items-center text-sm">
-                    <div>
-                        <div id="split_payee_label" class="font-bold"></div>
-                        <div class="text-xs text-base-content/60">Total Amount: <span id="split_total_label" class="font-mono font-bold"></span></div>
-                    </div>
-                    <div>
-                        <span class="text-xs text-base-content/60">Remaining:</span>
-                        <div id="split_remaining_label" class="font-mono font-bold text-success text-base">0.00 PLN</div>
-                    </div>
-                </div>
-
-                <div id="split_rows_container" class="flex flex-col gap-3">
-                    <!-- Dynamic split rows injected via JavaScript -->
-                </div>
-
-                <div class="flex justify-between items-center pt-2">
-                    <button type="button" class="btn btn-outline btn-xs gap-1" onclick="addSplitRow()">
-                        <span>➕</span> Add Split Line
-                    </button>
-                    <span id="split_validation_msg" class="text-xs text-error font-medium"></span>
-                </div>
-
-                <div class="modal-action mt-4 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="split_modal.close()">Cancel</button>
-                    <button type="submit" id="split_submit_btn" class="btn btn-primary font-bold shadow-md gap-1.5">
-                        <span>✂️</span> Confirm Split
-                    </button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <!-- Bank Sync Options Modal -->
-    <dialog id="bank_sync_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight flex items-center gap-2">
-                    <span>🔄</span>
-                    <span>Sync Bank Transactions</span>
-                </h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form method="POST" action="/budgets/%s/transactions/sync" 
-                  hx-post="/budgets/%s/transactions/sync"
-                  hx-swap="none"
-                  onsubmit="bank_sync_modal.close(); const a = document.getElementById('sync-alerts'); if(a){ a.innerHTML = '<div role=\'alert\' class=\'alert alert-info shadow-lg animate-fade-in flex items-center gap-2\'><span class=\'loading loading-spinner loading-sm text-info\'></span><div><h4 class=\'font-bold\'>Sync in Progress</h4><p class=\'text-xs\'>Connecting to bank and fetching transactions...</p></div></div>'; }"
-                  class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <fieldset class="fieldset">
-                    <legend class="fieldset-legend font-semibold">Select Accounts to Synchronize</legend>
-                    <div class="flex flex-col gap-1 max-h-48 overflow-y-auto border border-base-300 rounded-lg p-2 bg-base-100">
-                        %s
-                    </div>
-                    <div class="flex justify-between items-center mt-1">
-                        <span class="text-xs text-base-content/60">Check all accounts you wish to pull transactions for.</span>
-                        <button type="button" class="btn btn-link btn-xs p-0 no-underline text-primary" onclick="toggleAllAccounts(this)">Select / Deselect All</button>
-                    </div>
-                </fieldset>
-                <fieldset class="fieldset">
-                    <legend class="fieldset-legend font-semibold">Initial Sync History Window</legend>
-                    <select name="days_window" class="select select-bordered w-full select-md focus:select-primary">
-                        <option value="90">Last 90 Days (3 Months - Maximum PSD2)</option>
-                        <option value="30" selected>Last 30 Days (1 Month) - Recommended</option>
-                        <option value="14">Last 14 Days (2 Weeks)</option>
-                        <option value="7">Last 7 Days (1 Week)</option>
-                        <option value="1">Last 24 Hours (1 Day)</option>
-                    </select>
-                    <p class="text-xs text-base-content/60 mt-1">For first-time syncs, transactions are fetched back to this date and starting balance is aligned automatically.</p>
-                </fieldset>
-                <div class="divider my-1 text-xs text-base-content/50">OR</div>
-
-                <div class="bg-base-200/50 p-3 rounded-lg border border-base-300 flex items-center justify-between gap-3">
-                    <div class="flex items-center gap-2">
-                        <span class="text-xl">📄</span>
-                        <div>
-                            <div class="font-bold text-xs">Import from CSV File</div>
-                            <div class="text-xs text-base-content/60">Upload historical bank statement exports</div>
-                        </div>
-                    </div>
-                    <a href="/budgets/%s/transactions/import-csv" class="btn btn-outline btn-xs gap-1 font-semibold">
-                        <span>Upload CSV</span>
-                        <span>→</span>
-                    </a>
-                </div>
-
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="bank_sync_modal.close()">Cancel</button>
-                    %s
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <!-- Edit Transaction Modal -->
-    <dialog id="edit_tx_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight">Edit Transaction</h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form id="edit_tx_form" method="POST" action="" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <div class="grid grid-cols-2 gap-4">
-                    <fieldset class="fieldset">
-                        <legend class="fieldset-legend">Amount</legend>
-                        <input id="edit_tx_amount" type="number" step="0.01" name="amount" required placeholder="50.00" class="input input-bordered w-full input-md focus:input-primary" />
-                    </fieldset>
-                    <fieldset class="fieldset">
-                        <legend class="fieldset-legend">Date</legend>
-                        <input id="edit_tx_date" type="date" name="transaction_date" required class="input input-bordered w-full input-md focus:input-primary" />
-                    </fieldset>
-                </div>
-                <div class="grid grid-cols-2 gap-4">
-                    <fieldset class="fieldset">
-                        <legend class="fieldset-legend">Account</legend>
-                        <select id="edit_tx_account" name="account_id" class="select select-bordered w-full select-md focus:select-primary">
-                            %s
-                        </select>
-                    </fieldset>
-                    <fieldset class="fieldset">
-                        <legend class="fieldset-legend">Envelope (Bucket)</legend>
-                        <select id="edit_tx_bucket" name="bucket_id" class="select select-bordered w-full select-md focus:select-primary" onchange="syncEditTxTargets()">
-                            %s
-                        </select>
-                    </fieldset>
-                </div>
-                <fieldset class="fieldset">
-                    <legend class="fieldset-legend">Target (Optional)</legend>
-                    <select id="edit_tx_target" name="target_id" class="select select-bordered w-full select-md focus:select-primary">
-                        <option value="">🎯 Unassigned to specific target</option>
-                    </select>
-                </fieldset>
-                <fieldset class="fieldset">
-                    <legend class="fieldset-legend">Description / Notes</legend>
-                    <input id="edit_tx_notes" type="text" name="notes" placeholder="e.g. Lunch with team or Groceries" class="input input-bordered w-full input-md focus:input-primary" />
-                </fieldset>
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="edit_tx_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Changes</button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <!-- Detailed Resolve Raw Modal (for advanced manual overrides) -->
-    <dialog id="resolve_raw_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight flex items-center gap-2">
-                    <span>➡️</span>
-                    <span>Resolve Bank Transaction</span>
-                </h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form id="resolve_raw_form" method="POST" action="" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <input type="hidden" id="resolve_raw_id" name="raw_id" value="" />
-                
-                <div class="bg-base-200/60 p-3 rounded-lg border border-base-300 text-sm flex justify-between items-center">
-                    <div>
-                        <div id="resolve_payee_display" class="font-bold"></div>
-                        <div class="text-xs text-base-content/60">Bank Feed Payee</div>
-                    </div>
-                    <div id="resolve_amount_display" class="font-mono font-extrabold text-base"></div>
-                </div>
-
-                <fieldset class="fieldset">
-                    <legend class="fieldset-legend">Assign to Envelope (Bucket)</legend>
-                    <select id="resolve_bucket" name="bucket_id" class="select select-bordered w-full select-md focus:select-primary" onchange="syncResolveTargets()">
-                        %s
-                    </select>
-                </fieldset>
-
-                <fieldset class="fieldset">
-                    <legend class="fieldset-legend">Target (Optional)</legend>
-                    <select id="resolve_target" name="target_id" class="select select-bordered w-full select-md focus:select-primary">
-                        <option value="">🎯 Unassigned to specific target</option>
-                    </select>
-                </fieldset>
-
-                <fieldset class="fieldset">
-                    <legend class="fieldset-legend">Counterparty Name / Party</legend>
-                    <input id="resolve_party_name" type="text" name="party_name" placeholder="e.g. Żabka, Biedronka" list="party_suggestions" class="input input-bordered w-full input-md focus:input-primary" />
-                    <span class="text-xs text-base-content/50">Creates or maps counterparty on-the-fly.</span>
-                </fieldset>
-
-                <fieldset class="fieldset">
-                    <legend class="fieldset-legend">Notes / Ledger Description</legend>
-                    <input id="resolve_notes" type="text" name="notes" class="input input-bordered w-full input-md focus:input-primary" />
-                </fieldset>
-
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="resolve_raw_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Resolve into Ledger</button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    <template id="bucket_options_tpl">%s</template>
-
-    <script>
-        const ACTIVE_BUDGET_ID = '%s';
-        const BUCKET_OPTIONS_HTML = document.getElementById('bucket_options_tpl') ? document.getElementById('bucket_options_tpl').innerHTML : '';
-
-        function focusQuickAdd() {
-            const el = document.getElementById('qa_amount');
-            if (el) {
-                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                el.focus();
-            }
-        }
-
-        function setQuickAddType(type, btn) {
-            document.getElementById('qa_tx_type').value = type;
-            document.querySelectorAll('.qa-type-btn').forEach(b => {
-                b.classList.remove('btn-active', 'btn-error', 'btn-success', 'btn-info');
-                b.classList.add('btn-ghost');
-            });
-            btn.classList.remove('btn-ghost');
-            btn.classList.add('btn-active');
-
-            const payeeInput = document.getElementById('qa_payee');
-            const destAcctSelect = document.getElementById('qa_dest_account_id');
-            const bucketWrapper = document.getElementById('qa_bucket_wrapper');
-            const bucketSelect = document.getElementById('qa_bucket_id');
-
-            if (type === 'TRANSFER') {
-                btn.classList.add('btn-info');
-                payeeInput.classList.add('hidden');
-                destAcctSelect.classList.remove('hidden');
-                bucketSelect.disabled = true;
-                bucketSelect.value = '';
-                bucketWrapper.classList.add('opacity-40');
-            } else if (type === 'INCOME') {
-                btn.classList.add('btn-success');
-                payeeInput.classList.remove('hidden');
-                payeeInput.placeholder = 'Payer / Source (e.g. Employer Inc.)';
-                destAcctSelect.classList.add('hidden');
-                bucketSelect.disabled = false;
-                bucketWrapper.classList.remove('opacity-40');
-            } else {
-                // EXPENSE
-                btn.classList.add('btn-error');
-                payeeInput.classList.remove('hidden');
-                payeeInput.placeholder = 'Payee / Merchant (e.g. Żabka)';
-                destAcctSelect.classList.add('hidden');
-                bucketSelect.disabled = false;
-                bucketWrapper.classList.remove('opacity-40');
-            }
-        }
-
-        // Global hotkeys (N or A for quick add)
-        document.addEventListener('keydown', function(e) {
-            const tag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
-            if (tag === 'input' || tag === 'select' || tag === 'textarea') {
-                return;
-            }
-            if (e.key === 'n' || e.key === 'a' || e.key === 'N' || e.key === 'A') {
-                e.preventDefault();
-                focusQuickAdd();
-            }
-        });
-
-        // Quick add form Shift+Enter handler
-        const qaForm = document.getElementById('quick_add_form');
-        if (qaForm) {
-            qaForm.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter' && e.shiftKey) {
-                    e.preventDefault();
-                    qaForm.submit();
-                }
-            });
-        }
-
-        function updateFloatingActionBar() {
-            const checkedBoxes = Array.from(document.querySelectorAll('.raw-select-cb:checked'));
-            const bar = document.getElementById('floating-action-bar');
-            const countLabel = document.getElementById('fab-count');
-            const netDisplay = document.getElementById('fab-net-display');
-            const splitBtn = document.getElementById('fab-split-btn');
-            const deleteInputs = document.getElementById('fab-delete-inputs');
-            const approveInputs = document.getElementById('fab-approve-inputs');
-
-            if (!bar) return;
-
-            if (checkedBoxes.length === 0) {
-                bar.classList.add('hidden');
-                return;
-            }
-
-            bar.classList.remove('hidden');
-            countLabel.innerText = checkedBoxes.length;
-
-            let netMinor = 0;
-            let currency = 'PLN';
-            if (deleteInputs) deleteInputs.innerHTML = '';
-            if (approveInputs) approveInputs.innerHTML = '';
-
-            checkedBoxes.forEach(cb => {
-                const amt = parseInt(cb.dataset.amount || '0', 10);
-                currency = cb.dataset.currency || currency;
-                netMinor += amt;
-
-                if (deleteInputs) {
-                    const inp = document.createElement('input');
-                    inp.type = 'hidden';
-                    inp.name = 'raw_ids';
-                    inp.value = cb.value;
-                    deleteInputs.appendChild(inp);
-                }
-
-                if (approveInputs) {
-                    const inp = document.createElement('input');
-                    inp.type = 'hidden';
-                    inp.name = 'raw_ids';
-                    inp.value = cb.value;
-                    approveInputs.appendChild(inp);
-                }
-            });
-
-            const netMajor = Math.abs(netMinor) / 100.0;
-            const sign = netMinor < 0 ? '-' : '+';
-            netDisplay.innerText = 'Net: ' + sign + netMajor.toFixed(2) + ' ' + currency;
-
-            if (splitBtn) {
-                splitBtn.disabled = checkedBoxes.length !== 1;
-            }
-        }
-
-        function clearAllSelections() {
-            document.querySelectorAll('.raw-select-cb').forEach(cb => cb.checked = false);
-            updateFloatingActionBar();
-        }
-
-        function toggleAllRawCbs(master) {
-            document.querySelectorAll('.raw-select-cb').forEach(b => b.checked = master.checked);
-            updateFloatingActionBar();
-        }
-
-        function updateLedgerFloatingActionBar() {
-            const checkedBoxes = Array.from(document.querySelectorAll('.budget-tx-select-cb:checked'));
-            const bar = document.getElementById('ledger-floating-action-bar');
-            const countLabel = document.getElementById('ledger-fab-count');
-            const totalDisplay = document.getElementById('ledger-fab-total-display');
-
-            if (!bar) return;
-
-            if (checkedBoxes.length === 0) {
-                bar.classList.add('hidden');
-                const master = document.getElementById('budget-master-cb');
-                if (master) master.checked = false;
-                return;
-            }
-
-            bar.classList.remove('hidden');
-            countLabel.innerText = checkedBoxes.length;
-
-            let totalMinor = 0;
-            let currency = 'PLN';
-            checkedBoxes.forEach(cb => {
-                const amt = parseInt(cb.dataset.amount || '0', 10);
-                currency = cb.dataset.currency || currency;
-                totalMinor += Math.abs(amt);
-            });
-
-            const totalMajor = totalMinor / 100.0;
-            totalDisplay.innerText = 'Total: ' + totalMajor.toFixed(2) + ' ' + currency;
-        }
-
-        function clearAllLedgerSelections() {
-            document.querySelectorAll('.budget-tx-select-cb').forEach(cb => cb.checked = false);
-            const master = document.getElementById('budget-master-cb');
-            if (master) master.checked = false;
-            updateLedgerFloatingActionBar();
-        }
-
-        function toggleAllBudgetCbs(master) {
-            document.querySelectorAll('.budget-tx-select-cb').forEach(b => b.checked = master.checked);
-            updateLedgerFloatingActionBar();
-        }
-
-        function openBatchDeleteConfirmModal() {
-            const checkedBoxes = Array.from(document.querySelectorAll('.budget-tx-select-cb:checked'));
-            if (checkedBoxes.length === 0) return;
-
-            const container = document.getElementById('batch_delete_tx_inputs');
-            container.innerHTML = '';
-            document.getElementById('batch_delete_modal_count').innerText = checkedBoxes.length;
-
-            checkedBoxes.forEach(cb => {
-                const inp = document.createElement('input');
-                inp.type = 'hidden';
-                inp.name = 'transaction_ids';
-                inp.value = cb.value;
-                container.appendChild(inp);
-            });
-
-            batch_delete_modal.showModal();
-        }
-
-        function openBatchAutomationsModal() {
-            const checkedBoxes = Array.from(document.querySelectorAll('.budget-tx-select-cb:checked'));
-            if (checkedBoxes.length === 0) return;
-
-            document.getElementById('batch_auto_count').innerText = checkedBoxes.length;
-            document.getElementById('batch_auto_preview_area').innerHTML = '<div class="flex justify-center p-4"><span class="loading loading-spinner loading-sm"></span></div>';
-            batch_automations_modal.showModal();
-
-            const csrf = document.querySelector('input[name="csrf_token"]')?.value || '';
-            const txIDs = checkedBoxes.map(cb => cb.value).join(',');
-            const formData = new FormData();
-            formData.append('tx_ids', txIDs);
-
-            fetch('/budgets/' + ACTIVE_BUDGET_ID + '/automations/batch-dry-run', {
-                method: 'POST',
-                headers: { 'X-CSRF-Token': csrf },
-                body: formData
-            })
-            .then(r => r.text())
-            .then(html => {
-                document.getElementById('batch_auto_preview_area').innerHTML = html;
-            })
-            .catch(err => {
-                document.getElementById('batch_auto_preview_area').innerHTML = '<div class="alert alert-error text-xs">Failed loading preview: ' + err + '</div>';
-            });
-        }
-
-        function applyBatchAutomations() {
-            const checkedBoxes = Array.from(document.querySelectorAll('.budget-tx-select-cb:checked'));
-            if (checkedBoxes.length === 0) return;
-
-            const btn = document.getElementById('batch_auto_apply_btn');
-            btn.disabled = true;
-            btn.innerText = 'Applying...';
-
-            const csrf = document.querySelector('input[name="csrf_token"]')?.value || '';
-            const txIDs = checkedBoxes.map(cb => cb.value).join(',');
-            const formData = new FormData();
-            formData.append('tx_ids', txIDs);
-
-            fetch('/budgets/' + ACTIVE_BUDGET_ID + '/automations/batch-run', {
-                method: 'POST',
-                headers: { 'X-CSRF-Token': csrf },
-                body: formData
-            })
-            .then(r => {
-                if (r.ok) {
-                    window.location.reload();
-                } else {
-                    return r.text().then(t => alert('Error: ' + t));
-                }
-            })
-            .catch(err => alert('Failed: ' + err))
-            .finally(() => {
-                btn.disabled = false;
-                btn.innerText = '⚡ Apply Changes';
-            });
-        }
-
-        function openMergeModal() {
-            const checkedBoxes = Array.from(document.querySelectorAll('.raw-select-cb:checked'));
-            if (checkedBoxes.length === 0) return;
-
-            const container = document.getElementById('merge_raw_ids_container');
-            container.innerHTML = '';
-
-            let netMinor = 0;
-            let currency = 'PLN';
-            checkedBoxes.forEach(cb => {
-                const amt = parseInt(cb.dataset.amount || '0', 10);
-                currency = cb.dataset.currency || currency;
-                netMinor += amt;
-
-                const inp = document.createElement('input');
-                inp.type = 'hidden';
-                inp.name = 'raw_ids';
-                inp.value = cb.value;
-                container.appendChild(inp);
-            });
-
-            const netMajor = Math.abs(netMinor) / 100.0;
-            const sign = netMinor < 0 ? '-' : '+';
-            document.getElementById('merge_count_label').innerText = checkedBoxes.length + ' transactions selected';
-            document.getElementById('merge_net_amount_label').innerText = sign + netMajor.toFixed(2) + ' ' + currency;
-
-            merge_modal.showModal();
-        }
-
-        let splitTotalAmountMinor = 0;
-        let splitCurrency = 'PLN';
-
-        function openSplitModal() {
-            const checked = document.querySelector('.raw-select-cb:checked');
-            if (!checked) return;
-
-            const rawId = checked.value;
-            const amountMinor = Math.abs(parseInt(checked.dataset.amount || '0', 10));
-            splitTotalAmountMinor = amountMinor;
-            splitCurrency = checked.dataset.currency || 'PLN';
-            const payee = checked.dataset.payee || '';
-
-            document.getElementById('split_raw_id').value = rawId;
-            document.getElementById('split_payee_label').innerText = payee;
-            document.getElementById('split_total_label').innerText = (amountMinor / 100.0).toFixed(2) + ' ' + splitCurrency;
-
-            const container = document.getElementById('split_rows_container');
-            container.innerHTML = '';
-
-            // Add initial 2 split lines
-            addSplitRow((amountMinor / 200.0).toFixed(2));
-            addSplitRow((amountMinor / 200.0).toFixed(2));
-            recalcSplit();
-
-            split_modal.showModal();
-        }
-
-        function addSplitRow(defaultAmount) {
-            const container = document.getElementById('split_rows_container');
-            const row = document.createElement('div');
-            row.className = 'grid grid-cols-12 gap-2 items-center split-line-row';
-            row.innerHTML = 
-                '<div class="col-span-5">' +
-                    '<select name="split_bucket_id" class="select select-sm select-bordered w-full text-xs" required>' +
-                        BUCKET_OPTIONS_HTML +
-                    '</select>' +
-                '</div>' +
-                '<div class="col-span-4">' +
-                    '<input type="text" name="split_note" placeholder="Item note" class="input input-sm input-bordered w-full text-xs" />' +
-                '</div>' +
-                '<div class="col-span-2">' +
-                    '<input type="number" step="0.01" name="split_amount" value="' + (defaultAmount || '') + '" required placeholder="0.00" class="input input-sm input-bordered w-full font-mono font-bold text-xs split-amt-input" oninput="recalcSplit()" />' +
-                '</div>' +
-                '<div class="col-span-1 text-right">' +
-                    '<button type="button" class="btn btn-ghost btn-xs btn-circle text-error" onclick="removeSplitRow(this)">✕</button>' +
-                '</div>';
-            container.appendChild(row);
-            recalcSplit();
-        }
-
-        function removeSplitRow(btn) {
-            const row = btn.closest('.split-line-row');
-            if (row && document.querySelectorAll('.split-line-row').length > 1) {
-                row.remove();
-                recalcSplit();
-            }
-        }
-
-        function recalcSplit() {
-            const inputs = document.querySelectorAll('.split-amt-input');
-            let sumMinor = 0;
-            inputs.forEach(inp => {
-                const f = parseFloat(inp.value || '0');
-                if (!isNaN(f)) {
-                    sumMinor += Math.round(f * 100);
-                }
-            });
-
-            const remainingMinor = splitTotalAmountMinor - sumMinor;
-            const remainingLabel = document.getElementById('split_remaining_label');
-            const submitBtn = document.getElementById('split_submit_btn');
-            const valMsg = document.getElementById('split_validation_msg');
-
-            remainingLabel.innerText = (remainingMinor / 100.0).toFixed(2) + ' ' + splitCurrency;
-
-            if (remainingMinor === 0) {
-                remainingLabel.className = 'font-mono font-bold text-success text-base';
-                valMsg.innerText = '';
-                submitBtn.disabled = false;
-            } else {
-                remainingLabel.className = 'font-mono font-bold text-error text-base';
-                valMsg.innerText = remainingMinor > 0 ? 'Remaining amount must be 0.00' : 'Split amounts exceed total receipt!';
-                submitBtn.disabled = true;
-            }
-        }
-
-        const ALL_TARGETS = %s;
-
-        function populateTargetSelect(bucketId, selectEl, selectedTargetId) {
-            selectEl.innerHTML = '<option value="">🎯 Unassigned to specific target</option>';
-            if (!bucketId) return;
-            const filtered = ALL_TARGETS.filter(t => t.bucket_id === bucketId);
-            filtered.forEach(t => {
-                const opt = document.createElement('option');
-                opt.value = t.id;
-                opt.innerText = '🎯 ' + t.name + ' (' + t.currency + ')';
-                if (selectedTargetId && t.id === selectedTargetId) {
-                    opt.selected = true;
-                }
-                selectEl.appendChild(opt);
-            });
-        }
-
-        function syncQaTargets() {
-            const bId = document.getElementById('qa_bucket_id').value;
-            const targetSelect = document.getElementById('qa_target_id');
-            populateTargetSelect(bId, targetSelect, '');
-        }
-
-        function syncEditTxTargets() {
-            const bId = document.getElementById('edit_tx_bucket').value;
-            const targetSelect = document.getElementById('edit_tx_target');
-            populateTargetSelect(bId, targetSelect, '');
-        }
-
-        function syncResolveTargets() {
-            const bId = document.getElementById('resolve_bucket').value;
-            const targetSelect = document.getElementById('resolve_target');
-            populateTargetSelect(bId, targetSelect, '');
-        }
-
-        function openEditTxModal(id, amount, dateStr, notes, bucketId, targetId, accountId) {
-            document.getElementById('edit_tx_amount').value = amount;
-            document.getElementById('edit_tx_date').value = dateStr;
-            document.getElementById('edit_tx_notes').value = notes;
-            if (bucketId) {
-                document.getElementById('edit_tx_bucket').value = bucketId;
-            } else {
-                document.getElementById('edit_tx_bucket').value = '';
-            }
-            populateTargetSelect(bucketId, document.getElementById('edit_tx_target'), targetId);
-            if (accountId) {
-                document.getElementById('edit_tx_account').value = accountId;
-            }
-            document.getElementById('edit_tx_form').action = '/budgets/' + ACTIVE_BUDGET_ID + '/transactions/' + id + '/update';
-            edit_tx_modal.showModal();
-        }
-
-        function openResolveRawModal(rawId, acctId, amount, currency, rawPayee, suggestedBucketId) {
-            document.getElementById('resolve_raw_id').value = rawId;
-            document.getElementById('resolve_payee_display').innerText = rawPayee;
-            document.getElementById('resolve_amount_display').innerText = amount + ' ' + currency;
-            document.getElementById('resolve_notes').value = rawPayee;
-            document.getElementById('resolve_party_name').value = rawPayee.split(' ')[0] || rawPayee;
-            if (suggestedBucketId) {
-                document.getElementById('resolve_bucket').value = suggestedBucketId;
-            } else {
-                document.getElementById('resolve_bucket').value = '';
-            }
-            syncResolveTargets();
-            document.getElementById('resolve_raw_form').action = '/budgets/' + ACTIVE_BUDGET_ID + '/transactions/raw/' + rawId + '/resolve';
-            resolve_raw_modal.showModal();
-        }
-
-        function toggleAllAccounts(btn) {
-            const boxes = document.querySelectorAll('input[name="account_ids"]');
-            const allChecked = Array.from(boxes).every(b => b.checked);
-            boxes.forEach(b => b.checked = !allChecked);
-        }
-
-        // Initialize SSE for bank sync notifications
-        if (window.EventSource) {
-            const sseUrl = '/budgets/' + ACTIVE_BUDGET_ID + '/transactions/sync/events';
-            console.log('[SSE] Initializing EventSource connection to:', sseUrl);
-            const sse = new EventSource(sseUrl);
-            sse.onopen = () => console.log('[SSE] Successfully connected to bank sync events');
-            sse.onerror = (err) => console.warn('[SSE] EventSource error or reconnection:', err);
-
-            sse.addEventListener('sync-progress', (e) => {
-                console.log('[SSE] sync-progress received:', e.data);
-                const data = JSON.parse(e.data || '{}');
-                const alerts = document.getElementById('sync-alerts');
-                if (alerts) {
-                    alerts.innerHTML = '<div role="alert" class="alert alert-info shadow-lg animate-fade-in flex items-center gap-2">' +
-                        '<span class="loading loading-spinner loading-sm text-info"></span>' +
-                        '<div>' +
-                            '<h4 class="font-bold">Sync in Progress (' + data.index + '/' + data.total + ')</h4>' +
-                            '<p class="text-xs">Synchronizing bank accounts in background...</p>' +
-                        '</div>' +
-                    '</div>';
-                }
-            });
-
-            sse.addEventListener('sync-complete', (e) => {
-                console.log('[SSE] sync-complete received:', e.data);
-                const data = JSON.parse(e.data || '{}');
-                const alerts = document.getElementById('sync-alerts');
-                if (alerts) {
-                    alerts.innerHTML = '<div role="alert" class="alert alert-success shadow-lg animate-fade-in flex justify-between items-center">' +
-                        '<div class="flex items-center gap-2">' +
-                            '<span>✅</span>' +
-                            '<div>' +
-                                '<h4 class="font-bold">Bank Sync Complete</h4>' +
-                                '<p class="text-xs">Successfully synced ' + (data.imported_count || 0) + ' transaction(s) across ' + (data.accounts_count || 1) + ' account(s).</p>' +
-                            '</div>' +
-                        '</div>' +
-                        '<div class="flex items-center gap-2">' +
-                            '<button class="btn btn-primary btn-xs font-bold" onclick="window.location.reload()">Refresh Page</button>' +
-                            '<button class="btn btn-ghost btn-xs btn-circle" onclick="document.getElementById(\'sync-alerts\').innerHTML=\'\'">✕</button>' +
-                        '</div>' +
-                    '</div>';
-                }
-            });
-
-            sse.addEventListener('sync-error', (e) => {
-                console.log('[SSE] sync-error received:', e.data);
-                const data = JSON.parse(e.data || '{}');
-                const alerts = document.getElementById('sync-alerts');
-                if (alerts) {
-                    alerts.innerHTML = '<div role="alert" class="alert alert-error shadow-lg animate-fade-in flex justify-between items-center">' +
-                        '<div class="flex items-center gap-2">' +
-                            '<span>❌</span>' +
-                            '<div>' +
-                                '<h4 class="font-bold">Bank Sync Failed</h4>' +
-                                '<p class="text-xs">' + (data.error || 'An error occurred during synchronization.') + '</p>' +
-                            '</div>' +
-                        '</div>' +
-                        '<button class="btn btn-ghost btn-xs btn-circle text-error-content" onclick="document.getElementById(\'sync-alerts\').innerHTML=\'\'">✕</button>' +
-                    '</div>';
-                }
-            });
-        }
-    </script>
-    %s
-</body>
-</html>`,
-		dFormat, tFormat, dFormat, tFormat,
-		partySuggestions.String(),
-		budgetName, csrfToken,
-		RenderSidebarNavigation(budgetID, "transactions"),
-		toolbarSyncBtnHTML,
-		acctPills.String(),
-		pendingRawCount, budgetID, csrfToken, matchedRulesCount,
-		rawTxRows.String(),
-		budgetID, csrfToken, todayDateStr, acctOptions.String(), qaDestAcctOptions.String(), qaBucketOptions.String(),
-		txRows.String(),
-		budgetID, csrfToken,
-		budgetID, csrfToken,
-		budgetID, csrfToken,
-		RenderBottomDock(budgetID, "transactions"),
-		budgetID, csrfToken, acctOptions.String(), bucketOptions.String(),
-		budgetID, csrfToken,
-		budgetID, budgetID, csrfToken, acctCheckboxes.String(), budgetID, modalSyncBtnHTML,
-		csrfToken, editAcctOptions.String(), editBucketOptions.String(),
-		csrfToken, bucketOptions.String(),
-		bucketOptions.String(), budgetID,
-		targetsJSON,
-		DateTimeFormatterScript())
+	viewData := transactionsViewData{
+		DateFormat:              dFormat,
+		TimeFormat:              tFormat,
+		BudgetID:                budgetID,
+		BudgetName:              budgetName,
+		CSRFToken:               csrfToken,
+		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "transactions")),
+		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "transactions")),
+		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
+		HasLinkedBankAccounts:   linkedBankAcctCount > 0,
+		IsAllAccountsActive:     filterAcctID == "" && filterPartyID == "",
+		FilterPartyID:           filterPartyID,
+		FilteredPartyName:       filteredPartyName,
+		PendingRawCount:         pendingRawCount,
+		MatchedRulesCount:       matchedRulesCount,
+		TodayDateStr:            todayDateStr,
+		PartySuggestions:        partySuggestions,
+		Buckets:                 buckets,
+		Accounts:                accounts,
+		RawTransactions:         rawTxRows,
+		LedgerTransactions:      ledgerRows,
+		PageConfigJSON:          template.JS(pageConfigBytes),
+		AllTargetsJSON:          template.JS(targetsJSONBytes),
+	}
+
+	renderedHTML, renderErr := templates.RenderString("transactions/view", viewData)
+	if renderErr != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed rendering transactions template: "+renderErr.Error())
+	}
 
 	_ = role
-	return c.HTML(http.StatusOK, html)
+	return c.HTML(http.StatusOK, renderedHTML)
 }
 
 // SyncBankEvents streams real-time sync progress and completion events via SSE.
@@ -1893,10 +668,10 @@ func (h *TransactionsHandler) executeAccountSync(ctx context.Context, tenantDB *
 	// Check if this account already has any booked transactions
 	var latestRawDate, latestBudgetTxDate sql.NullInt64
 	_ = tenantDB.QueryRowContext(ctx, `
-		SELECT MAX(booking_date) FROM raw_transactions_current 
+		SELECT MAX(booking_date) FROM raw_transactions_current
 		WHERE account_id = ? AND booking_status = 'BOOKED'`, userAcctID).Scan(&latestRawDate)
 	_ = tenantDB.QueryRowContext(ctx, `
-		SELECT MAX(transaction_date) FROM budget_transactions_current 
+		SELECT MAX(transaction_date) FROM budget_transactions_current
 		WHERE source_account_id = ? OR destination_account_id = ?`, userAcctID, userAcctID).Scan(&latestBudgetTxDate)
 
 	var latestKnownDate int64
@@ -2232,8 +1007,8 @@ func (h *TransactionsHandler) executeAccountSync(ctx context.Context, tenantDB *
 
 	// Update last_synced_at on account_integration_links
 	_, _ = tenantDB.ExecContext(ctx, `
-		UPDATE account_integration_links 
-		SET last_synced_at = ? 
+		UPDATE account_integration_links
+		SET last_synced_at = ?
 		WHERE account_id = ?`, now, userAcctID)
 
 	// Log successful sync for rate limit accounting
@@ -2271,15 +1046,8 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 		h.syncMu.Unlock()
 		logger.Warn(ctx, "Concurrent bank sync rejected", "budget_id", budgetID)
 		if c.Request().Header.Get("HX-Request") == "true" {
-			return c.HTML(http.StatusConflict, `
-				<div role="alert" class="alert alert-warning shadow-lg animate-fade-in">
-					<span>⚠️</span>
-					<div>
-						<h4 class="font-bold">Sync already in progress</h4>
-						<p class="text-xs">Another synchronization is currently running for this budget. Please wait for it to complete.</p>
-					</div>
-				</div>
-			`)
+			alertHTML, _ := templates.RenderString("transactions/sync_conflict_alert", nil)
+			return c.HTML(http.StatusConflict, alertHTML)
 		}
 		return echo.NewHTTPError(http.StatusConflict, "Bank synchronization is already running for this budget. Please wait.")
 	}
@@ -2366,15 +1134,8 @@ func (h *TransactionsHandler) SyncWithBank(c echo.Context) error {
 			defer logger.RecoverGoroutine(bgCtx, "async_bank_sync")
 			_, _ = syncFunc(bgCtx)
 		}()
-		return c.HTML(http.StatusAccepted, `
-			<div role="alert" class="alert alert-info shadow-lg animate-fade-in">
-				<span class="loading loading-spinner loading-sm text-info"></span>
-				<div>
-					<h4 class="font-bold">Sync in Progress</h4>
-					<p class="text-xs">Synchronizing selected bank accounts in the background. You'll receive a notification upon completion.</p>
-				</div>
-			</div>
-		`)
+		alertHTML, _ := templates.RenderString("transactions/sync_accepted_alert", nil)
+		return c.HTML(http.StatusAccepted, alertHTML)
 	}
 
 	// Synchronous execution
@@ -3489,4 +2250,3 @@ func (h *TransactionsHandler) BatchIgnoreRawTransactions(c echo.Context) error {
 	logger.Info(ctx, "Batch ignored raw transactions", "count", len(rawIDs))
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/transactions", budgetID))
 }
-

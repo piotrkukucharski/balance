@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"html"
+	"html/template"
 	"net/http"
 	"strings"
 	"time"
@@ -14,6 +14,7 @@ import (
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/logger"
+	"github.com/balance/balance/internal/web/templates"
 	"github.com/labstack/echo/v4"
 )
 
@@ -315,6 +316,53 @@ func (h *DebugHandler) RunAudit(ctx context.Context, tenantDB *sql.DB) (Integrit
 	return report, nil
 }
 
+type debugViewData struct {
+	BudgetID                string
+	BudgetName              string
+	CSRFToken               string
+	DateFormat              string
+	TimeFormat              string
+	SidebarHTML             template.HTML
+	BottomDockHTML          template.HTML
+	DateTimeFormatterScript template.HTML
+	AuditCardHTML           template.HTML
+}
+
+type debugOrphanedBalanceRow struct {
+	AccountID        string
+	Currency         string
+	BalanceFormatted string
+}
+
+type debugOrphanedTxRow struct {
+	Type            string
+	Role            string
+	AccountID       string
+	NotesOrPayee    string
+	AmountFormatted string
+	Currency        string
+}
+
+type debugDiscrepancyRow struct {
+	AccountName       string
+	Currency          string
+	StoredFormatted   string
+	ComputedFormatted string
+	DiffFormatted     string
+}
+
+type debugAuditCardViewData struct {
+	BudgetID               string
+	CSRFToken              string
+	HasAnomalies           bool
+	OrphanedBalances       []debugOrphanedBalanceRow
+	OrphanedAccounts       []OrphanedAccountSummary
+	OrphanedTransactions   []debugOrphanedTxRow
+	AccountDiscrepancies   []debugDiscrepancyRow
+	FundamentalEquationOK  bool
+	FundamentalDetailsHTML template.HTML
+}
+
 // DebugView renders the GET /budgets/:budgetId/debug page.
 func (h *DebugHandler) DebugView(c echo.Context) error {
 	budgetID := c.Param("budgetId")
@@ -336,392 +384,79 @@ func (h *DebugHandler) DebugView(c echo.Context) error {
 	dFormat, tFormat := GetUserDateTimePreferences(c)
 
 	// Run initial audit to render initial state
-	report, err := h.RunAudit(c.Request().Context(), tenantDB)
+	report, _ := h.RunAudit(c.Request().Context(), tenantDB)
 	auditHTML := RenderAuditCard(budgetID, csrfToken, report)
 
-	return c.HTML(http.StatusOK, fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en" data-theme="dark" data-date-format="%s" data-time-format="%s">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>Balance — %s Diagnostic Tools (Debug)</title>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-    <link rel="icon" type="image/x-icon" href="/favicon.ico">
-    <link rel="manifest" href="/manifest.webmanifest">
-</head>
-<body class="bg-base-200 text-base-content min-h-screen flex flex-col">
-    <!-- Toast Notification Container -->
-    <div id="debug-toast" class="toast toast-top toast-end z-50 transition-opacity duration-300 hidden">
-        <div id="debug-toast-alert" class="alert alert-success text-xs shadow-lg flex items-center gap-2">
-            <span id="debug-toast-icon">✓</span>
-            <span id="debug-toast-msg">Operation completed</span>
-        </div>
-    </div>
+	data := debugViewData{
+		BudgetID:                budgetID,
+		BudgetName:              name,
+		CSRFToken:               csrfToken,
+		DateFormat:              dFormat,
+		TimeFormat:              tFormat,
+		SidebarHTML:             template.HTML(sidebarHTML),
+		BottomDockHTML:          template.HTML(bottomDockHTML),
+		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
+		AuditCardHTML:           template.HTML(auditHTML),
+	}
 
-    <!-- Navbar -->
-    <header class="navbar bg-base-100 border-b border-base-300 px-6 sticky top-0 z-30 shadow-xs">
-        <div class="navbar-start gap-4 items-center">
-            <a href="/budgets" class="text-2xl font-black tracking-tight text-primary flex items-center gap-2">
-                <span>⚖️</span>
-                <span>Balance</span>
-            </a>
-            <div class="badge badge-neutral font-semibold gap-1.5 py-3">
-                <span class="w-2 h-2 rounded-full bg-success"></span>
-                <span>%s</span>
-            </div>
-            <span class="badge badge-warning font-semibold text-xs">Diagnostic Tools (Debug)</span>
-        </div>
-        <div class="navbar-end gap-3">
-            <a href="/budgets/%s/settings" class="btn btn-ghost btn-sm">← Back to Settings</a>
-            <form method="POST" action="/logout">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
-            </form>
-        </div>
-    </header>
-
-    <div class="flex-1 flex overflow-hidden">
-        <!-- Sidebar -->
-        <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
-            %s
-        </aside>
-
-        <!-- Main Content -->
-        <main class="flex-1 p-4 sm:p-6 md:p-8 pb-24 md:pb-8 overflow-y-auto max-w-4xl">
-            <div class="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div>
-                    <h1 class="text-2xl font-black tracking-tight flex items-center gap-2">
-                        <span>🛠️</span>
-                        <span>Diagnostic Tools (Debug)</span>
-                    </h1>
-                    <p class="text-xs text-base-content/60 mt-1">Audit ledger integrity in real-time, detect orphaned projections, and trigger transactional repair routines.</p>
-                </div>
-            </div>
-
-            <div id="audit-card-container">
-                %s
-            </div>
-        </main>
-    </div>
-
-    %s
-    %s
-
-    <script>
-        function showDebugToast(message, isSuccess = true) {
-            const toast = document.getElementById('debug-toast');
-            if (!toast) return;
-            const alertBox = document.getElementById('debug-toast-alert');
-            const msgEl = document.getElementById('debug-toast-msg');
-            const iconEl = document.getElementById('debug-toast-icon');
-
-            if (msgEl) msgEl.innerText = message;
-            if (iconEl) iconEl.innerText = isSuccess ? '✓' : '⚠️';
-            if (alertBox) {
-                alertBox.className = 'alert text-xs shadow-lg flex items-center gap-2 ' + (isSuccess ? 'alert-success' : 'alert-error');
-            }
-            toast.classList.remove('hidden');
-            toast.style.opacity = '1';
-            clearTimeout(window.__debugToastTimeout);
-            window.__debugToastTimeout = setTimeout(() => {
-                toast.style.opacity = '0';
-                setTimeout(() => toast.classList.add('hidden'), 300);
-            }, 4000);
-        }
-
-        document.addEventListener('debugNotification', function(evt) {
-            if (evt.detail && evt.detail.message) {
-                showDebugToast(evt.detail.message, evt.detail.success !== false);
-            }
-        });
-    </script>
-</body>
-</html>`,
-		html.EscapeString(dFormat), html.EscapeString(tFormat),
-		html.EscapeString(name),
-		html.EscapeString(name),
-		budgetID,
-		csrfToken,
-		sidebarHTML,
-		auditHTML,
-		bottomDockHTML,
-		DateTimeFormatterScript(),
-	))
+	out, err := templates.RenderString("debug/view", data)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed rendering debug view: "+err.Error())
+	}
+	return c.HTML(http.StatusOK, out)
 }
 
 // RenderAuditCard produces the HTML snippet for the integrity status card.
 func RenderAuditCard(budgetID, csrfToken string, report IntegrityAuditReport) string {
-	var statusBadge string
-	if !report.HasAnomalies {
-		statusBadge = `<span class="badge badge-success font-bold gap-1 text-xs py-2 px-3">✓ All Ledger Checks Passed</span>`
-	} else {
-		statusBadge = `<span class="badge badge-error font-bold gap-1 text-xs py-2 px-3">⚠️ Anomalies Detected</span>`
+	var obRows []debugOrphanedBalanceRow
+	for _, o := range report.OrphanedBalances {
+		obRows = append(obRows, debugOrphanedBalanceRow{
+			AccountID:        o.AccountID,
+			Currency:         o.Currency,
+			BalanceFormatted: fmt.Sprintf("%.2f", float64(o.BalanceMinor)/100.0),
+		})
 	}
 
-	var orphanedHTML strings.Builder
-	if len(report.OrphanedBalances) == 0 && len(report.OrphanedTransactions) == 0 {
-		orphanedHTML.WriteString(`<div class="text-xs text-success flex items-center gap-1.5 font-medium"><span>✓</span><span>Brak osieroconych sald ani transakcji powiązanych z nieistniejącymi kontami.</span></div>`)
-	} else {
-		if len(report.OrphanedBalances) > 0 {
-			orphanedHTML.WriteString(fmt.Sprintf(`
-				<div class="alert alert-error alert-soft text-xs mb-3">
-					<span>Wykryto <strong>%d</strong> osieroconych rekordów sald w <code>account_currency_balances</code>!</span>
-				</div>
-				<div class="overflow-x-auto mb-4">
-					<table class="table table-xs w-full">
-						<thead>
-							<tr><th>Account ID</th><th>Waluta</th><th class="text-right">Saldo</th></tr>
-						</thead>
-						<tbody>`, len(report.OrphanedBalances)))
-			for _, o := range report.OrphanedBalances {
-				orphanedHTML.WriteString(fmt.Sprintf(`
-					<tr>
-						<td class="font-mono text-xs">%s</td>
-						<td><span class="badge badge-neutral text-xs">%s</span></td>
-						<td class="font-mono text-right font-bold">%.2f</td>
-					</tr>`, html.EscapeString(o.AccountID), html.EscapeString(o.Currency), float64(o.BalanceMinor)/100.0))
-			}
-			orphanedHTML.WriteString(`</tbody></table></div>`)
-		}
-
-		if len(report.OrphanedAccounts) > 0 {
-			orphanedHTML.WriteString(fmt.Sprintf(`
-				<div class="alert alert-warning alert-soft text-xs mb-3">
-					<span>Wykryto <strong>%d</strong> nieistniejących kont powiązanych z transakcjami lub saldami:</span>
-				</div>
-				<div class="overflow-x-auto mb-4">
-					<table class="table table-xs w-full">
-						<thead>
-							<tr>
-								<th>Nazwa Konta (Historia)</th>
-								<th>ID Konta</th>
-								<th class="text-center">Transakcje Budżetowe</th>
-								<th class="text-center">Transakcje Raw</th>
-								<th>Status w Historii</th>
-								<th class="text-right">Działania Naprawcze</th>
-							</tr>
-						</thead>
-						<tbody>`, len(report.OrphanedAccounts)))
-			for _, oa := range report.OrphanedAccounts {
-				resurrectBtn := ""
-				if oa.CanResurrect {
-					resurrectBtn = fmt.Sprintf(`
-						<form hx-post="/budgets/%s/debug/actions/resurrect-account" hx-target="#audit-card-container" hx-swap="innerHTML" class="inline"
-						      hx-disabled-elt="find button"
-						      onsubmit="return confirm('Przywrócić konto &quot;%s&quot; w stanie zamkniętym (is_closed=1)?') ? (this.querySelector('button').disabled = true, true) : false;">
-							<input type="hidden" name="csrf_token" value="%s" />
-							<input type="hidden" name="account_id" value="%s" />
-							<button type="submit" class="btn btn-xs btn-primary gap-1">
-								<span>♻️</span>
-								<span>Wskrześ Konto</span>
-							</button>
-						</form>`, budgetID, html.EscapeString(oa.AccountName), csrfToken, html.EscapeString(oa.AccountID))
-				} else {
-					resurrectBtn = `<span class="badge badge-ghost text-xs">Brak w historii</span>`
-				}
-
-				orphanedHTML.WriteString(fmt.Sprintf(`
-					<tr>
-						<td class="font-bold text-xs">%s</td>
-						<td class="font-mono text-xs">%s</td>
-						<td class="text-center font-bold">%d</td>
-						<td class="text-center font-bold">%d</td>
-						<td><span class="badge badge-neutral text-xs font-mono">%s</span></td>
-						<td class="text-right">%s</td>
-					</tr>`,
-					html.EscapeString(oa.AccountName),
-					html.EscapeString(oa.AccountID),
-					oa.BudgetTxCount,
-					oa.RawTxCount,
-					html.EscapeString(oa.LastRecordedStatus),
-					resurrectBtn,
-				))
-			}
-			orphanedHTML.WriteString(`</tbody></table></div>`)
-		}
-
-		if len(report.OrphanedTransactions) > 0 {
-			orphanedHTML.WriteString(fmt.Sprintf(`
-				<div class="text-xs font-semibold text-base-content/70 mb-1 flex items-center justify-between">
-					<span>Szczegóły osieroconych transakcji (%d):</span>
-				</div>
-				<div class="overflow-x-auto max-h-48 border border-base-300 rounded-lg mb-2">
-					<table class="table table-xs w-full">
-						<thead class="sticky top-0 bg-base-200">
-							<tr>
-								<th>Typ</th>
-								<th>Rola brakującego konta</th>
-								<th>Brakujące Account ID</th>
-								<th>Opis / Payee</th>
-								<th class="text-right">Kwota</th>
-							</tr>
-						</thead>
-						<tbody>`, len(report.OrphanedTransactions)))
-			for _, ot := range report.OrphanedTransactions {
-				orphanedHTML.WriteString(fmt.Sprintf(`
-					<tr>
-						<td><span class="badge badge-outline text-xs">%s</span></td>
-						<td class="font-mono text-xs">%s</td>
-						<td class="font-mono text-xs">%s</td>
-						<td class="text-xs truncate max-w-xs" title="%s">%s</td>
-						<td class="font-mono text-right font-bold">%.2f %s</td>
-					</tr>`,
-					html.EscapeString(ot.Type),
-					html.EscapeString(ot.Role),
-					html.EscapeString(ot.AccountID),
-					html.EscapeString(ot.NotesOrPayee),
-					html.EscapeString(ot.NotesOrPayee),
-					float64(ot.AmountMinor)/100.0,
-					html.EscapeString(ot.Currency),
-				))
-			}
-			orphanedHTML.WriteString(`</tbody></table></div>`)
-		}
+	var otRows []debugOrphanedTxRow
+	for _, ot := range report.OrphanedTransactions {
+		otRows = append(otRows, debugOrphanedTxRow{
+			Type:            ot.Type,
+			Role:            ot.Role,
+			AccountID:       ot.AccountID,
+			NotesOrPayee:    ot.NotesOrPayee,
+			AmountFormatted: fmt.Sprintf("%.2f", float64(ot.AmountMinor)/100.0),
+			Currency:        ot.Currency,
+		})
 	}
 
-	var discrepancyHTML strings.Builder
-	if len(report.AccountDiscrepancies) == 0 {
-		discrepancyHTML.WriteString(`<div class="text-xs text-success flex items-center gap-1.5 font-medium"><span>✓</span><span>All account balances exactly match the net sum of budget transactions.</span></div>`)
-	} else {
-		discrepancyHTML.WriteString(fmt.Sprintf(`
-			<div class="alert alert-warning alert-soft text-xs mb-3">
-				<span>Found <strong>%d</strong> accounts with discrepancy between stored balance and transaction history!</span>
-			</div>
-			<div class="overflow-x-auto">
-				<table class="table table-xs w-full">
-					<thead>
-						<tr><th>Account</th><th>Currency</th><th class="text-right">Stored</th><th class="text-right">Computed</th><th class="text-right">Diff</th></tr>
-					</thead>
-					<tbody>`, len(report.AccountDiscrepancies)))
-		for _, d := range report.AccountDiscrepancies {
-			discrepancyHTML.WriteString(fmt.Sprintf(`
-				<tr>
-					<td class="font-bold text-xs">%s</td>
-					<td><span class="badge badge-neutral text-xs">%s</span></td>
-					<td class="font-mono text-right">%.2f</td>
-					<td class="font-mono text-right">%.2f</td>
-					<td class="font-mono text-right font-bold text-error">%.2f</td>
-				</tr>`, html.EscapeString(d.AccountName), html.EscapeString(d.Currency), float64(d.StoredMinor)/100.0, float64(d.ComputedMinor)/100.0, float64(d.DiffMinor)/100.0))
-		}
-		discrepancyHTML.WriteString(`</tbody></table></div>`)
+	var discRows []debugDiscrepancyRow
+	for _, d := range report.AccountDiscrepancies {
+		discRows = append(discRows, debugDiscrepancyRow{
+			AccountName:       d.AccountName,
+			Currency:          d.Currency,
+			StoredFormatted:   fmt.Sprintf("%.2f", float64(d.StoredMinor)/100.0),
+			ComputedFormatted: fmt.Sprintf("%.2f", float64(d.ComputedMinor)/100.0),
+			DiffFormatted:     fmt.Sprintf("%.2f", float64(d.DiffMinor)/100.0),
+		})
 	}
 
-	var equationBadge string
-	if report.FundamentalEquationOK {
-		equationBadge = `<span class="badge badge-success text-xs font-bold">Balanced</span>`
-	} else {
-		equationBadge = `<span class="badge badge-error text-xs font-bold">Unbalanced</span>`
+	data := debugAuditCardViewData{
+		BudgetID:               budgetID,
+		CSRFToken:              csrfToken,
+		HasAnomalies:           report.HasAnomalies,
+		OrphanedBalances:       obRows,
+		OrphanedAccounts:       report.OrphanedAccounts,
+		OrphanedTransactions:   otRows,
+		AccountDiscrepancies:   discRows,
+		FundamentalEquationOK:  report.FundamentalEquationOK,
+		FundamentalDetailsHTML: template.HTML(report.FundamentalDetails),
 	}
 
-	return fmt.Sprintf(`
-		<div class="card card-border bg-base-100 border-base-300 shadow-md">
-			<div class="card-body p-6 space-y-6">
-				<div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-base-200 pb-4">
-					<div>
-						<h2 class="card-title text-base font-bold flex items-center gap-2">
-							<span>📊</span>
-							<span>Ledger Spójność & Integralność Bilansowa</span>
-						</h2>
-						<p class="text-xs text-base-content/60 mt-0.5">Real-time consistency checks evaluated in an isolated transaction.</p>
-					</div>
-					<div>%s</div>
-				</div>
-
-				<!-- Check 1: Orphaned Balances and Transactions -->
-				<div class="space-y-2">
-					<h3 class="text-xs font-bold uppercase tracking-wider text-base-content/70 flex items-center gap-1.5">
-						<span>1. Osierocone Salda & Transakcje (Konta usunięte z accounts_current)</span>
-					</h3>
-					%s
-				</div>
-
-				<!-- Check 2: Transaction Sum Discrepancy -->
-				<div class="space-y-2">
-					<h3 class="text-xs font-bold uppercase tracking-wider text-base-content/70 flex items-center gap-1.5">
-						<span>2. Zgodność Transakcji z Saldami Kont</span>
-					</h3>
-					%s
-				</div>
-
-				<!-- Check 3: Fundamental Equation -->
-				<div class="space-y-2">
-					<div class="flex items-center justify-between">
-						<h3 class="text-xs font-bold uppercase tracking-wider text-base-content/70 flex items-center gap-1.5">
-							<span>3. Równanie Fundamentalne (Gotówka == Koperty + RTA)</span>
-						</h3>
-						%s
-					</div>
-					<div class="text-xs text-base-content/80 font-mono bg-base-200/50 p-3 rounded-lg border border-base-300">
-						%s
-					</div>
-				</div>
-
-				<!-- Action Controls -->
-				<div class="border-t border-base-200 pt-4 flex flex-wrap items-center justify-between gap-3">
-					<form hx-post="/budgets/%s/debug/audit" hx-target="#audit-card-container" hx-swap="innerHTML" class="inline"
-					      hx-disabled-elt="find button"
-					      onsubmit="this.querySelector('button').disabled = true;">
-						<input type="hidden" name="csrf_token" value="%s" />
-						<button type="submit" class="btn btn-sm btn-outline gap-1.5">
-							<span>🔄</span>
-							<span>Uruchom Audyt Ponownie</span>
-						</button>
-					</form>
-
-					<div class="flex flex-wrap items-center gap-2">
-						<form hx-post="/budgets/%s/debug/actions/cleanup-orphaned" hx-target="#audit-card-container" hx-swap="innerHTML" class="inline"
-						      hx-disabled-elt="find button"
-						      onsubmit="return confirm('Czy na pewno chcesz usunąć osierocone rekordy sald?') ? (this.querySelector('button').disabled = true, true) : false;">
-							<input type="hidden" name="csrf_token" value="%s" />
-							<button type="submit" class="btn btn-sm btn-warning gap-1.5" %s>
-								<span>🧹</span>
-								<span>Usuń Osierocone Salda</span>
-							</button>
-						</form>
-
-						<form hx-post="/budgets/%s/debug/actions/delete-orphaned-transactions" hx-target="#audit-card-container" hx-swap="innerHTML" class="inline"
-						      hx-disabled-elt="find button"
-						      onsubmit="return confirm('Czy na pewno chcesz trwale usunąć wszystkie osierocone transakcje budżetowe i raw?') ? (this.querySelector('button').disabled = true, true) : false;">
-							<input type="hidden" name="csrf_token" value="%s" />
-							<button type="submit" class="btn btn-sm btn-error gap-1.5" %s>
-								<span>🗑️</span>
-								<span>Usuń Osierocone Transakcje</span>
-							</button>
-						</form>
-
-						<form hx-post="/budgets/%s/debug/actions/reconcile-discrepancies" hx-target="#audit-card-container" hx-swap="innerHTML" class="inline"
-						      hx-disabled-elt="find button"
-						      onsubmit="return confirm('Utworzyć automatyczne transakcje korygujące dla wykrytych rozbieżności sald?') ? (this.querySelector('button').disabled = true, true) : false;">
-							<input type="hidden" name="csrf_token" value="%s" />
-							<button type="submit" class="btn btn-sm btn-primary gap-1.5" %s>
-								<span>⚖️</span>
-								<span>Generuj Korektę Bilansową</span>
-							</button>
-						</form>
-					</div>
-				</div>
-			</div>
-		</div>`,
-		statusBadge,
-		orphanedHTML.String(),
-		discrepancyHTML.String(),
-		equationBadge,
-		report.FundamentalDetails,
-		budgetID, csrfToken,
-		budgetID, csrfToken, disabledAttr(len(report.OrphanedBalances) == 0),
-		budgetID, csrfToken, disabledAttr(len(report.OrphanedTransactions) == 0),
-		budgetID, csrfToken, disabledAttr(len(report.AccountDiscrepancies) == 0),
-	)
-}
-
-func disabledAttr(disabled bool) string {
-	if disabled {
-		return "disabled"
+	out, err := templates.RenderString("debug/audit_card", data)
+	if err != nil {
+		return ""
 	}
-	return ""
+	return out
 }
 
 // AuditAction handles POST /budgets/:budgetId/debug/audit (HTMX endpoint returning refreshed audit card).

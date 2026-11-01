@@ -16,6 +16,7 @@ import (
 	openapi "github.com/balance/balance/internal/api"
 	webassets "github.com/balance/balance/internal/web/assets"
 	"github.com/balance/balance/internal/web/handlers"
+	"github.com/balance/balance/internal/web/templates"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 )
@@ -97,6 +98,9 @@ func main() {
 	// PWA routes
 	e.GET("/manifest.webmanifest", pwaHandler.Manifest)
 	e.GET("/sw.js", pwaHandler.ServiceWorker)
+
+	// Static embedded assets with content-hash caching
+	templates.RegisterStaticRoutes(e)
 
 	// Public Auth routes
 	e.GET("/favicon.ico", func(c echo.Context) error {

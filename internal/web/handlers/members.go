@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"fmt"
+	"html/template"
 	"net/http"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/balance/balance/internal/auth"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/web/templates"
 	"github.com/labstack/echo/v4"
 )
 
@@ -20,6 +22,27 @@ type MembersHandler struct {
 
 func NewMembersHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *MembersHandler {
 	return &MembersHandler{mainDB: mainDB, tenantMgr: tenantMgr}
+}
+
+type memberViewRow struct {
+	Initial   string
+	Name      string
+	Email     string
+	Role      string
+	RoleBadge string
+	JoinedTag template.HTML
+}
+
+type membersViewData struct {
+	BudgetID                string
+	BudgetName              string
+	CSRFToken               string
+	DateFormat              string
+	TimeFormat              string
+	SidebarHTML             template.HTML
+	BottomDockHTML          template.HTML
+	DateTimeFormatterScript template.HTML
+	Members                 []memberViewRow
 }
 
 // MembersView lists members and token invitations for the budget.
@@ -38,7 +61,7 @@ func (h *MembersHandler) MembersView(c echo.Context) error {
 	}
 	defer rows.Close()
 
-	var memberRows strings.Builder
+	var members []memberViewRow
 	for rows.Next() {
 		var id, email, name, mRole string
 		var joinedAt int64
@@ -52,147 +75,42 @@ func (h *MembersHandler) MembersView(c echo.Context) error {
 			roleBadge = "badge-neutral"
 		}
 
-		memberRows.WriteString(fmt.Sprintf(`
-			<tr class="hover">
-				<td>
-					<div class="flex items-center gap-3">
-						<div class="avatar placeholder">
-							<div class="bg-base-300 text-base-content rounded-full w-9">
-								<span class="text-xs font-bold">%s</span>
-							</div>
-						</div>
-						<div>
-							<div class="font-bold text-sm">%s</div>
-							<div class="text-xs text-base-content/50">%s</div>
-						</div>
-					</div>
-				</td>
-				<td><span class="badge %s font-bold text-xs">%s</span></td>
-				<td class="text-xs font-mono text-base-content/60">%s</td>
-			</tr>`, strings.ToUpper(name[:1]), name, email, roleBadge, mRole, joinedTag))
+		initial := "?"
+		if len(name) > 0 {
+			initial = strings.ToUpper(name[:1])
+		}
+
+		members = append(members, memberViewRow{
+			Initial:   initial,
+			Name:      name,
+			Email:     email,
+			Role:      mRole,
+			RoleBadge: roleBadge,
+			JoinedTag: template.HTML(joinedTag),
+		})
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
-
 	dFormat, tFormat := GetUserDateTimePreferences(c)
 
-	html := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en" data-theme="dark" data-date-format="%s" data-time-format="%s">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <meta name="user-date-format" content="%s">
-    <meta name="user-time-format" content="%s">
-    <title>Balance — Members & Access</title>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-    <link rel="icon" type="image/x-icon" href="/favicon.ico">
-    <link rel="manifest" href="/manifest.webmanifest">
-</head>
-<body class="bg-base-200 text-base-content min-h-screen flex flex-col">
-    <header class="navbar bg-base-100 border-b border-base-300 px-6 sticky top-0 z-30 shadow-xs">
-        <div class="navbar-start gap-4 items-center">
-            <a href="/budgets" class="text-2xl font-black tracking-tight text-primary flex items-center gap-2">
-                <span>⚖️</span>
-                <span>Balance</span>
-            </a>
-            <div class="badge badge-neutral font-semibold gap-1.5 py-3">
-                <span class="w-2 h-2 rounded-full bg-success"></span>
-                <span>Members</span>
-            </div>
-        </div>
-        <div class="navbar-end gap-3">
-            <form method="POST" action="/logout">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
-            </form>
-        </div>
-    </header>
-
-    <div class="flex-1 flex overflow-hidden">
-        <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
-            %s
-        </aside>
-
-        <main class="flex-1 p-4 sm:p-6 md:p-8 pb-24 md:pb-8 overflow-y-auto">
-            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-                <div>
-                    <h1 class="text-2xl font-black tracking-tight">Members & Access Control</h1>
-                    <p class="text-xs text-base-content/60 mt-1">Multi-user RBAC hierarchy: OWNER, ADMIN, EDITOR, and VIEWER roles.</p>
-                </div>
-                <button class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="invite_modal.showModal()">
-                    <span>+</span>
-                    <span>Invite Member</span>
-                </button>
-            </div>
-
-            <div class="card card-border bg-base-100 border-base-300 shadow-md">
-                <div class="card-body p-0">
-                    <div class="overflow-x-auto">
-                        <table class="table table-zebra w-full">
-                            <thead>
-                                <tr class="bg-base-200/50">
-                                    <th class="font-bold">Collaborator</th>
-                                    <th class="font-bold">Assigned Role</th>
-                                    <th class="font-bold">Member Since</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                %s
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </main>
-    </div>
-
-    %s
-
-    <!-- Invite Member Modal -->
-    <dialog id="invite_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight">Invite Collaborator</h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form method="POST" action="/budgets/%s/settings/members/invite" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Invited Email Address</span></label>
-                    <input type="email" name="email" required placeholder="collaborator@example.com" class="input input-bordered w-full input-md focus:input-primary" />
-                </div>
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Permission Role</span></label>
-                    <select name="role" class="select select-bordered w-full select-md focus:select-primary">
-                        <option value="EDITOR" selected>EDITOR — Can record transactions, modify buckets and targets</option>
-                        <option value="VIEWER">VIEWER — Strictly read-only access to dashboard and reports</option>
-                        <option value="ADMIN">ADMIN — Can invite members and restore historical audit versions</option>
-                    </select>
-                </div>
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="invite_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Send Invitation</button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-    %s
-</body>
-</html>`,
-		dFormat, tFormat, dFormat, tFormat,
-		csrfToken,
-		RenderSidebarNavigation(budgetID, "members"),
-		memberRows.String(),
-		RenderBottomDock(budgetID, "settings"),
-		budgetID, csrfToken,
-		DateTimeFormatterScript())
+	data := membersViewData{
+		BudgetID:                budgetID,
+		BudgetName:              "Members",
+		CSRFToken:               csrfToken,
+		DateFormat:              dFormat,
+		TimeFormat:              tFormat,
+		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "members")),
+		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "settings")),
+		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
+		Members:                 members,
+	}
 
 	_ = role
-	return c.HTML(http.StatusOK, html)
+	out, err := templates.RenderString("members/view", data)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed rendering members view: "+err.Error())
+	}
+	return c.HTML(http.StatusOK, out)
 }
 
 // InviteMember handles sending token-based invitation in main.db.
@@ -230,4 +148,3 @@ func (h *MembersHandler) InviteMember(c echo.Context) error {
 	}
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/members", budgetID))
 }
-

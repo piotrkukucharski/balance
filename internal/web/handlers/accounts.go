@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"html"
+	"html/template"
 	"net/http"
 	"os"
 	"strings"
@@ -16,6 +16,7 @@ import (
 	"github.com/balance/balance/internal/integration/mock"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/service"
+	"github.com/balance/balance/internal/web/templates"
 	"github.com/labstack/echo/v4"
 )
 
@@ -55,6 +56,39 @@ func isDevMode() bool {
 	return env != "production" && env != "prod"
 }
 
+type accountRowView struct {
+	ID                string
+	Name              string
+	NameJS            string
+	IBAN              string
+	AccountType       string
+	TypeBadgeClass    string
+	Currency          string
+	BalanceFormatted  string
+	FaviconType       string
+	FaviconValue      string
+	EmojiChar         string
+	IsBankLinked      bool
+	IsConsentExpired  bool
+	IsClosed          bool
+	ReconnectBtnClass string
+	ReconnectBtnText  string
+	ActionMenuHTML    template.HTML
+}
+
+type accountsViewData struct {
+	BudgetID                string
+	BudgetName              string
+	CSRFToken               string
+	DateFormat              string
+	TimeFormat              string
+	IsDevMode               bool
+	Accounts                []accountRowView
+	SidebarHTML             template.HTML
+	BottomDockHTML          template.HTML
+	DateTimeFormatterScript template.HTML
+}
+
 // AccountsView lists all user-owned financial accounts with multi-currency balances and CRUD controls.
 func (h *AccountsHandler) AccountsView(c echo.Context) error {
 	budgetID := c.Param("budgetId")
@@ -80,11 +114,10 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 	defer rows.Close()
 
 	now := time.Now().UTC().UnixMicro()
+	csrfToken, _ := c.Get("csrfToken").(string)
 
-	var accountRows strings.Builder
-	hasAccounts := false
+	var accountViews []accountRowView
 	for rows.Next() {
-		hasAccounts = true
 		var id, name, aType, curr, iban, extID, intID, favType, favVal string
 		var isClosed int
 		var balanceMinor int64
@@ -104,13 +137,6 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 			}
 		}
 
-		statusBadge := `<span class="badge badge-success badge-sm font-semibold">Active</span>`
-		if isConsentExpired {
-			statusBadge = `<span class="badge badge-warning badge-sm font-bold gap-1 animate-pulse"><span>⚠️</span><span>Consent Expired</span></span>`
-		} else if isClosed == 1 {
-			statusBadge = `<span class="badge badge-neutral badge-sm font-semibold opacity-60">Closed</span>`
-		}
-
 		typeBadge := "badge-soft badge-primary"
 		switch aType {
 		case "SAVINGS":
@@ -123,34 +149,16 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 			typeBadge = "badge-soft badge-info"
 		}
 
-		integrationBadge := `<span class="badge badge-ghost badge-sm text-xs opacity-50">Manual</span>`
-		if extID != "" {
-			integrationBadge = `<span class="badge badge-info badge-soft badge-sm font-bold gap-1"><span>🔄</span><span>Bank Linked</span></span>`
+		reconnectBtnClass := "btn-ghost text-primary"
+		reconnectBtnText := "Reconnect"
+		if isConsentExpired {
+			reconnectBtnClass = "btn-warning animate-bounce font-bold shadow-xs"
+			reconnectBtnText = "⚠️ Reconnect"
 		}
 
-		reconnectBtn := ""
-		if extID != "" {
-			btnClass := "btn-ghost text-primary"
-			btnText := "Reconnect"
-			if isConsentExpired {
-				btnClass = "btn-warning animate-bounce font-bold shadow-xs"
-				btnText = "⚠️ Reconnect"
-			}
-			reconnectBtn = fmt.Sprintf(`
-				<button onclick="reconnectAccount('%s', '%s')" class="btn btn-xs %s gap-1" title="Renew bank authorization">%s</button>
-			`, id, strings.ReplaceAll(name, "'", "\\'"), btnClass, btnText)
-		}
-
-		// Render favicon avatar
-		faviconHTML := ""
-		if favType == "URL" && favVal != "" {
-			faviconHTML = fmt.Sprintf(`<div class="avatar"><div class="w-8 h-8 rounded-lg bg-base-200 border border-base-300 flex items-center justify-center p-1"><img src="%s" alt="%s favicon" class="w-full h-full object-contain" onerror="this.parentElement.innerHTML='💳'" /></div></div>`, html.EscapeString(favVal), html.EscapeString(name))
-		} else {
-			emojiChar := favVal
-			if emojiChar == "" {
-				emojiChar = "💳"
-			}
-			faviconHTML = fmt.Sprintf(`<div class="w-8 h-8 rounded-lg bg-base-200 border border-base-300 flex items-center justify-center text-lg select-none" title="%s">%s</div>`, html.EscapeString(favType), emojiChar)
+		emojiChar := favVal
+		if emojiChar == "" {
+			emojiChar = "💳"
 		}
 
 		// Check if account can be safely deleted:
@@ -183,7 +191,7 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 			{
 				Label:      toggleActionText(isClosed),
 				FormAction: fmt.Sprintf("/budgets/%s/accounts/%s/toggle-close", budgetID, id),
-				CSRFToken:  c.Get("csrfToken").(string),
+				CSRFToken:  csrfToken,
 			},
 		}
 
@@ -191,901 +199,47 @@ func (h *AccountsHandler) AccountsView(c echo.Context) error {
 			actions = append(actions, TableActionItem{
 				Label:      "🗑️ Delete",
 				FormAction: fmt.Sprintf("/budgets/%s/accounts/%s/delete", budgetID, id),
-				CSRFToken:  c.Get("csrfToken").(string),
+				CSRFToken:  csrfToken,
 				IsDanger:   true,
 				ConfirmMsg: "Delete this account?",
 			})
 		}
 
-		accountRows.WriteString(fmt.Sprintf(`
-			<tr class="hover">
-				<td>
-					<div class="flex items-center gap-3">
-						%s
-						<div>
-							<div class="font-bold text-sm">%s</div>
-							<div class="text-xs font-mono opacity-50">%s</div>
-						</div>
-					</div>
-				</td>
-				<td><span class="badge %s text-xs font-bold">%s</span></td>
-				<td>%s</td>
-				<td>%s</td>
-				<td class="font-mono text-right font-bold text-sm">
-					%.2f <span class="text-xs font-normal opacity-60">%s</span>
-				</td>
-				<td class="text-right">
-					<div class="flex items-center justify-end gap-1.5">
-						%s
-						%s
-					</div>
-				</td>
-			</tr>`,
-			faviconHTML, name, iban, typeBadge, aType, integrationBadge, statusBadge,
-			float64(balanceMinor)/100.0, curr,
-			reconnectBtn,
-			RenderPopoverActionMenu("account", id, actions),
-		))
-
+		accountViews = append(accountViews, accountRowView{
+			ID:                id,
+			Name:              name,
+			NameJS:            strings.ReplaceAll(name, "'", "\\'"),
+			IBAN:              iban,
+			AccountType:       aType,
+			TypeBadgeClass:    typeBadge,
+			Currency:          curr,
+			BalanceFormatted:  fmt.Sprintf("%.2f", float64(balanceMinor)/100.0),
+			FaviconType:       favType,
+			FaviconValue:      favVal,
+			EmojiChar:         emojiChar,
+			IsBankLinked:      extID != "",
+			IsConsentExpired:  isConsentExpired,
+			IsClosed:          isClosed == 1,
+			ReconnectBtnClass: reconnectBtnClass,
+			ReconnectBtnText:  reconnectBtnText,
+			ActionMenuHTML:    template.HTML(RenderPopoverActionMenu("account", id, actions)),
+		})
 	}
 
-	if !hasAccounts {
-		accountRows.WriteString(`
-			<tr>
-				<td colspan="6" class="text-center py-8 text-base-content/50">
-					No accounts found. Create a manual account or connect via Bank Integration below.
-				</td>
-			</tr>
-		`)
+	out, err := templates.RenderString("accounts/view", accountsViewData{
+		BudgetID:                budgetID,
+		BudgetName:              "Accounts",
+		CSRFToken:               csrfToken,
+		IsDevMode:               isDevMode(),
+		Accounts:                accountViews,
+		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "accounts")),
+		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "accounts")),
+		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
+	})
+	if err != nil {
+		return err
 	}
-
-	// Fetch available mock bank accounts for integration connection
-	userID := c.Get(ContextUserIDKey).(string)
-	mockAccounts, _ := h.mockAdapter.FetchAccounts(c.Request().Context(), userID)
-	var mockOptions strings.Builder
-	for _, ma := range mockAccounts {
-		mockOptions.WriteString(fmt.Sprintf(
-			`<option value="%s">%s (%s - %.2f %s)</option>`,
-			ma.ID, ma.Name, ma.IBAN, float64(ma.BalanceMinor)/100.0, ma.Currency,
-		))
-	}
-
-	csrfToken, _ := c.Get("csrfToken").(string)
-
-	devGridCols := ""
-	devSandboxCardHTML := ""
-	mockCardHTML := ""
-	if isDevMode() {
-		devGridCols = "lg:grid-cols-3"
-		mockCardHTML = `
-                    <div onclick="selectProvider('MOCK')" class="card card-border border-base-300 bg-base-100 hover:border-primary cursor-pointer p-4 transition-all hover:shadow-md flex flex-col justify-between gap-3">
-                        <div class="flex items-start gap-3">
-                            <span class="text-3xl">🧪</span>
-                            <div>
-                                <h4 class="font-bold text-sm">Mock Sandbox</h4>
-                                <span class="badge badge-warning badge-xs font-semibold mt-1">Dev & Testing</span>
-                                <p class="text-xs text-base-content/60 mt-1">Deterministic instant simulated accounts (mBank PLN, Savings EUR) with auto-generated test transactions.</p>
-                            </div>
-                        </div>
-                        <button type="button" class="btn btn-outline btn-primary btn-xs w-full">Select Mock Provider</button>
-                    </div>`
-		devSandboxCardHTML = `
-                    <div onclick="selectProvider('GOCARDLESS_SANDBOX')" class="card card-border border-base-300 bg-base-100 hover:border-warning cursor-pointer p-4 transition-all hover:shadow-md flex flex-col justify-between gap-3">
-                        <div class="flex items-start gap-3">
-                            <span class="text-3xl">🧪</span>
-                            <div>
-                                <h4 class="font-bold text-sm">GoCardLess Sandbox</h4>
-                                <span class="badge badge-warning badge-xs font-semibold mt-1">Dev & Testing</span>
-                                <p class="text-xs text-base-content/60 mt-1">Simulated PSD2 Open Banking with Sandbox Finance (SANDBOXFINANCE_SFIN0000).</p>
-                            </div>
-                        </div>
-                        <button type="button" class="btn btn-outline btn-warning btn-xs w-full">Select GoCardLess Sandbox</button>
-                    </div>`
-	}
-
-	html := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en" data-theme="dark">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>Balance — Accounts</title>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-    <link rel="icon" type="image/x-icon" href="/favicon.ico">
-    <link rel="manifest" href="/manifest.webmanifest">
-</head>
-<body class="bg-base-200 text-base-content min-h-screen flex flex-col">
-    <header class="navbar bg-base-100 border-b border-base-300 px-6 sticky top-0 z-30 shadow-xs">
-        <div class="navbar-start gap-4 items-center">
-            <a href="/budgets" class="text-2xl font-black tracking-tight text-primary flex items-center gap-2">
-                <span>⚖️</span>
-                <span>Balance</span>
-            </a>
-            <div class="badge badge-neutral font-semibold gap-1.5 py-3">
-                <span class="w-2 h-2 rounded-full bg-success"></span>
-                <span>Accounts</span>
-            </div>
-        </div>
-        <div class="navbar-end gap-3">
-            <form method="POST" action="/logout">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
-            </form>
-        </div>
-    </header>
-
-    <div class="flex-1 flex overflow-hidden">
-        <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
-            %s
-        </aside>
-
-        <main class="flex-1 p-4 sm:p-6 md:p-8 pb-24 md:pb-8 overflow-y-auto">
-            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-                <div>
-                    <h1 class="text-2xl font-black tracking-tight">Financial Accounts</h1>
-                    <p class="text-xs text-base-content/60 mt-1">Manage checking, savings, credit card, and investment accounts.</p>
-                </div>
-                <div class="flex items-center gap-3">
-                    <button class="btn btn-secondary btn-sm shadow font-semibold gap-1.5" onclick="link_bank_modal.showModal()">
-                        <span>🔄</span>
-                        <span>Link Bank Account</span>
-                    </button>
-                    <button class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="new_account_modal.showModal()">
-                        <span>+</span>
-                        <span>New Account</span>
-                    </button>
-                </div>
-            </div>
-
-            <!-- Accounts Table Card -->
-            <div class="card card-border bg-base-100 border-base-300 shadow-md">
-                <div class="card-body p-0">
-                    <div class="overflow-x-auto">
-                        <table class="table table-zebra w-full">
-                            <thead>
-                                <tr class="bg-base-200/50">
-                                    <th class="font-bold">Account Name</th>
-                                    <th class="font-bold">Type</th>
-                                    <th class="font-bold">Integration</th>
-                                    <th class="font-bold">Status</th>
-                                    <th class="font-bold text-right">Balance</th>
-                                    <th class="font-bold text-right">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                %s
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </main>
-    </div>
-
-    %s
-
-    <!-- New Manual Account Modal -->
-    <dialog id="new_account_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6 max-w-lg">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight">Add Financial Account</h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form method="POST" action="/budgets/%s/accounts" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Account Name</span></label>
-                    <input type="text" name="name" required placeholder="e.g. Main Checking, Emergency Savings" class="input input-bordered w-full input-md focus:input-primary" />
-                </div>
-
-                <!-- Account Icon / Favicon Selector -->
-                <div class="card card-border border-base-300 bg-base-200/40 p-3 space-y-3">
-                    <div class="flex justify-between items-center">
-                        <label class="label p-0"><span class="label-text font-bold text-xs">Account Favicon / Icon</span></label>
-                        <div id="new_icon_preview" class="w-8 h-8 rounded-lg bg-base-100 border border-base-300 flex items-center justify-center text-xl shadow-xs">💵</div>
-                    </div>
-
-                    <!-- Hidden inputs submitted with form -->
-                    <input type="hidden" id="new_favicon_type" name="favicon_type" value="EMOJI" />
-                    <input type="hidden" id="new_favicon_value" name="favicon_value" value="💵" />
-
-                    <!-- Tabs: Emoji vs URL -->
-                    <div role="tablist" class="tabs tabs-box bg-base-100 p-1">
-                        <button type="button" role="tab" id="tab_new_emoji" class="tab tab-active text-xs font-semibold" onclick="switchNewFaviconTab('EMOJI')">Emoji Picker</button>
-                        <button type="button" role="tab" id="tab_new_url" class="tab text-xs font-semibold" onclick="switchNewFaviconTab('URL')">URL / Web Favicon</button>
-                    </div>
-
-                    <!-- Panel: Emoji Picker -->
-                    <div id="panel_new_emoji" class="space-y-2">
-                        <div class="flex items-center gap-2">
-                            <input type="text" id="new_emoji_custom_input" placeholder="Paste custom emoji..." maxlength="4" class="input input-bordered input-sm flex-1 font-emoji text-center text-lg" oninput="setNewEmoji(this.value)" />
-                            <span class="text-xs text-base-content/60">or quick pick:</span>
-                        </div>
-                        <div class="grid grid-cols-8 gap-1.5 p-2 bg-base-100 rounded-lg border border-base-300">
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Cash" onclick="setNewEmoji('💵')">💵</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Credit Card" onclick="setNewEmoji('💳')">💳</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Bank" onclick="setNewEmoji('🏦')">🏦</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Purse" onclick="setNewEmoji('👛')">👛</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Envelope / Envelopes" onclick="setNewEmoji('✉️')">✉️</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Love Envelope" onclick="setNewEmoji('💌')">💌</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Money Bag" onclick="setNewEmoji('💰')">💰</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Coin" onclick="setNewEmoji('🪙')">🪙</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Piggy Bank" onclick="setNewEmoji('🐷')">🐷</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Growth" onclick="setNewEmoji('📈')">📈</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Gem / Savings" onclick="setNewEmoji('💎')">💎</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="House" onclick="setNewEmoji('🏠')">🏠</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Car" onclick="setNewEmoji('🚗')">🚗</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Shopping Cart" onclick="setNewEmoji('🛒')">🛒</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Travel" onclick="setNewEmoji('✈️')">✈️</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Briefcase" onclick="setNewEmoji('💼')">💼</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Incoming Envelope" onclick="setNewEmoji('📨')">📨</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Outgoing Envelope" onclick="setNewEmoji('📩')">📩</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Security" onclick="setNewEmoji('🛡️')">🛡️</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Star" onclick="setNewEmoji('⭐')">⭐</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Target" onclick="setNewEmoji('🎯')">🎯</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Fuel / Utilities" onclick="setNewEmoji('⚡')">⚡</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Health" onclick="setNewEmoji('💊')">💊</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Coffee / Leisure" onclick="setNewEmoji('☕')">☕</button>
-                        </div>
-                    </div>
-
-                    <!-- Panel: URL / Web Picker -->
-                    <div id="panel_new_url" class="space-y-2 hidden">
-                        <div class="flex gap-2">
-                            <input type="url" id="new_url_input" placeholder="https://mbank.pl or direct icon URL" class="input input-bordered input-sm flex-1 text-xs" oninput="setNewUrlManual(this.value)" />
-                            <button type="button" id="new_url_fetch_btn" class="btn btn-sm btn-secondary font-semibold text-xs" onclick="fetchFaviconForNewAccount()">
-                                <span>Fetch</span>
-                            </button>
-                        </div>
-                        <div id="new_url_status" class="text-[11px] text-base-content/60">Enter website (e.g. https://revolut.com) to automatically extract best favicon, or paste direct image URL.</div>
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Account Type</span></label>
-                        <select name="account_type" class="select select-bordered w-full select-md focus:select-primary">
-                            <option value="CHECKING" selected>Checking (Bieżące)</option>
-                            <option value="SAVINGS">Savings (Oszczędnościowe)</option>
-                            <option value="CREDIT_CARD">Credit Card (Karta)</option>
-                            <option value="CASH">Cash (Gotówka / Portfel)</option>
-                            <option value="INVESTMENT">Investment (Inwestycyjne)</option>
-                        </select>
-                    </div>
-                    <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Primary Currency</span></label>
-                        <select name="primary_currency" class="select select-bordered w-full select-md focus:select-primary">
-                            <option value="PLN" selected>PLN (zł)</option>
-                            <option value="EUR">EUR (€)</option>
-                            <option value="USD">USD ($)</option>
-                            <option value="GBP">GBP (£)</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Initial Balance (Optional)</span></label>
-                        <input type="number" step="0.01" name="initial_balance" placeholder="0.00" class="input input-bordered w-full input-md focus:input-primary" />
-                    </div>
-                    <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">IBAN / Number (Optional)</span></label>
-                        <input type="text" name="iban" placeholder="PL..." class="input input-bordered w-full input-md focus:input-primary" />
-                    </div>
-                </div>
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="new_account_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Create Account</button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <!-- Link Bank Account Multi-Step Modal (Actual Budget & Open Banking Style) -->
-    <dialog id="link_bank_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6 max-w-2xl">
-            <div class="flex justify-between items-center mb-4">
-                <div class="flex items-center gap-2">
-                    <span class="text-2xl">🏦</span>
-                    <div>
-                        <h3 class="font-extrabold text-xl tracking-tight">Connect Bank Accounts</h3>
-                        <p id="bank_wizard_subtitle" class="text-xs text-base-content/60">Step 1 of 3: Choose Integration Provider</p>
-                    </div>
-                </div>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle" onclick="resetBankWizard()">✕</button></form>
-            </div>
-
-            <!-- Wizard Steps Indicator -->
-            <div class="flex items-center gap-2 mb-6">
-                <div id="step_dot_1" class="h-1.5 flex-1 rounded-full bg-primary transition-all"></div>
-                <div id="step_dot_2" class="h-1.5 flex-1 rounded-full bg-base-300 transition-all"></div>
-                <div id="step_dot_3" class="h-1.5 flex-1 rounded-full bg-base-300 transition-all"></div>
-                <div id="step_dot_4" class="h-1.5 flex-1 rounded-full bg-base-300 transition-all"></div>
-            </div>
-
-            <!-- STEP 1: Choose Provider (Mock vs GoCardless vs GoCardLess Sandbox in Dev) -->
-            <div id="bank_step_1" class="space-y-4">
-                <p class="text-xs text-base-content/70">Select your bank sync provider to connect accounts and import transactions:</p>
-                <div class="grid grid-cols-1 sm:grid-cols-2 %s gap-4">
-%s
-                    <div onclick="selectProvider('GOCARDLESS')" class="card card-border border-base-300 bg-base-100 hover:border-primary cursor-pointer p-4 transition-all hover:shadow-md flex flex-col justify-between gap-3">
-                        <div class="flex items-start gap-3">
-                            <span class="text-3xl">🇪🇺</span>
-                            <div>
-                                <h4 class="font-bold text-sm">GoCardless</h4>
-                                <span class="badge badge-success badge-xs font-semibold mt-1">Live Open Banking</span>
-                                <p class="text-xs text-base-content/60 mt-1">Connect official European bank feeds via PSD2 Open Banking (Poland, Germany, UK, France, and more).</p>
-                            </div>
-                        </div>
-                        <button type="button" class="btn btn-primary btn-xs w-full">Select GoCardless</button>
-                    </div>
-%s
-                </div>
-            </div>
-
-            <!-- STEP 2: Choose Country -->
-            <div id="bank_step_2" class="space-y-4 hidden">
-                <div class="flex justify-between items-center">
-                    <p class="text-xs text-base-content/70">Select the country of your financial institution:</p>
-                    <button type="button" onclick="goToStep(1)" class="btn btn-ghost btn-xs text-base-content/60">← Change Provider</button>
-                </div>
-                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    <button type="button" onclick="selectCountry('PL')" class="btn btn-outline hover:btn-primary justify-start gap-2 h-auto py-2.5">
-                        <span class="text-lg">🇵🇱</span>
-                        <div class="text-left">
-                            <div class="font-bold text-xs">Poland</div>
-                            <div class="text-[10px] text-base-content/50">PL</div>
-                        </div>
-                    </button>
-                    <button type="button" onclick="selectCountry('DE')" class="btn btn-outline hover:btn-primary justify-start gap-2 h-auto py-2.5">
-                        <span class="text-lg">🇩🇪</span>
-                        <div class="text-left">
-                            <div class="font-bold text-xs">Germany</div>
-                            <div class="text-[10px] text-base-content/50">DE</div>
-                        </div>
-                    </button>
-                    <button type="button" onclick="selectCountry('GB')" class="btn btn-outline hover:btn-primary justify-start gap-2 h-auto py-2.5">
-                        <span class="text-lg">🇬🇧</span>
-                        <div class="text-left">
-                            <div class="font-bold text-xs">United Kingdom</div>
-                            <div class="text-[10px] text-base-content/50">GB</div>
-                        </div>
-                    </button>
-                    <button type="button" onclick="selectCountry('FR')" class="btn btn-outline hover:btn-primary justify-start gap-2 h-auto py-2.5">
-                        <span class="text-lg">🇫🇷</span>
-                        <div class="text-left">
-                            <div class="font-bold text-xs">France</div>
-                            <div class="text-[10px] text-base-content/50">FR</div>
-                        </div>
-                    </button>
-                </div>
-            </div>
-
-            <!-- STEP 3: Choose Institutions (Multi-Select Supported) -->
-            <div id="bank_step_3" class="space-y-4 hidden">
-                <div class="flex justify-between items-center gap-2">
-                    <div class="flex-1">
-                        <input id="bank_search_input" type="text" placeholder="Search banks by name or BIC..." oninput="filterInstitutions()" class="input input-bordered input-sm w-full" />
-                    </div>
-                    <button type="button" onclick="goToStep(2)" class="btn btn-ghost btn-xs text-base-content/60">← Back</button>
-                </div>
-
-                <div class="flex justify-between items-center text-xs px-1 text-base-content/70">
-                    <span>Select one or more banks to connect:</span>
-                    <span id="selected_banks_count" class="badge badge-neutral badge-xs font-semibold">0 selected</span>
-                </div>
-
-                <div id="institutions_list_container" class="max-h-64 overflow-y-auto space-y-2 border border-base-300 rounded-lg p-2 bg-base-200/30">
-                    <div class="py-8 text-center text-xs text-base-content/50 flex flex-col items-center gap-2">
-                        <span class="loading loading-spinner loading-sm text-primary"></span>
-                        <span>Loading available institutions...</span>
-                    </div>
-                </div>
-
-                <div class="modal-action mt-4 flex justify-between items-center">
-                    <button type="button" class="btn btn-ghost btn-sm" onclick="goToStep(2)">Back</button>
-                    <button id="connect_banks_btn" type="button" disabled onclick="startConnectionQueue()" class="btn btn-primary btn-sm font-semibold shadow">
-                        Connect Selected (<span id="btn_selected_count">0</span>)
-                    </button>
-                </div>
-            </div>
-
-            <!-- STEP 4: Execution Queue Progress (Sequential Processing) -->
-            <div id="bank_step_4" class="space-y-4 hidden">
-                <div class="p-4 bg-base-200/50 rounded-lg border border-base-300 space-y-3">
-                    <h4 class="font-bold text-sm flex items-center gap-2">
-                        <span id="queue_spinner" class="loading loading-spinner loading-xs text-primary"></span>
-                        <span id="queue_title">Connecting Banks Sequentially...</span>
-                    </h4>
-                    <p class="text-xs text-base-content/70" id="queue_desc">Processing selected institutions one by one. Please do not close this window.</p>
-                    <div id="queue_items_list" class="space-y-2"></div>
-                </div>
-
-                <div class="modal-action">
-                    <button id="queue_done_btn" type="button" class="btn btn-primary btn-sm hidden font-semibold shadow" onclick="window.location.reload()">Done & View Accounts</button>
-                </div>
-            </div>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button onclick="resetBankWizard()">close</button></form>
-    </dialog>
-
-    <!-- Edit Account Modal -->
-    <dialog id="edit_account_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6 max-w-lg">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight">Edit Account</h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form id="edit_account_form" method="POST" action="" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Account Name</span></label>
-                    <input id="edit_name" type="text" name="name" required class="input input-bordered w-full input-md focus:input-primary" />
-                </div>
-
-                <!-- Account Icon / Favicon Selector for Edit -->
-                <div class="card card-border border-base-300 bg-base-200/40 p-3 space-y-3">
-                    <div class="flex justify-between items-center">
-                        <label class="label p-0"><span class="label-text font-bold text-xs">Account Favicon / Icon</span></label>
-                        <div id="edit_icon_preview" class="w-8 h-8 rounded-lg bg-base-100 border border-base-300 flex items-center justify-center text-xl shadow-xs">💳</div>
-                    </div>
-
-                    <!-- Hidden inputs submitted with edit form -->
-                    <input type="hidden" id="edit_favicon_type" name="favicon_type" value="EMOJI" />
-                    <input type="hidden" id="edit_favicon_value" name="favicon_value" value="💳" />
-
-                    <!-- Tabs: Emoji vs URL -->
-                    <div role="tablist" class="tabs tabs-box bg-base-100 p-1">
-                        <button type="button" role="tab" id="tab_edit_emoji" class="tab tab-active text-xs font-semibold" onclick="switchEditFaviconTab('EMOJI')">Emoji Picker</button>
-                        <button type="button" role="tab" id="tab_edit_url" class="tab text-xs font-semibold" onclick="switchEditFaviconTab('URL')">URL / Web Favicon</button>
-                    </div>
-
-                    <!-- Panel: Emoji Picker -->
-                    <div id="panel_edit_emoji" class="space-y-2">
-                        <div class="flex items-center gap-2">
-                            <input type="text" id="edit_emoji_custom_input" placeholder="Paste custom emoji..." maxlength="4" class="input input-bordered input-sm flex-1 font-emoji text-center text-lg" oninput="setEditEmoji(this.value)" />
-                            <span class="text-xs text-base-content/60">or quick pick:</span>
-                        </div>
-                        <div class="grid grid-cols-8 gap-1.5 p-2 bg-base-100 rounded-lg border border-base-300">
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Cash" onclick="setEditEmoji('💵')">💵</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Credit Card" onclick="setEditEmoji('💳')">💳</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Bank" onclick="setEditEmoji('🏦')">🏦</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Purse" onclick="setEditEmoji('👛')">👛</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Envelope / Envelopes" onclick="setEditEmoji('✉️')">✉️</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Love Envelope" onclick="setEditEmoji('💌')">💌</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Money Bag" onclick="setEditEmoji('💰')">💰</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Coin" onclick="setEditEmoji('🪙')">🪙</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Piggy Bank" onclick="setEditEmoji('🐷')">🐷</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Growth" onclick="setEditEmoji('📈')">📈</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Gem / Savings" onclick="setEditEmoji('💎')">💎</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="House" onclick="setEditEmoji('🏠')">🏠</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Car" onclick="setEditEmoji('🚗')">🚗</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Shopping Cart" onclick="setEditEmoji('🛒')">🛒</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Travel" onclick="setEditEmoji('✈️')">✈️</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Briefcase" onclick="setEditEmoji('💼')">💼</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Incoming Envelope" onclick="setEditEmoji('📨')">📨</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Outgoing Envelope" onclick="setEditEmoji('📩')">📩</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Security" onclick="setEditEmoji('🛡️')">🛡️</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Star" onclick="setEditEmoji('⭐')">⭐</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Target" onclick="setEditEmoji('🎯')">🎯</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Fuel / Utilities" onclick="setEditEmoji('⚡')">⚡</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Health" onclick="setEditEmoji('💊')">💊</button>
-                            <button type="button" class="btn btn-ghost btn-sm text-lg p-0 h-9" title="Coffee / Leisure" onclick="setEditEmoji('☕')">☕</button>
-                        </div>
-                    </div>
-
-                    <!-- Panel: URL / Web Picker -->
-                    <div id="panel_edit_url" class="space-y-2 hidden">
-                        <div class="flex gap-2">
-                            <input type="url" id="edit_url_input" placeholder="https://mbank.pl or direct icon URL" class="input input-bordered input-sm flex-1 text-xs" oninput="setEditUrlManual(this.value)" />
-                            <button type="button" id="edit_url_fetch_btn" class="btn btn-sm btn-secondary font-semibold text-xs" onclick="fetchFaviconForEditAccount()">
-                                <span>Fetch</span>
-                            </button>
-                        </div>
-                        <div id="edit_url_status" class="text-[11px] text-base-content/60">Enter website (e.g. https://mbank.pl) to automatically extract best favicon, or paste direct image URL.</div>
-                    </div>
-                </div>
-
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="edit_account_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Changes</button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <script>
-        const ACTIVE_BUDGET_ID = '%s';
-        const CSRF_TOKEN = '%s';
-        let wizardState = {
-            provider: 'MOCK',
-            country: 'PL',
-            institutions: [],
-            selectedInstitutionIDs: new Set()
-        };
-
-        function resetBankWizard() {
-            goToStep(1);
-            wizardState.selectedInstitutionIDs.clear();
-            updateSelectedCount();
-        }
-
-        function goToStep(step) {
-            [1, 2, 3, 4].forEach(s => {
-                const el = document.getElementById('bank_step_' + s);
-                const dot = document.getElementById('step_dot_' + s);
-                if (el) {
-                    if (s === step) el.classList.remove('hidden');
-                    else el.classList.add('hidden');
-                }
-                if (dot) {
-                    if (s <= step) {
-                        dot.classList.add('bg-primary');
-                        dot.classList.remove('bg-base-300');
-                    } else {
-                        dot.classList.remove('bg-primary');
-                        dot.classList.add('bg-base-300');
-                    }
-                }
-            });
-
-            const subtitle = document.getElementById('bank_wizard_subtitle');
-            if (subtitle) {
-                if (step === 1) subtitle.innerText = 'Step 1 of 3: Choose Integration Provider';
-                else if (step === 2) subtitle.innerText = 'Step 2 of 3: Select Country (' + wizardState.provider + ')';
-                else if (step === 3) subtitle.innerText = 'Step 3 of 3: Choose Bank Institutions (' + wizardState.country + ')';
-                else if (step === 4) subtitle.innerText = 'Connecting Bank Accounts';
-            }
-        }
-
-        function selectProvider(p) {
-            wizardState.provider = p;
-            if (p === 'GOCARDLESS_SANDBOX') {
-                wizardState.country = 'PL';
-                wizardState.selectedInstitutionIDs.clear();
-                wizardState.selectedInstitutionIDs.add('SANDBOXFINANCE_SFIN0000');
-                updateSelectedCount();
-                startConnectionQueue();
-                return;
-            }
-            goToStep(2);
-        }
-
-        function selectCountry(c) {
-            wizardState.country = c;
-            goToStep(3);
-            loadInstitutions();
-        }
-
-        async function loadInstitutions() {
-            const container = document.getElementById('institutions_list_container');
-            container.innerHTML = '<div class="py-8 text-center text-xs text-base-content/50 flex flex-col items-center gap-2"><span class="loading loading-spinner loading-sm text-primary"></span><span>Loading institutions for ' + wizardState.country + '...</span></div>';
-
-            try {
-                const res = await fetch('/budgets/' + ACTIVE_BUDGET_ID + '/accounts/institutions?provider=' + wizardState.provider + '&country=' + wizardState.country);
-                const data = await res.json();
-                wizardState.institutions = data.institutions || [];
-                renderInstitutions(wizardState.institutions);
-            } catch (err) {
-                container.innerHTML = '<div class="py-6 text-center text-xs text-error">Failed loading institutions. Please try again.</div>';
-            }
-        }
-
-        function renderInstitutions(list) {
-            const container = document.getElementById('institutions_list_container');
-            if (!list || list.length === 0) {
-                container.innerHTML = '<div class="py-6 text-center text-xs text-base-content/50">No banking institutions found for the selected country.</div>';
-                return;
-            }
-
-            let html = '';
-            list.forEach(inst => {
-                const isChecked = wizardState.selectedInstitutionIDs.has(inst.id);
-                html += '<label class="flex items-center justify-between p-3 rounded-lg bg-base-100 hover:bg-base-200/70 border border-base-300 cursor-pointer transition-colors">' +
-                    '<div class="flex items-center gap-3">' +
-                        '<input type="checkbox" value="' + inst.id + '" ' + (isChecked ? 'checked' : '') + ' onchange="toggleInstitutionSelection(\'' + inst.id + '\', this.checked)" class="checkbox checkbox-primary checkbox-sm" />' +
-                        '<div>' +
-                            '<div class="font-bold text-xs text-base-content">' + inst.name + '</div>' +
-                            '<div class="text-[10px] text-base-content/60 font-mono">BIC: ' + (inst.bic || 'N/A') + '</div>' +
-                        '</div>' +
-                    '</div>' +
-                    '<span class="badge badge-soft badge-neutral badge-xs">' + inst.id + '</span>' +
-                '</label>';
-            });
-            container.innerHTML = html;
-        }
-
-        function filterInstitutions() {
-            const q = document.getElementById('bank_search_input').value.toLowerCase().trim();
-            if (!q) {
-                renderInstitutions(wizardState.institutions);
-                return;
-            }
-            const filtered = wizardState.institutions.filter(i => (i.name && i.name.toLowerCase().includes(q)) || (i.bic && i.bic.toLowerCase().includes(q)) || (i.id && i.id.toLowerCase().includes(q)));
-            renderInstitutions(filtered);
-        }
-
-        function toggleInstitutionSelection(id, checked) {
-            if (checked) wizardState.selectedInstitutionIDs.add(id);
-            else wizardState.selectedInstitutionIDs.delete(id);
-            updateSelectedCount();
-        }
-
-        function updateSelectedCount() {
-            const count = wizardState.selectedInstitutionIDs.size;
-            document.getElementById('selected_banks_count').innerText = count + ' selected';
-            document.getElementById('btn_selected_count').innerText = count;
-            document.getElementById('connect_banks_btn').disabled = count === 0;
-        }
-
-        async function startConnectionQueue() {
-            const selected = Array.from(wizardState.selectedInstitutionIDs);
-            if (selected.length === 0) return;
-
-            goToStep(4);
-            const listContainer = document.getElementById('queue_items_list');
-            listContainer.innerHTML = '';
-
-            selected.forEach(instId => {
-                const row = document.createElement('div');
-                row.id = 'queue_item_' + instId;
-                row.className = 'flex items-center justify-between p-2.5 rounded border border-base-300 bg-base-100 text-xs';
-                row.innerHTML = '<span class="font-bold font-mono">' + instId + '</span><span class="badge badge-neutral badge-xs">Queued</span>';
-                listContainer.appendChild(row);
-            });
-
-            // Process sequentially one by one
-            for (let i = 0; i < selected.length; i++) {
-                const instId = selected[i];
-                const itemEl = document.getElementById('queue_item_' + instId);
-                if (itemEl) itemEl.querySelector('.badge').className = 'badge badge-warning badge-xs animate-pulse';
-                if (itemEl) itemEl.querySelector('.badge').innerText = 'Connecting...';
-
-                try {
-                    const res = await fetch('/budgets/' + ACTIVE_BUDGET_ID + '/accounts/connect-queue', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest',
-                            'X-CSRF-Token': CSRF_TOKEN
-                        },
-                        body: JSON.stringify({
-                            csrf_token: CSRF_TOKEN,
-                            provider: wizardState.provider,
-                            country: wizardState.country,
-                            institution_ids: [instId]
-                        })
-                    });
-                    const data = await res.json();
-                    const r = (data.results && data.results[0]) || {};
-
-                    if (itemEl) {
-                        if (r.status === 'awaiting_authorization' && r.auth_url) {
-                            itemEl.querySelector('.badge').className = 'badge badge-info badge-xs';
-                            itemEl.querySelector('.badge').innerHTML = '<a href="' + r.auth_url + '" target="_blank" class="underline font-bold">Authorize Bank ➔</a>';
-                        } else if (r.status === 'connected') {
-                            itemEl.querySelector('.badge').className = 'badge badge-success badge-xs font-semibold';
-                            itemEl.querySelector('.badge').innerText = 'Connected (' + (r.accounts_count || 1) + ' accounts)';
-                        } else {
-                            itemEl.querySelector('.badge').className = 'badge badge-error badge-xs';
-                            itemEl.querySelector('.badge').innerText = r.status || 'Failed';
-                        }
-                    }
-                } catch (err) {
-                    if (itemEl) {
-                        itemEl.querySelector('.badge').className = 'badge badge-error badge-xs';
-                        itemEl.querySelector('.badge').innerText = 'Network error';
-                    }
-                }
-            }
-
-            document.getElementById('queue_spinner').classList.add('hidden');
-            document.getElementById('queue_title').innerText = 'All Bank Connections Processed';
-            document.getElementById('queue_done_btn').classList.remove('hidden');
-        }
-
-        async function reconnectAccount(acctId, acctName) {
-            if (!confirm('Reconnect bank feed for "' + acctName + '"? This will renew your open banking authorization.')) return;
-            try {
-                const res = await fetch('/budgets/' + ACTIVE_BUDGET_ID + '/accounts/' + acctId + '/reconnect', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-Requested-With': 'XMLHttpRequest',
-                        'X-CSRF-Token': CSRF_TOKEN
-                    },
-                    body: JSON.stringify({ csrf_token: CSRF_TOKEN })
-                });
-                const data = await res.json();
-                if (data.auth_url) {
-                    window.location.href = data.auth_url;
-                } else if (data.status === 'ACTIVE' || data.status === 'connected') {
-                    window.location.reload();
-                } else {
-                    alert('Reconnect response: ' + (data.message || data.status || 'OK'));
-                    window.location.reload();
-                }
-            } catch (err) {
-                alert('Failed to initiate reconnect: ' + err.message);
-            }
-        }
-
-        function switchNewFaviconTab(t) {
-            document.getElementById('new_favicon_type').value = t;
-            if (t === 'EMOJI') {
-                document.getElementById('tab_new_emoji').classList.add('tab-active');
-                document.getElementById('tab_new_url').classList.remove('tab-active');
-                document.getElementById('panel_new_emoji').classList.remove('hidden');
-                document.getElementById('panel_new_url').classList.add('hidden');
-                const v = document.getElementById('new_emoji_custom_input').value || '💵';
-                setNewEmoji(v);
-            } else {
-                document.getElementById('tab_new_url').classList.add('tab-active');
-                document.getElementById('tab_new_emoji').classList.remove('tab-active');
-                document.getElementById('panel_new_url').classList.remove('hidden');
-                document.getElementById('panel_new_emoji').classList.add('hidden');
-                setNewUrlManual(document.getElementById('new_url_input').value);
-            }
-        }
-
-        function setNewEmoji(em) {
-            const val = em ? em.trim() : '💵';
-            document.getElementById('new_favicon_type').value = 'EMOJI';
-            document.getElementById('new_favicon_value').value = val;
-            document.getElementById('new_icon_preview').innerHTML = val || '💵';
-        }
-
-        function setNewUrlManual(u) {
-            const val = u ? u.trim() : '';
-            document.getElementById('new_favicon_type').value = 'URL';
-            document.getElementById('new_favicon_value').value = val;
-            if (val) {
-                document.getElementById('new_icon_preview').innerHTML = '<img src="' + val + '" class="w-full h-full object-contain p-0.5" onerror="this.parentElement.innerText=\'🌐\'" />';
-            } else {
-                document.getElementById('new_icon_preview').innerHTML = '🌐';
-            }
-        }
-
-        async function fetchFaviconForNewAccount() {
-            const input = document.getElementById('new_url_input');
-            const status = document.getElementById('new_url_status');
-            const btn = document.getElementById('new_url_fetch_btn');
-            const targetUrl = input.value.trim();
-            if (!targetUrl) {
-                status.innerText = 'Please enter a valid website URL first.';
-                status.className = 'text-[11px] text-error font-medium';
-                return;
-            }
-
-            btn.disabled = true;
-            btn.innerHTML = '<span class="loading loading-spinner loading-xs"></span>';
-            status.innerText = 'Fetching and parsing site for highest quality favicon...';
-            status.className = 'text-[11px] text-primary font-medium animate-pulse';
-
-            try {
-                const res = await fetch('/budgets/' + ACTIVE_BUDGET_ID + '/accounts/extract-favicon?url=' + encodeURIComponent(targetUrl));
-                const data = await res.json();
-                if (res.ok && data.best_favicon) {
-                    input.value = data.best_favicon;
-                    setNewUrlManual(data.best_favicon);
-                    status.innerText = '✓ Resolved icon: ' + data.best_favicon;
-                    status.className = 'text-[11px] text-success font-medium truncate';
-                } else {
-                    status.innerText = 'Could not find high quality favicon, default icon assigned.';
-                    status.className = 'text-[11px] text-warning font-medium';
-                }
-            } catch (err) {
-                status.innerText = 'Discovery network error. You can still paste direct icon image URL.';
-                status.className = 'text-[11px] text-error font-medium';
-            } finally {
-                btn.disabled = false;
-                btn.innerHTML = 'Fetch';
-            }
-        }
-
-        function switchEditFaviconTab(t) {
-            document.getElementById('edit_favicon_type').value = t;
-            if (t === 'EMOJI') {
-                document.getElementById('tab_edit_emoji').classList.add('tab-active');
-                document.getElementById('tab_edit_url').classList.remove('tab-active');
-                document.getElementById('panel_edit_emoji').classList.remove('hidden');
-                document.getElementById('panel_edit_url').classList.add('hidden');
-                const v = document.getElementById('edit_emoji_custom_input').value || '💳';
-                setEditEmoji(v);
-            } else {
-                document.getElementById('tab_edit_url').classList.add('tab-active');
-                document.getElementById('tab_edit_emoji').classList.remove('tab-active');
-                document.getElementById('panel_edit_url').classList.remove('hidden');
-                document.getElementById('panel_edit_emoji').classList.add('hidden');
-                setEditUrlManual(document.getElementById('edit_url_input').value);
-            }
-        }
-
-        function setEditEmoji(em) {
-            const val = em ? em.trim() : '💳';
-            document.getElementById('edit_favicon_type').value = 'EMOJI';
-            document.getElementById('edit_favicon_value').value = val;
-            document.getElementById('edit_icon_preview').innerHTML = val || '💳';
-        }
-
-        function setEditUrlManual(u) {
-            const val = u ? u.trim() : '';
-            document.getElementById('edit_favicon_type').value = 'URL';
-            document.getElementById('edit_favicon_value').value = val;
-            if (val) {
-                document.getElementById('edit_icon_preview').innerHTML = '<img src="' + val + '" class="w-full h-full object-contain p-0.5" onerror="this.parentElement.innerText=\'🌐\'" />';
-            } else {
-                document.getElementById('edit_icon_preview').innerHTML = '🌐';
-            }
-        }
-
-        async function fetchFaviconForEditAccount() {
-            const input = document.getElementById('edit_url_input');
-            const status = document.getElementById('edit_url_status');
-            const btn = document.getElementById('edit_url_fetch_btn');
-            const targetUrl = input.value.trim();
-            if (!targetUrl) {
-                status.innerText = 'Please enter a valid website URL first.';
-                status.className = 'text-[11px] text-error font-medium';
-                return;
-            }
-
-            btn.disabled = true;
-            btn.innerHTML = '<span class="loading loading-spinner loading-xs"></span>';
-            status.innerText = 'Fetching and parsing site for highest quality favicon...';
-            status.className = 'text-[11px] text-primary font-medium animate-pulse';
-
-            try {
-                const res = await fetch('/budgets/' + ACTIVE_BUDGET_ID + '/accounts/extract-favicon?url=' + encodeURIComponent(targetUrl));
-                const data = await res.json();
-                if (res.ok && data.best_favicon) {
-                    input.value = data.best_favicon;
-                    setEditUrlManual(data.best_favicon);
-                    status.innerText = '✓ Resolved icon: ' + data.best_favicon;
-                    status.className = 'text-[11px] text-success font-medium truncate';
-                } else {
-                    status.innerText = 'Could not find high quality favicon, default icon assigned.';
-                    status.className = 'text-[11px] text-warning font-medium';
-                }
-            } catch (err) {
-                status.innerText = 'Discovery network error. You can still paste direct icon image URL.';
-                status.className = 'text-[11px] text-error font-medium';
-            } finally {
-                btn.disabled = false;
-                btn.innerHTML = 'Fetch';
-            }
-        }
-
-        function openEditModal(id, name, curr, type, favType, favVal) {
-            document.getElementById('edit_name').value = name;
-            document.getElementById('edit_account_form').action = '/budgets/' + ACTIVE_BUDGET_ID + '/accounts/' + id + '/update';
-            if (favType === 'URL') {
-                document.getElementById('edit_url_input').value = favVal || '';
-                switchEditFaviconTab('URL');
-                setEditUrlManual(favVal);
-            } else {
-                const emoji = favVal || '💳';
-                document.getElementById('edit_emoji_custom_input').value = emoji;
-                switchEditFaviconTab('EMOJI');
-                setEditEmoji(emoji);
-            }
-            edit_account_modal.showModal();
-        }
-    </script>
-</body>
-</html>`, csrfToken,
-		RenderSidebarNavigation(budgetID, "accounts"),
-		accountRows.String(),
-		RenderBottomDock(budgetID, "accounts"),
-		budgetID, csrfToken,
-		devGridCols, mockCardHTML, devSandboxCardHTML,
-		csrfToken,
-		budgetID, csrfToken)
-
-	return c.HTML(http.StatusOK, html)
+	return c.HTML(http.StatusOK, out)
 }
 
 func toggleActionText(isClosed int) string {

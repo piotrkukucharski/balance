@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
+	"html/template"
 	"net/http"
 	"net/url"
 	"sort"
@@ -21,8 +21,46 @@ import (
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/lua"
 	"github.com/balance/balance/internal/service"
+	"github.com/balance/balance/internal/web/templates"
 	"github.com/labstack/echo/v4"
 )
+
+type budgetCardViewData struct {
+	ID          string
+	Name        string
+	EscapedName string
+	Currency    string
+	Timezone    string
+	Role        string
+	IsOwner     bool
+}
+
+type budgetsListViewData struct {
+	DateFormat              string
+	TimeFormat              string
+	BudgetName              string
+	CSRFToken               string
+	SidebarHTML             template.HTML
+	BottomDockHTML          template.HTML
+	DateTimeFormatterScript template.HTML
+	Budgets                 []budgetCardViewData
+	HasOwnerBudget          bool
+}
+
+type settingsPageViewData struct {
+	BudgetID                string
+	BudgetName              string
+	DefaultCurrency         string
+	Timezone                string
+	Role                    string
+	IsOwner                 bool
+	DateFormat              string
+	TimeFormat              string
+	CSRFToken               string
+	SidebarHTML             template.HTML
+	BottomDockHTML          template.HTML
+	DateTimeFormatterScript template.HTML
+}
 
 type WorkspaceHandler struct {
 	mainDB         *sql.DB
@@ -69,388 +107,35 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 	}
 	defer rows.Close()
 
-	var budgetCards strings.Builder
-	var existingBudgetsOptions strings.Builder
-	hasBudgets := false
+	var budgets []budgetCardViewData
 	hasOwnerBudget := false
 	for rows.Next() {
-		hasBudgets = true
 		var id, name, curr, tz, role string
 		rows.Scan(&id, &name, &curr, &tz, &role)
-		existingBudgetsOptions.WriteString(fmt.Sprintf(`<option value="%s">%s (%s)</option>`, id, html.EscapeString(name), html.EscapeString(curr)))
-
-		var ownerControls string
-		if role == "OWNER" {
+		isOwner := role == "OWNER"
+		if isOwner {
 			hasOwnerBudget = true
-			ownerControls = fmt.Sprintf(`
-				<div class="dropdown dropdown-end">
-					<div tabindex="0" role="button" class="btn btn-ghost btn-xs btn-square" title="Budget Options">
-						<span>⋮</span>
-					</div>
-					<ul tabindex="0" class="dropdown-content menu bg-base-100 rounded-box z-10 w-44 p-2 shadow-lg border border-base-300 gap-1 text-xs">
-						<li>
-							<button type="button" class="flex items-center gap-2 py-1.5" onclick="openEditBudgetModal('%s', '%s')">
-								<span>✏️</span>
-								<span>Rename</span>
-							</button>
-						</li>
-						<li>
-							<button type="button" class="flex items-center gap-2 py-1.5" onclick="openCloneBudgetModal('%s', '%s')">
-								<span>📋</span>
-								<span>Clone Budget</span>
-							</button>
-						</li>
-						<li>
-							<form method="POST" action="/budgets/%s/delete" onsubmit="return confirm('Are you sure you want to delete budget \'%s\'? This action is permanent and deletes all ledger data.')" class="p-0">
-								<input type="hidden" name="csrf_token" value="%s" />
-								<button type="submit" class="flex items-center gap-2 text-error py-1.5 w-full hover:bg-error/10">
-									<span>🗑️</span>
-									<span>Delete Budget</span>
-								</button>
-							</form>
-						</li>
-					</ul>
-				</div>
-			`, id, html.EscapeString(name), id, html.EscapeString(name), id, html.EscapeString(name), c.Get("csrfToken"))
 		}
-
-		budgetCards.WriteString(fmt.Sprintf(`
-			<div class="card card-border bg-base-100 shadow-md hover:shadow-xl transition-all duration-200 border-base-300">
-				<div class="card-body p-6 gap-3">
-					<div class="flex justify-between items-start">
-						<div class="flex items-center gap-3">
-							<div class="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center font-bold text-lg">💰</div>
-							<div>
-								<h3 class="card-title text-xl font-bold tracking-tight">%s</h3>
-								<div class="text-xs text-base-content/60">Timezone: %s</div>
-							</div>
-						</div>
-						<div class="flex items-center gap-2">
-							<span class="badge badge-soft badge-primary font-semibold text-xs">%s</span>
-							%s
-						</div>
-					</div>
-					<div class="divider my-0"></div>
-					<div class="flex items-center justify-between">
-						<div class="flex items-center gap-2">
-							<span class="badge badge-neutral badge-sm">%s</span>
-							<span class="text-xs text-base-content/60">Default Currency</span>
-						</div>
-						<div class="card-actions flex items-center gap-2">
-							<a href="/budgets/%s/accounts" class="btn btn-outline btn-secondary btn-sm gap-1.5 shadow-xs font-semibold" title="Link Bank Account or manage accounts">
-								<span>🏦</span>
-								<span>Link Bank</span>
-							</a>
-							<a href="/budgets/%s/budget" class="btn btn-primary btn-sm gap-1.5 shadow-sm font-semibold">
-								<span>Open</span>
-								<span>➔</span>
-							</a>
-						</div>
-					</div>
-				</div>
-			</div>`, html.EscapeString(name), html.EscapeString(tz), html.EscapeString(role), ownerControls, html.EscapeString(curr), id, id))
-	}
-
-	if !hasBudgets {
-		budgetCards.WriteString(`
-			<div class="col-span-full card card-border bg-base-100 border-dashed border-base-300 p-8 text-center flex flex-col items-center justify-center gap-4">
-				<div class="w-16 h-16 rounded-full bg-base-200 flex items-center justify-center text-3xl">📂</div>
-				<div>
-					<h3 class="font-bold text-lg">No Budgets Found</h3>
-					<p class="text-xs text-base-content/60 max-w-sm mt-1">Create your first budget envelope workspace to begin tracking your cashflow and targets.</p>
-				</div>
-				<div class="flex flex-wrap items-center justify-center gap-2">
-					<button class="btn btn-primary btn-sm shadow font-semibold" onclick="openNewBudgetModal('empty')">+ Create Budget</button>
-					<button class="btn btn-outline btn-primary btn-sm shadow font-semibold gap-1.5" onclick="openNewBudgetModal('ai')"><span>✨</span><span>Create with AI</span></button>
-				</div>
-			</div>
-		`)
+		budgets = append(budgets, budgetCardViewData{
+			ID:          id,
+			Name:        name,
+			EscapedName: strings.ReplaceAll(name, "'", "\\'"),
+			Currency:    curr,
+			Timezone:    tz,
+			Role:        role,
+			IsOwner:     isOwner,
+		})
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
-
-	var editBudgetModalHTML string
-	if hasOwnerBudget {
-		editBudgetModalHTML = fmt.Sprintf(`
-    <!-- Edit Budget Modal -->
-    <dialog id="edit_budget_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight">Rename Budget</h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form id="edit_budget_form" method="POST" action="" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">New Budget Name</span></label>
-                    <input type="text" id="edit_budget_name" name="name" required placeholder="Budget Name" class="input input-bordered w-full input-md focus:input-primary" />
-                </div>
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="edit_budget_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Changes</button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <!-- Clone Budget Modal -->
-    <dialog id="clone_budget_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
-            <div class="flex justify-between items-center mb-4">
-                <div>
-                    <h3 class="font-extrabold text-xl tracking-tight">Clone Budget</h3>
-                    <p class="text-xs text-base-content/60 mt-0.5">Duplicate budget workspace with selective resource checklist</p>
-                </div>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form id="clone_budget_form" method="POST" action="" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">New Budget Name</span></label>
-                    <input type="text" id="clone_budget_name" name="name" required placeholder="e.g. My Budget (Copy)" class="input input-bordered w-full input-md focus:input-primary" />
-                </div>
-                
-                <div class="divider my-0 text-xs text-base-content/60 font-semibold uppercase tracking-wider">Resources to Include</div>
-                <div class="flex flex-col gap-2.5 bg-base-200/50 p-4 rounded-xl border border-base-300">
-                    <label class="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" id="clone_include_members" name="include_members" value="1" checked class="checkbox checkbox-primary checkbox-sm" />
-                        <span class="text-xs font-medium">Team Members <span class="text-base-content/50 font-normal">(roles and permissions)</span></span>
-                    </label>
-                    <label class="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" id="clone_include_accounts" name="include_accounts" value="1" checked onchange="syncCloneDependencies()" class="checkbox checkbox-primary checkbox-sm" />
-                        <span class="text-xs font-medium">Accounts <span class="text-base-content/50 font-normal">(checking, cash, savings, external parties)</span></span>
-                    </label>
-                    <label class="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" id="clone_include_buckets" name="include_buckets" value="1" checked onchange="syncCloneDependencies()" class="checkbox checkbox-primary checkbox-sm" />
-                        <span class="text-xs font-medium">Buckets & Groups <span class="text-base-content/50 font-normal">(envelope structure and categories)</span></span>
-                    </label>
-                    <label class="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" id="clone_include_targets" name="include_targets" value="1" checked onchange="syncCloneDependencies()" class="checkbox checkbox-primary checkbox-sm" />
-                        <span class="text-xs font-medium">Targets <span class="text-base-content/50 font-normal">(funding goals and formulas; requires Buckets)</span></span>
-                    </label>
-                    <label class="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" id="clone_include_transactions" name="include_transactions" value="1" checked onchange="syncCloneDependencies()" class="checkbox checkbox-primary checkbox-sm" />
-                        <span class="text-xs font-medium">Transactions <span class="text-base-content/50 font-normal">(ledger history; requires Accounts & Buckets)</span></span>
-                    </label>
-                </div>
-
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="clone_budget_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md gap-1.5">
-                        <span>📋</span>
-                        <span>Clone Budget</span>
-                    </button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-    <script>
-        function openEditBudgetModal(budgetId, budgetName) {
-            const form = document.getElementById('edit_budget_form');
-            form.action = '/budgets/' + budgetId + '/update';
-            const nameInput = document.getElementById('edit_budget_name');
-            nameInput.value = budgetName;
-            document.getElementById('edit_budget_modal').showModal();
-        }
-
-        function openCloneBudgetModal(budgetId, budgetName) {
-            const form = document.getElementById('clone_budget_form');
-            form.action = '/budgets/' + budgetId + '/clone';
-            const nameInput = document.getElementById('clone_budget_name');
-            nameInput.value = budgetName + ' (Copy)';
-            document.getElementById('clone_include_members').checked = true;
-            document.getElementById('clone_include_accounts').checked = true;
-            document.getElementById('clone_include_buckets').checked = true;
-            document.getElementById('clone_include_targets').checked = true;
-            document.getElementById('clone_include_transactions').checked = true;
-            syncCloneDependencies();
-            document.getElementById('clone_budget_modal').showModal();
-        }
-
-        function syncCloneDependencies() {
-            const accounts = document.getElementById('clone_include_accounts');
-            const buckets = document.getElementById('clone_include_buckets');
-            const targets = document.getElementById('clone_include_targets');
-            const txs = document.getElementById('clone_include_transactions');
-
-            // If user explicitly checks transactions, accounts and buckets must be checked
-            if (txs.checked) {
-                accounts.checked = true;
-                buckets.checked = true;
-            }
-            // If user explicitly checks targets, buckets must be checked
-            if (targets.checked) {
-                buckets.checked = true;
-            }
-            // If buckets is unchecked, uncheck targets and transactions
-            if (!buckets.checked) {
-                targets.checked = false;
-                txs.checked = false;
-            }
-            // If accounts is unchecked, uncheck transactions
-            if (!accounts.checked) {
-                txs.checked = false;
-            }
-        }
-    </script>
-`, csrfToken, csrfToken)
+	htmlContent, err := templates.RenderString("workspace/budgets_list", budgetsListViewData{
+		CSRFToken:      csrfToken,
+		Budgets:        budgets,
+		HasOwnerBudget: hasOwnerBudget,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed rendering budgets list")
 	}
-
-	copyDisabledClass := ""
-	copyDisabledAttr := ""
-	if !hasBudgets {
-		copyDisabledClass = "opacity-50 cursor-not-allowed"
-		copyDisabledAttr = "disabled"
-	}
-	copyOptionsHTML := existingBudgetsOptions.String()
-	if copyOptionsHTML == "" {
-		copyOptionsHTML = `<option value="" disabled selected>No existing budgets available</option>`
-	}
-
-	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en" data-theme="dark">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>Balance — Budgets</title>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-    <link rel="icon" type="image/x-icon" href="/favicon.ico">
-    <link rel="manifest" href="/manifest.webmanifest">
-</head>
-<body class="bg-base-200 text-base-content min-h-screen flex flex-col">
-    <!-- Navbar -->
-    <header class="navbar bg-base-100 border-b border-base-300 px-6 sticky top-0 z-30 shadow-xs">
-        <div class="navbar-start gap-3 items-center">
-            <span class="text-2xl font-black tracking-tight text-primary flex items-center gap-2">
-                <span>⚖️</span>
-                <span>Balance</span>
-            </span>
-        </div>
-        <div class="navbar-end gap-3">
-            <form method="POST" action="/logout">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
-            </form>
-        </div>
-    </header>
-
-    <!-- Main Workspace -->
-    <main class="flex-1 max-w-5xl w-full mx-auto p-6 md:p-8">
-        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
-            <div>
-                <h1 class="text-3xl font-black tracking-tight">Your Budgets</h1>
-                <p class="text-sm text-base-content/60 mt-1">Select an active budget or create a new envelope workspace.</p>
-            </div>
-            <button class="btn btn-primary shadow-md font-semibold gap-2" onclick="openNewBudgetModal('empty')">
-                <span>+</span>
-                <span>New Budget</span>
-            </button>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            %s
-        </div>
-    </main>
-
-    %s
-
-    <!-- New Budget Modal -->
-    <dialog id="new_budget_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-6">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight">Create New Budget</h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form method="POST" action="/budgets" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Budget Name</span></label>
-                    <input type="text" name="name" required placeholder="Personal & Family Budget" class="input input-bordered w-full input-md focus:input-primary" />
-                </div>
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Primary Currency</span></label>
-                        <select name="default_currency" class="select select-bordered w-full select-md focus:select-primary">
-                            <option value="PLN" selected>PLN (zł)</option>
-                            <option value="EUR">EUR (€)</option>
-                            <option value="USD">USD ($)</option>
-                            <option value="GBP">GBP (£)</option>
-                        </select>
-                    </div>
-                    <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">IANA Timezone</span></label>
-                        <input type="text" name="timezone" value="Europe/Warsaw" required class="input input-bordered w-full input-md focus:input-primary" />
-                    </div>
-                </div>
-
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Initial Structure</span></label>
-                    <div class="grid grid-cols-3 gap-2">
-                        <label class="cursor-pointer label border border-base-300 rounded-lg p-2 flex items-center gap-2 hover:bg-base-200">
-                            <input type="radio" name="creation_mode" value="empty" class="radio radio-xs radio-primary" checked onchange="toggleCreationMode('empty')" />
-                            <span class="label-text text-xs font-semibold">Empty</span>
-                        </label>
-                        <label class="cursor-pointer label border border-base-300 rounded-lg p-2 flex items-center gap-2 hover:bg-base-200">
-                            <input type="radio" name="creation_mode" value="ai" class="radio radio-xs radio-primary" id="creation_mode_ai" onchange="toggleCreationMode('ai')" />
-                            <span class="label-text text-xs font-semibold">✨ AI Gen</span>
-                        </label>
-                        <label class="cursor-pointer label border border-base-300 rounded-lg p-2 flex items-center gap-2 hover:bg-base-200 %s">
-                            <input type="radio" name="creation_mode" value="copy" class="radio radio-xs radio-primary" id="creation_mode_copy" onchange="toggleCreationMode('copy')" %s />
-                            <span class="label-text text-xs font-semibold">📥 Copy</span>
-                        </label>
-                    </div>
-                </div>
-
-                <div id="ai_prompt_container" class="hidden form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">AI Budget Description</span></label>
-                    <textarea name="ai_prompt" id="ai_prompt_input" rows="3" placeholder="e.g. Rodzina 2+1, mieszkanie i kredyt 2500 PLN, jedzenie 1600 PLN, rachunki 400 PLN, oszczędności 500 PLN..." class="textarea textarea-bordered w-full text-xs focus:textarea-primary"></textarea>
-                    <span class="text-[10px] text-base-content/50 mt-1">AI will automatically create envelopes, calculate targets and assign priority rules.</span>
-                </div>
-
-                <div id="copy_budget_container" class="hidden form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Source Budget to Copy From</span></label>
-                    <select name="source_budget_id" class="select select-bordered w-full select-sm focus:select-primary">
-                        %s
-                    </select>
-                </div>
-
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="new_budget_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Create Budget</button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-    <script>
-        function openNewBudgetModal(mode) {
-            if (mode === 'ai') {
-                const aiRadio = document.getElementById('creation_mode_ai');
-                if (aiRadio) { aiRadio.checked = true; toggleCreationMode('ai'); }
-            } else if (mode === 'copy') {
-                const copyRadio = document.getElementById('creation_mode_copy');
-                if (copyRadio && !copyRadio.disabled) { copyRadio.checked = true; toggleCreationMode('copy'); }
-            } else {
-                const emptyRadio = document.querySelector('input[name="creation_mode"][value="empty"]');
-                if (emptyRadio) { emptyRadio.checked = true; toggleCreationMode('empty'); }
-            }
-            new_budget_modal.showModal();
-        }
-
-        function toggleCreationMode(mode) {
-            const aiCont = document.getElementById('ai_prompt_container');
-            const copyCont = document.getElementById('copy_budget_container');
-            if (aiCont) aiCont.classList.toggle('hidden', mode !== 'ai');
-            if (copyCont) copyCont.classList.toggle('hidden', mode !== 'copy');
-        }
-    </script>
-</body>
-</html>`, csrfToken, budgetCards.String(), editBudgetModalHTML, csrfToken, copyDisabledClass, copyDisabledAttr, copyOptionsHTML)
 
 	return c.HTML(http.StatusOK, htmlContent)
 }
@@ -472,211 +157,25 @@ func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
 	csrfToken, _ := c.Get("csrfToken").(string)
 	sidebarHTML := RenderSidebarNavigation(budgetID, "settings")
 	bottomDockHTML := RenderBottomDock(budgetID, "settings")
-
-	var dangerZoneHTML string
-	if role == "OWNER" {
-		dangerZoneHTML = fmt.Sprintf(`
-			<!-- Diagnostic Tools Shortcut Card -->
-			<div class="card card-border bg-base-100 border-base-300 shadow-md">
-				<div class="card-body p-6">
-					<div class="flex items-center justify-between">
-						<div>
-							<h2 class="card-title text-base font-bold flex items-center gap-2">
-								<span>🛠️</span>
-								<span>Narzędzia diagnostyczne (Debug)</span>
-							</h2>
-							<p class="text-xs text-base-content/60 mt-1">Sprawdź integralność finansową, osierocone salda i wykonaj akcje naprawcze bilansu.</p>
-						</div>
-						<a href="/budgets/%s/debug" class="btn btn-sm btn-outline btn-warning font-medium">
-							Otwórz Narzędzia Debug →
-						</a>
-					</div>
-				</div>
-			</div>
-
-			<div class="card card-border bg-base-100 border-error/30 shadow-md">
-				<div class="card-body p-6">
-					<h2 class="card-title text-error text-lg font-bold flex items-center gap-2">
-						<span>⚠️</span>
-						<span>Danger Zone</span>
-					</h2>
-					<p class="text-xs text-base-content/70">
-						Permanently delete this budget envelope, ledger records, transactions, and account history.
-						This action cannot be undone.
-					</p>
-					<div class="card-actions justify-end mt-4">
-						<form method="POST" action="/budgets/%s/delete" onsubmit="return confirm('Are you absolutely sure you want to delete this budget? All data will be permanently wiped.')">
-							<input type="hidden" name="csrf_token" value="%s" />
-							<button type="submit" class="btn btn-error btn-sm shadow font-semibold">
-								Delete Budget
-							</button>
-						</form>
-					</div>
-				</div>
-			</div>
-		`, budgetID, budgetID, csrfToken)
-	} else {
-		dangerZoneHTML = `
-			<div class="card card-border bg-base-100 border-base-300 shadow-sm opacity-70">
-				<div class="card-body p-6">
-					<h2 class="card-title text-base font-bold text-base-content/70">Danger Zone</h2>
-					<p class="text-xs text-base-content/60">
-						Only the budget OWNER can delete or destroy this workspace.
-					</p>
-				</div>
-			</div>
-		`
-	}
-
-	var editFormHTML string
-	if role == "OWNER" {
-		editFormHTML = fmt.Sprintf(`
-			<form method="POST" action="/budgets/%s/settings" class="flex flex-col gap-4">
-				<input type="hidden" name="csrf_token" value="%s" />
-				<div class="form-control">
-					<label class="label pb-1"><span class="label-text font-medium text-xs">Budget Name</span></label>
-					<input type="text" name="name" value="%s" required class="input input-bordered w-full input-md focus:input-primary font-semibold" />
-				</div>
-				<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-					<div class="form-control">
-						<label class="label pb-1"><span class="label-text font-medium text-xs">Default Currency</span></label>
-						<input type="text" value="%s" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed font-mono text-xs" />
-						<label class="label pt-1"><span class="label-text-alt text-base-content/50">Base currency is immutable once provisioned</span></label>
-					</div>
-					<div class="form-control">
-						<label class="label pb-1"><span class="label-text font-medium text-xs">IANA Timezone</span></label>
-						<input type="text" name="timezone" value="%s" class="input input-bordered w-full input-md focus:input-primary text-xs" />
-					</div>
-				</div>
-				<div class="card-actions justify-end mt-4">
-					<button type="submit" class="btn btn-primary btn-sm shadow font-semibold">Save Settings</button>
-				</div>
-			</form>
-		`, budgetID, csrfToken, html.EscapeString(name), html.EscapeString(defaultCurrency), html.EscapeString(timezone))
-	} else {
-		editFormHTML = fmt.Sprintf(`
-			<div class="flex flex-col gap-4">
-				<div class="form-control">
-					<label class="label pb-1"><span class="label-text font-medium text-xs">Budget Name</span></label>
-					<input type="text" value="%s" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed font-semibold" />
-				</div>
-				<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-					<div class="form-control">
-						<label class="label pb-1"><span class="label-text font-medium text-xs">Default Currency</span></label>
-						<input type="text" value="%s" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed font-mono text-xs" />
-					</div>
-					<div class="form-control">
-						<label class="label pb-1"><span class="label-text font-medium text-xs">IANA Timezone</span></label>
-						<input type="text" value="%s" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed text-xs" />
-					</div>
-				</div>
-				<div class="alert alert-info alert-soft text-xs mt-2">
-					<span>ℹ️ You are viewing budget settings with <strong>%s</strong> permissions. Only the OWNER can update budget properties.</span>
-				</div>
-			</div>
-		`, html.EscapeString(name), html.EscapeString(defaultCurrency), html.EscapeString(timezone), html.EscapeString(role))
-	}
-
 	dFormat, tFormat := GetUserDateTimePreferences(c)
-	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en" data-theme="dark" data-date-format="%s" data-time-format="%s">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <meta name="user-date-format" content="%s">
-    <meta name="user-time-format" content="%s">
-    <title>Balance — %s Settings</title>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-    <link rel="icon" type="image/x-icon" href="/favicon.ico">
-    <link rel="manifest" href="/manifest.webmanifest">
-</head>
-<body class="bg-base-200 text-base-content min-h-screen flex flex-col">
-    <!-- Navbar -->
-    <header class="navbar bg-base-100 border-b border-base-300 px-6 sticky top-0 z-30 shadow-xs">
-        <div class="navbar-start gap-4 items-center">
-            <a href="/budgets" class="text-2xl font-black tracking-tight text-primary flex items-center gap-2">
-                <span>⚖️</span>
-                <span>Balance</span>
-            </a>
-            <div class="badge badge-neutral font-semibold gap-1.5 py-3">
-                <span class="w-2 h-2 rounded-full bg-success"></span>
-                <span>%s</span>
-            </div>
-            <span class="badge badge-soft badge-primary font-semibold text-xs">%s</span>
-        </div>
-        <div class="navbar-end gap-3">
-            <form method="POST" action="/logout">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <button type="submit" class="btn btn-ghost btn-sm font-medium">Log Out</button>
-            </form>
-        </div>
-    </header>
 
-    <div class="flex-1 flex overflow-hidden">
-        <!-- Sidebar -->
-        <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
-            %s
-        </aside>
-
-        <!-- Main Content -->
-        <main class="flex-1 p-4 sm:p-6 md:p-8 pb-24 md:pb-8 overflow-y-auto max-w-4xl">
-            <div class="mb-6">
-                <h1 class="text-2xl font-black tracking-tight">Budget Settings</h1>
-                <p class="text-xs text-base-content/60 mt-1">Configure workspace preferences, default timezones, and ledger parameters.</p>
-            </div>
-
-            <div class="space-y-6">
-                <div class="card card-border bg-base-100 border-base-300 shadow-md">
-                    <div class="card-body p-6">
-                        <h2 class="card-title text-lg font-bold mb-2">General Information</h2>
-                        %s
-                    </div>
-                </div>
-
-                <!-- Personalization Shortcut Card -->
-                <div class="card card-border bg-base-100 border-base-300 shadow-md">
-                    <div class="card-body p-6">
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <h2 class="card-title text-base font-bold flex items-center gap-2">
-                                    <span>👤</span>
-                                    <span>Personal Preferences</span>
-                                </h2>
-                                <p class="text-xs text-base-content/60 mt-1">Configure your personal date format (%s) and time format (%s).</p>
-                            </div>
-                            <a href="/budgets/%s/settings/profile" class="btn btn-sm btn-outline btn-primary font-medium">
-                                Customize Formats →
-                            </a>
-                        </div>
-                    </div>
-                </div>
-
-                %s
-            </div>
-        </main>
-    </div>
-
-    %s
-    %s
-</body>
-</html>`,
-		html.EscapeString(dFormat), html.EscapeString(tFormat),
-		html.EscapeString(dFormat), html.EscapeString(tFormat),
-		html.EscapeString(name),
-		html.EscapeString(name),
-		html.EscapeString(role),
-		csrfToken,
-		sidebarHTML,
-		editFormHTML,
-		html.EscapeString(dFormat), html.EscapeString(tFormat),
-		budgetID,
-		dangerZoneHTML,
-		bottomDockHTML,
-		DateTimeFormatterScript(),
-	)
+	htmlContent, err := templates.RenderString("workspace/settings", settingsPageViewData{
+		BudgetID:                budgetID,
+		BudgetName:              name,
+		DefaultCurrency:         defaultCurrency,
+		Timezone:                timezone,
+		Role:                    role,
+		IsOwner:                 role == "OWNER",
+		DateFormat:              dFormat,
+		TimeFormat:              tFormat,
+		CSRFToken:               csrfToken,
+		SidebarHTML:             template.HTML(sidebarHTML),
+		BottomDockHTML:          template.HTML(bottomDockHTML),
+		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed rendering budget settings")
+	}
 
 	return c.HTML(http.StatusOK, htmlContent)
 }
@@ -946,32 +445,52 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 }
 
 type bucketViewData struct {
-	ID                    string           `json:"ID"`
-	GroupName             string           `json:"GroupName"`
-	Name                  string           `json:"Name"`
-	BalanceMinor          int64            `json:"BalanceMinor"`
-	Currency              string           `json:"Currency"`
-	TotalRequiredMinor    int64            `json:"TotalRequiredMinor"`
-	TotalFundedMinor      int64            `json:"TotalFundedMinor"`
-	TotalNeededMinor      int64            `json:"TotalNeededMinor"`
-	UnassignedBufferMinor int64            `json:"UnassignedBufferMinor"`
-	HealthStatus          string           `json:"HealthStatus"`
-	HealthBadge           string           `json:"HealthBadge"`
-	HealthBadgeClass      string           `json:"HealthBadgeClass"`
-	HasP3AtRisk           bool             `json:"HasP3AtRisk"`
-	HasFormulaError       bool             `json:"HasFormulaError"`
-	FormulaErrorMessage   string           `json:"FormulaErrorMessage"`
-	DefaultExpanded       bool             `json:"DefaultExpanded"`
-	ProgressPercent       int              `json:"ProgressPercent"`
-	Targets               []targetViewData `json:"Targets"`
+	ID                        string           `json:"ID"`
+	GroupName                 string           `json:"GroupName"`
+	GroupID                   string           `json:"-"`
+	EscapedName               string           `json:"-"`
+	EscapedGroupName          string           `json:"-"`
+	Name                      string           `json:"Name"`
+	BalanceMinor              int64            `json:"BalanceMinor"`
+	BalanceFormatted          string           `json:"-"`
+	Currency                  string           `json:"Currency"`
+	TotalRequiredMinor        int64            `json:"TotalRequiredMinor"`
+	TotalRequiredFormatted    string           `json:"-"`
+	TotalFundedMinor          int64            `json:"TotalFundedMinor"`
+	TotalFundedFormatted      string           `json:"-"`
+	TotalNeededMinor          int64            `json:"TotalNeededMinor"`
+	TotalNeededFormatted      string           `json:"-"`
+	UnassignedBufferMinor     int64            `json:"UnassignedBufferMinor"`
+	UnassignedBufferFormatted string           `json:"-"`
+	BufferMobileStr           string           `json:"-"`
+	HealthStatus              string           `json:"HealthStatus"`
+	HealthBadge               string           `json:"HealthBadge"`
+	HealthBadgeClass          string           `json:"HealthBadgeClass"`
+	StatusDot                 string           `json:"-"`
+	ProgressClass             string           `json:"-"`
+	AvailColor                string           `json:"-"`
+	NeededColor               string           `json:"-"`
+	SearchTokens              string           `json:"-"`
+	ActionMenuDesktop         template.HTML    `json:"-"`
+	ActionMenuMobile          template.HTML    `json:"-"`
+	HasP3AtRisk               bool             `json:"HasP3AtRisk"`
+	HasFormulaError           bool             `json:"HasFormulaError"`
+	FormulaErrorMessage       string           `json:"FormulaErrorMessage"`
+	DefaultExpanded           bool             `json:"DefaultExpanded"`
+	ProgressPercent           int              `json:"ProgressPercent"`
+	Targets                   []targetViewData `json:"Targets"`
 }
 
 type targetViewData struct {
 	ID                  string  `json:"ID"`
 	BucketID            string  `json:"BucketID"`
 	Name                string  `json:"Name"`
+	HasLabel            bool    `json:"-"`
+	MobileNameDisplay   string  `json:"-"`
 	TargetType          string  `json:"TargetType"`
 	Priority            int     `json:"Priority"`
+	PriorityText        string  `json:"-"`
+	PrioBadgeClass      string  `json:"-"`
 	SortOrder           int     `json:"SortOrder"`
 	AmountMode          string  `json:"AmountMode"`
 	AmountMinor         int64   `json:"AmountMinor"`
@@ -982,26 +501,107 @@ type targetViewData struct {
 	RecurrenceCadence   string  `json:"RecurrenceCadence"`
 	RecurrenceInterval  int     `json:"RecurrenceInterval"`
 	RecurrenceDays      int     `json:"RecurrenceDays"`
+	CadenceDisplay      string  `json:"-"`
 	DueDate             int64   `json:"DueDate"`
+	DueText             string  `json:"-"`
+	GoalText            string  `json:"-"`
 	NonSpendingStrategy string  `json:"NonSpendingStrategy"`
 	CeilingAmountMinor  *int64  `json:"CeilingAmountMinor"`
 	CurrentFundedMinor  int64   `json:"CurrentFundedMinor"`
+	FundedFormatted     string  `json:"-"`
 	RequiredMinor       int64   `json:"RequiredMinor"`
+	RequiredFormatted   string  `json:"-"`
 	NeededMinor         int64   `json:"NeededMinor"`
+	NeededFormatted     string  `json:"-"`
 	ProgressPercent     int     `json:"ProgressPercent"`
+	ProgressClass       string  `json:"-"`
 	HealthBadge         string  `json:"HealthBadge"`
 	HealthBadgeClass    string  `json:"HealthBadgeClass"`
 }
 
 type bucketGroupViewData struct {
-	GroupName           string
-	GroupID             string
-	Buckets             []bucketViewData
-	TotalAvailableMinor int64
-	TotalRequiredMinor  int64
-	TotalFundedMinor    int64
-	TotalNeededMinor    int64
-	ProgressPercent     int
+	GroupName               string
+	EscapedGroupName        string
+	GroupID                 string
+	Buckets                 []bucketViewData
+	TotalAvailableMinor     int64
+	TotalAvailableFormatted string
+	TotalRequiredMinor      int64
+	TotalRequiredFormatted  string
+	TotalFundedMinor        int64
+	TotalFundedFormatted    string
+	TotalNeededMinor        int64
+	TotalNeededFormatted    string
+	ProgressPercent         int
+	ProgressClass           string
+}
+
+type accountSummaryItem struct {
+	Name             string
+	Currency         string
+	BalanceFormatted string
+	IsURLIcon        bool
+	IconValue        string
+}
+
+type rtaCurrencyBadgeViewData struct {
+	Currency        string
+	AmountFormatted string
+	BadgeColor      string
+}
+
+type otherBudgetOptionViewData struct {
+	ID       string
+	Name     string
+	Currency string
+}
+
+type budgetPageViewData struct {
+	BudgetID                     string
+	BudgetName                   string
+	Role                         string
+	DefaultCurr                  string
+	HorizonParam                 string
+	HorizonTitle                 string
+	HorizonDisplay               string
+	IsHorizonMonthly             bool
+	WindowDays                   int
+	FilterParam                  string
+	IsFilterAll                  bool
+	FlashMsg                     string
+	AOMHeadline                  int
+	DateFormat                   string
+	TimeFormat                   string
+	CSRFToken                    string
+	SidebarHTML                  template.HTML
+	BottomDockHTML               template.HTML
+	DateTimeFormatterScript      template.HTML
+	HasAccounts                  bool
+	AccountSummaries             []accountSummaryItem
+	RTAColor                     string
+	RTADescClass                 string
+	RTADesc                      string
+	DefaultRTAFormatted          string
+	HasNonDefaultRTACurrencies   bool
+	TopRTACurrencies             []rtaCurrencyBadgeViewData
+	ExtraRTACurrencies           []rtaCurrencyBadgeViewData
+	TotalNeededFormatted         string
+	HasMandatoryP3Needed         bool
+	MandatoryP3NeededFormatted   string
+	CountAll                     int
+	CountAttention               int
+	CountOverspent               int
+	CountBuffer                  int
+	AllBucketsCount              int
+	DisplayBucketsCount          int
+	BucketGroups                 []bucketGroupViewData
+	AllBuckets                   []bucketViewData
+	DistinctGroups               []string
+	NewBucketGroupPlaceholder    string
+	HasOtherBudgets              bool
+	OtherBudgets                 []otherBudgetOptionViewData
+	AvailableCurrencies          []string
+	BucketsJSON                  template.JS
 }
 
 func budgetRedirectURL(budgetID string, c echo.Context, flashCode string, anchorBucketID string) string {
@@ -1081,908 +681,13 @@ func safeDOMID(s string) string {
 	return res
 }
 
-func renderBudgetStatsBanner(defaultRTA int64, defaultCurr, rtaOtherBadges, horizonTitle string, totalNeededMinor, mandatoryP3NeededMinor int64) string {
-	rtaColor := "text-success"
-	rtaDescClass := "text-base-content/60"
-	rtaDesc := "Unallocated liquid funds across budget accounts"
-	if defaultRTA < 0 {
-		rtaColor = "text-error"
-		rtaDescClass = "text-error font-semibold"
-		rtaDesc = "Assigned more than you have (over-assigned)"
-	}
-
-	p3Desc := `<span class="text-success font-medium">✓ All mandatory targets funded</span>`
-	if mandatoryP3NeededMinor > 0 {
-		p3Desc = fmt.Sprintf(`of which Mandatory: <span class="font-mono font-bold text-error">%.2f %s</span>`, float64(mandatoryP3NeededMinor)/100.0, defaultCurr)
-	}
-
-	return fmt.Sprintf(`
-		<div class="stats stats-horizontal shadow-md w-full bg-base-100 border border-base-300 mb-4 grid grid-cols-1 md:grid-cols-2">
-			<div class="stat p-5">
-				<div class="stat-figure text-success text-3xl hidden sm:block">💵</div>
-				<div class="stat-title text-xs font-bold uppercase tracking-wider flex items-center gap-1.5">
-					<span class="sm:hidden text-base">💵</span>
-					<span>Ready to Assign</span>
-				</div>
-				<div class="stat-value %s text-2xl md:text-3xl font-black tracking-tight mt-0.5">
-					%.2f %s
-				</div>
-				%s
-				<div class="stat-desc text-xs %s mt-1.5">%s</div>
-			</div>
-
-			<div class="stat p-5 border-t md:border-t-0 md:border-l border-base-200">
-				<div class="stat-figure text-primary text-3xl hidden sm:block">🎯</div>
-				<div class="stat-title text-xs font-bold uppercase tracking-wider flex items-center gap-1.5">
-					<span class="sm:hidden text-base">🎯</span>
-					<span>Needed (%s)</span>
-				</div>
-				<div class="stat-value text-primary text-2xl md:text-3xl font-black tracking-tight mt-0.5">
-					%.2f <span class="text-xs font-normal text-base-content/60">%s</span>
-				</div>
-				<div class="stat-desc text-xs mt-1.5">%s</div>
-			</div>
-		</div>
-	`,
-		rtaColor, float64(defaultRTA)/100.0, defaultCurr, rtaOtherBadges, rtaDescClass, rtaDesc,
-		horizonTitle, float64(totalNeededMinor)/100.0, defaultCurr, p3Desc,
-	)
-}
-
-func renderBudgetControlsToolbar(budgetID, horizonParam, filterParam, defaultCurr, csrfToken string, windowDays int) string {
-	monthlyActive := "btn-ghost"
-	d30Active := "btn-ghost"
-	d90Active := "btn-ghost"
-	annualActive := "btn-ghost"
-	d365Active := "btn-ghost"
-
-	monthlySel := ""
-	d30Sel := ""
-	d90Sel := ""
-	annualSel := ""
-	d365Sel := ""
-
-	switch horizonParam {
-	case "30d":
-		d30Active = "btn-primary"
-		d30Sel = " selected"
-	case "90d":
-		d90Active = "btn-primary"
-		d90Sel = " selected"
-	case "annual":
-		annualActive = "btn-primary"
-		annualSel = " selected"
-	case "365d":
-		d365Active = "btn-primary"
-		d365Sel = " selected"
-	default:
-		monthlyActive = "btn-primary"
-		monthlySel = " selected"
-	}
-
-	return fmt.Sprintf(`
-		<div class="card card-border bg-base-100 border-base-300 shadow-xs mb-4 px-3 py-2.5 sm:px-4 sm:py-3 flex flex-row flex-wrap justify-between items-center gap-2 sm:gap-3">
-			<div class="flex items-center gap-2 sm:gap-2.5">
-				<label for="mobile_horizon_select" class="flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-base-content/70 shrink-0">
-					<span>⏱️</span>
-					<span class="hidden xs:inline sm:inline">Horizon:</span>
-				</label>
-				<select id="mobile_horizon_select" aria-label="Select Horizon" class="select select-bordered select-sm sm:hidden font-semibold text-xs min-h-8 h-8 w-auto pr-7" onchange="if(this.value) window.location.href=this.value">
-					<option value="/budgets/%s/budget?horizon=monthly&filter=%s"%s>Monthly (%dd)</option>
-					<option value="/budgets/%s/budget?horizon=30d&filter=%s"%s>30d</option>
-					<option value="/budgets/%s/budget?horizon=90d&filter=%s"%s>90d</option>
-					<option value="/budgets/%s/budget?horizon=annual&filter=%s"%s>Annual</option>
-					<option value="/budgets/%s/budget?horizon=365d&filter=%s"%s>365d</option>
-				</select>
-				<div class="hidden sm:inline-flex join">
-					<a href="/budgets/%s/budget?horizon=monthly&filter=%s" class="btn btn-xs join-item %s">Monthly</a>
-					<a href="/budgets/%s/budget?horizon=30d&filter=%s" class="btn btn-xs join-item %s">30d</a>
-					<a href="/budgets/%s/budget?horizon=90d&filter=%s" class="btn btn-xs join-item %s">90d</a>
-					<a href="/budgets/%s/budget?horizon=annual&filter=%s" class="btn btn-xs join-item %s">Annual</a>
-					<a href="/budgets/%s/budget?horizon=365d&filter=%s" class="btn btn-xs join-item %s">365d</a>
-				</div>
-				<span class="text-[11px] text-base-content/50 font-medium hidden md:inline">(%d days requirement window)</span>
-			</div>
-
-			<div class="flex items-center gap-2 shrink-0">
-				<form method="POST" action="/budgets/%s/budget/auto-assign" class="inline">
-					<input type="hidden" name="csrf_token" value="%s" />
-					<input type="hidden" name="currency" value="%s" />
-					<input type="hidden" name="horizon" value="%s" />
-					<input type="hidden" name="filter" value="%s" />
-					<button type="submit" class="btn btn-sm sm:btn-xs btn-outline btn-primary font-semibold shadow-xs gap-1 sm:gap-1.5 min-h-8 touch-manipulation">
-						<span>⚡</span>
-						<span class="sm:hidden">Auto-Assign</span>
-						<span class="hidden sm:inline">Auto-Assign by Priority</span>
-					</button>
-				</form>
-			</div>
-		</div>
-	`,
-		budgetID, filterParam, monthlySel, windowDays,
-		budgetID, filterParam, d30Sel,
-		budgetID, filterParam, d90Sel,
-		budgetID, filterParam, annualSel,
-		budgetID, filterParam, d365Sel,
-		budgetID, filterParam, monthlyActive,
-		budgetID, filterParam, d30Active,
-		budgetID, filterParam, d90Active,
-		budgetID, filterParam, annualActive,
-		budgetID, filterParam, d365Active,
-		windowDays,
-		budgetID, csrfToken, defaultCurr, horizonParam, filterParam,
-	)
-}
-
-func renderBudgetFilterToolbar(budgetID, horizonParam, filterParam string, countAll, countAttention, countOverspent, countBuffer int) string {
-	btnAll := "btn-ghost border border-base-300"
-	btnAtt := "btn-ghost border border-base-300"
-	btnOvr := "btn-ghost border border-base-300"
-	btnBuf := "btn-ghost border border-base-300"
-
-	switch filterParam {
-	case "attention":
-		btnAtt = "btn-primary"
-	case "overspent":
-		btnOvr = "btn-primary"
-	case "buffer":
-		btnBuf = "btn-primary"
-	default:
-		btnAll = "btn-primary"
-	}
-
-	return fmt.Sprintf(`
-		<div class="flex flex-col lg:flex-row lg:justify-between lg:items-center gap-2.5 sm:gap-3 mb-4">
-			<div class="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2 sm:gap-3 w-full lg:w-auto">
-				<div class="grid grid-cols-2 sm:inline-flex sm:join gap-1.5 sm:gap-0 w-full sm:w-auto">
-					<a href="/budgets/%s/budget?horizon=%s&filter=all" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation %s">
-						<span>All</span> <span class="badge badge-xs sm:badge-sm font-mono">%d</span>
-					</a>
-					<a href="/budgets/%s/budget?horizon=%s&filter=attention" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation %s">
-						<span class="truncate">Needs attention</span> <span class="badge badge-xs sm:badge-sm font-mono badge-warning">%d</span>
-					</a>
-					<a href="/budgets/%s/budget?horizon=%s&filter=overspent" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation %s">
-						<span>Overspent</span> <span class="badge badge-xs sm:badge-sm font-mono badge-error">%d</span>
-					</a>
-					<a href="/budgets/%s/budget?horizon=%s&filter=buffer" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation %s">
-						<span>Has buffer</span> <span class="badge badge-xs sm:badge-sm font-mono badge-info">%d</span>
-					</a>
-				</div>
-				<div class="join grid grid-cols-2 sm:inline-flex w-full sm:w-auto">
-					<button type="button" class="btn btn-sm btn-ghost border border-base-300 join-item text-xs touch-manipulation" onclick="expandAllEnvelopes()">Expand all</button>
-					<button type="button" class="btn btn-sm btn-ghost border border-base-300 join-item text-xs touch-manipulation" onclick="collapseAllEnvelopes()">Collapse all</button>
-				</div>
-			</div>
-			<div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full lg:w-auto">
-				<div class="relative w-full sm:w-48">
-					<input type="text" id="envelope_search_input" placeholder="Search envelopes..." class="input input-bordered input-sm w-full text-xs pl-8" oninput="filterEnvelopeSearch(this.value)" />
-					<span class="absolute left-2.5 top-2 text-xs opacity-50 select-none">🔍</span>
-				</div>
-				<div class="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
-					<button type="button" class="btn btn-outline btn-primary btn-sm gap-1.5 shadow-xs font-semibold w-full sm:w-auto touch-manipulation" onclick="openStructureModal('ai')">
-						<span>✨</span>
-						<span>AI / Import</span>
-					</button>
-					<button type="button" class="btn btn-primary btn-sm gap-1.5 shadow font-semibold w-full sm:w-auto touch-manipulation" onclick="openNewBucketModal()">
-						<span>+</span>
-						<span>New Bucket</span>
-					</button>
-				</div>
-			</div>
-		</div>
-	`,
-		budgetID, horizonParam, btnAll, countAll,
-		budgetID, horizonParam, btnAtt, countAttention,
-		budgetID, horizonParam, btnOvr, countOverspent,
-		budgetID, horizonParam, btnBuf, countBuffer,
-	)
-}
-
-func renderBucketRowsDesktop(allBucketsCount int, bucketGroups []bucketGroupViewData, defaultCurr, horizonParam, filterParam, csrfToken, budgetID string) string {
-	if allBucketsCount == 0 {
-		return `
-			<tr>
-				<td colspan="5" class="p-8">
-					<div class="card card-border bg-base-100 border-dashed border-base-300 p-8 text-center flex flex-col items-center justify-center gap-4">
-						<div class="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-3xl font-bold">✨</div>
-						<div>
-							<h3 class="font-extrabold text-lg tracking-tight">No Buckets Created Yet</h3>
-							<p class="text-xs text-base-content/60 max-w-md mx-auto mt-1">Get started quickly by generating a complete bucket structure with AI, importing from another budget, or adding buckets manually.</p>
-						</div>
-						<div class="flex flex-wrap items-center justify-center gap-2 mt-2">
-							<button type="button" class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('ai')">
-								<span>✨</span>
-								<span>Create from Description (AI)</span>
-							</button>
-							<button type="button" class="btn btn-outline btn-secondary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('import')">
-								<span>📥</span>
-								<span>Import from Another Budget</span>
-							</button>
-							<button type="button" class="btn btn-ghost btn-sm" onclick="new_bucket_modal.showModal()">
-								<span>+</span>
-								<span>New Bucket Manually</span>
-							</button>
-						</div>
-					</div>
-				</td>
-			</tr>
-		`
-	}
-
-	totalDisplayBuckets := 0
-	for _, bg := range bucketGroups {
-		totalDisplayBuckets += len(bg.Buckets)
-	}
-
-	if totalDisplayBuckets == 0 {
-		return fmt.Sprintf(`
-			<tr>
-				<td colspan="5" class="p-8 text-center text-xs text-base-content/60">
-					No envelopes match the selected filter (<strong>%s</strong>).
-					<a href="/budgets/%s/budget?horizon=%s&filter=all" class="link link-primary ml-1">View all envelopes</a>
-				</td>
-			</tr>
-		`, html.EscapeString(filterParam), budgetID, horizonParam)
-	}
-
-	var sb strings.Builder
-	for _, bg := range bucketGroups {
-		grpProgClass := "progress-warning"
-		if bg.ProgressPercent >= 100 {
-			grpProgClass = "progress-success"
-		}
-
-		sb.WriteString(fmt.Sprintf(`
-			<tr id="group-header-%s" class="bg-base-200/80 font-bold border-t-2 border-base-300 group-header select-none group-drop-zone transition-colors" data-group-id="%s" data-group-name="%s">
-				<td class="py-2.5">
-					<div class="flex items-center gap-2">
-						<div class="flex items-center gap-2 cursor-pointer" onclick="toggleGroup('%s')">
-							<span id="group-icon-%s" class="text-xs transition-transform duration-200">▼</span>
-							<span class="uppercase tracking-wider text-xs font-black text-base-content/80">%s</span>
-							<span class="badge badge-neutral badge-xs font-mono font-normal">%d envelopes</span>
-						</div>
-						<div class="flex items-center gap-0.5 ml-2">
-							<button type="button" class="btn btn-ghost btn-xs p-1 h-6 min-h-0 text-base-content/60 hover:text-primary" onclick="openRenameGroupModal('%s')" title="Rename Category">
-								✏️
-							</button>
-							<form method="POST" action="/budgets/%s/groups/move?dir=up" class="inline">
-								<input type="hidden" name="csrf_token" value="%s" />
-								<input type="hidden" name="group_name" value="%s" />
-								<input type="hidden" name="horizon" value="%s" />
-								<input type="hidden" name="filter" value="%s" />
-								<button type="submit" class="btn btn-ghost btn-xs p-0.5 h-6 min-h-0 text-base-content/60 hover:text-primary" title="Move Up">▲</button>
-							</form>
-							<form method="POST" action="/budgets/%s/groups/move?dir=down" class="inline">
-								<input type="hidden" name="csrf_token" value="%s" />
-								<input type="hidden" name="group_name" value="%s" />
-								<input type="hidden" name="horizon" value="%s" />
-								<input type="hidden" name="filter" value="%s" />
-								<button type="submit" class="btn btn-ghost btn-xs p-0.5 h-6 min-h-0 text-base-content/60 hover:text-primary" title="Move Down">▼</button>
-							</form>
-						</div>
-					</div>
-				</td>
-				<td class="py-2.5">
-					<div class="flex items-center gap-2 max-w-[200px]" title="%d%%%% funded">
-						<progress class="progress %s h-1.5 w-24" value="%d" max="100"></progress>
-						<span class="text-xs font-mono text-base-content/70">%.2f / %.2f</span>
-					</div>
-				</td>
-				<td class="py-2.5 text-right font-mono text-xs font-bold text-base-content/80">
-					%.2f <span class="text-[10px] font-normal text-base-content/50">%s</span>
-				</td>
-				<td class="py-2.5 text-right font-mono text-xs font-bold">
-					%.2f <span class="text-[10px] font-normal text-base-content/50">%s</span>
-				</td>
-				<td class="py-2.5"></td>
-			</tr>
-		`,
-			bg.GroupID, bg.GroupID, html.EscapeString(bg.GroupName),
-			bg.GroupID, bg.GroupID, html.EscapeString(bg.GroupName), len(bg.Buckets),
-			strings.ReplaceAll(bg.GroupName, "'", "\\'"),
-			budgetID, csrfToken, html.EscapeString(bg.GroupName), html.EscapeString(horizonParam), html.EscapeString(filterParam),
-			budgetID, csrfToken, html.EscapeString(bg.GroupName), html.EscapeString(horizonParam), html.EscapeString(filterParam),
-			bg.ProgressPercent, grpProgClass, bg.ProgressPercent,
-			float64(bg.TotalFundedMinor)/100.0, float64(bg.TotalRequiredMinor)/100.0,
-			float64(bg.TotalNeededMinor)/100.0, defaultCurr,
-			float64(bg.TotalAvailableMinor)/100.0, defaultCurr,
-		))
-
-		for _, b := range bg.Buckets {
-			statusDot := "bg-success"
-			switch b.HealthStatus {
-			case "Overspent":
-				statusDot = "bg-error"
-			case "Over-allocated":
-				statusDot = "bg-warning"
-			case "Underfunded":
-				statusDot = "bg-warning"
-			case "Optional remaining":
-				statusDot = "bg-base-300"
-			}
-
-			p3RiskBadge := ""
-			if b.HasP3AtRisk {
-				p3RiskBadge = `<span class="badge badge-error badge-outline badge-xs font-bold gap-1" title="Mandatory commitments are at risk"><span>⚠</span><span>P3 at risk</span></span>`
-			}
-
-			formulaErrorBadge := ""
-			if b.HasFormulaError {
-				formulaErrorBadge = fmt.Sprintf(`<span class="badge badge-error badge-outline badge-xs font-bold gap-1 cursor-pointer formula-error-badge" title="%s"><span>⚠</span><span>Formula Error</span></span>`, html.EscapeString(b.FormulaErrorMessage))
-			}
-
-			bufferBadge := ""
-			if b.UnassignedBufferMinor > 0 {
-				bufferBadge = fmt.Sprintf(`<span class="text-[11px] font-mono text-base-content/60">Buffer: <span class="text-success font-semibold">+%.2f %s</span></span>`, float64(b.UnassignedBufferMinor)/100.0, b.Currency)
-			} else if b.UnassignedBufferMinor < 0 {
-				bufferBadge = fmt.Sprintf(`<span class="text-[11px] font-mono text-error font-semibold">⚠ Over-allocated: %.2f %s</span>`, float64(b.UnassignedBufferMinor)/100.0, b.Currency)
-			} else {
-				bufferBadge = fmt.Sprintf(`<span class="text-[11px] font-mono text-base-content/40">Buffer: 0.00 %s</span>`, b.Currency)
-			}
-
-			bProgClass := "progress-warning"
-			if b.HealthStatus == "Overspent" || b.HealthStatus == "Over-allocated" {
-				bProgClass = "progress-error"
-			} else if b.ProgressPercent >= 100 {
-				bProgClass = "progress-success"
-			}
-
-			neededCell := `<span class="text-[11px] font-mono text-base-content/40">✓ Fully funded</span>`
-			if b.TotalNeededMinor > 0 {
-				neededCell = fmt.Sprintf(`<span class="text-[11px] font-mono text-warning font-semibold">Needs %.2f %s</span>`, float64(b.TotalNeededMinor)/100.0, b.Currency)
-			}
-
-			availColor := "text-base-content"
-			if b.BalanceMinor < 0 {
-				availColor = "text-error"
-			}
-
-			var searchTokens []string
-			searchTokens = append(searchTokens, b.Name, b.GroupName, b.HealthStatus)
-			for _, t := range b.Targets {
-				searchTokens = append(searchTokens, t.Name)
-			}
-			searchAttr := html.EscapeString(strings.ToLower(strings.Join(searchTokens, " ")))
-
-			toggleIcon := "▶"
-			subrowHidden := "hidden"
-			ariaExp := false
-			if b.DefaultExpanded {
-				toggleIcon = "▼"
-				subrowHidden = ""
-				ariaExp = true
-			}
-
-			var targetsSublist strings.Builder
-			if len(b.Targets) > 0 {
-				for _, t := range b.Targets {
-					priorityText := "Optional"
-					prioBadgeClass := "badge-ghost"
-					if t.Priority == 3 {
-						priorityText = "Mandatory"
-						prioBadgeClass = "badge-error"
-					} else if t.Priority == 2 {
-						priorityText = "Recommended"
-						prioBadgeClass = "badge-primary"
-					}
-
-					rInt := t.RecurrenceInterval
-					if rInt == 0 {
-						rInt = t.RecurrenceDays
-					}
-					cadenceDisplay := t.RecurrenceCadence
-					if t.RecurrenceCadence == "CUSTOM_DAYS" {
-						if rInt == 0 {
-							rInt = 90
-						}
-						cadenceDisplay = fmt.Sprintf("%dd", rInt)
-					} else if t.RecurrenceCadence == "CUSTOM_MONTHS" {
-						if rInt == 0 {
-							rInt = 3
-						}
-						cadenceDisplay = fmt.Sprintf("%dm", rInt)
-					} else if t.RecurrenceCadence == "CUSTOM_YEARS" {
-						if rInt == 0 {
-							rInt = 1
-						}
-						cadenceDisplay = fmt.Sprintf("%dy", rInt)
-					}
-
-					dueText := ""
-					if t.DueDate > 0 {
-						dTime := time.UnixMicro(t.DueDate).UTC()
-						dueText = fmt.Sprintf(` • Due: %s`, dTime.Format("2006-01-02"))
-					}
-					goalText := ""
-					if t.CeilingAmountMinor != nil {
-						goalText = fmt.Sprintf(` • Goal: %.2f %s`, float64(*t.CeilingAmountMinor)/100.0, t.Currency)
-					}
-					luaBadge := ""
-					if t.AmountMode == "LUA_FORMULA" {
-						luaBadge = `<span class="badge badge-outline badge-xs font-mono text-secondary border-secondary">LUA</span>`
-					}
-
-					tProgClass := "progress-warning"
-					if t.CurrentFundedMinor < 0 {
-						tProgClass = "progress-error"
-					} else if t.ProgressPercent >= 100 {
-						tProgClass = "progress-success"
-					}
-
-					neededText := `<span class="font-mono text-xs text-base-content/40">✓ Funded</span>`
-					if t.NeededMinor > 0 {
-						neededText = fmt.Sprintf(`<span class="font-mono text-xs font-semibold text-warning">Needs %.2f %s</span>`, float64(t.NeededMinor)/100.0, t.Currency)
-					}
-
-					targetLabel := ""
-					if strings.TrimSpace(t.Name) != "" {
-						targetLabel = fmt.Sprintf(`<span class="font-medium truncate">%s</span>`, html.EscapeString(t.Name))
-					}
-
-					targetsSublist.WriteString(fmt.Sprintf(`
-						<div class="flex items-center justify-between py-1 border-b border-base-200/60 last:border-0 text-xs">
-							<div class="flex items-center gap-2 min-w-0">
-								<span class="text-base-content/40 font-mono select-none">├</span>
-								%s
-								<span class="badge %s badge-xs">%s</span>
-								<span class="text-[11px] text-base-content/50 truncate">%s%s%s</span>
-								%s
-							</div>
-							<div class="flex items-center gap-4 shrink-0">
-								<div class="flex items-center gap-2" title="%d%%%% funded">
-									<progress class="progress %s h-1.5 w-16" value="%d" max="100"></progress>
-									<span class="font-mono text-[11px] text-base-content/70">%.2f / %.2f %s</span>
-								</div>
-								<span class="badge %s badge-xs font-semibold">%s</span>
-								<div class="text-right min-w-[90px]">%s</div>
-							</div>
-						</div>
-					`,
-						targetLabel, prioBadgeClass, priorityText,
-						cadenceDisplay, dueText, goalText, luaBadge,
-						t.ProgressPercent, tProgClass, t.ProgressPercent,
-						float64(t.CurrentFundedMinor)/100.0, float64(t.RequiredMinor)/100.0, t.Currency,
-						t.HealthBadgeClass, t.HealthBadge,
-						neededText,
-					))
-				}
-			} else {
-				targetsSublist.WriteString(`<div class="text-xs text-base-content/40 italic py-1">No targets defined in this envelope.</div>`)
-			}
-
-			actionMenu := RenderPopoverActionMenu("bucket", b.ID, []TableActionItem{
-				{
-					Label:   "✏️ Edit Bucket",
-					OnClick: fmt.Sprintf("openEditBucketModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), strings.ReplaceAll(b.GroupName, "'", "\\'")),
-				},
-				{
-					Label:   "💵 Assign Funds",
-					OnClick: fmt.Sprintf("openAssignModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
-				},
-				{
-					Label:   "↔️ Move Money",
-					OnClick: fmt.Sprintf("openMoveModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
-				},
-				{
-					Label:      "📁 Archive Bucket",
-					FormAction: fmt.Sprintf("/budgets/%s/buckets/%s/archive", budgetID, b.ID),
-					CSRFToken:  csrfToken,
-					IsDanger:   true,
-					ConfirmMsg: "Archive this bucket? It must have zero balance and zero targets.",
-				},
-			})
-
-			sb.WriteString(fmt.Sprintf(`
-				<tr id="bucket-%s" class="hover transition-colors bucket-row group-item-%s" data-bucket-id="%s" data-group-id="%s" data-group-name="%s" data-bucket-name="%s" data-search="%s">
-					<td>
-						<div class="flex flex-col gap-1">
-							<div class="flex items-center gap-2">
-								<span class="bucket-drag-handle cursor-grab active:cursor-grabbing text-base-content/40 hover:text-primary select-none px-0.5 text-sm" title="Drag to reorder or move category" draggable="true">⠿</span>
-								<button type="button" class="btn btn-ghost btn-xs btn-circle p-0 h-6 w-6 target-toggle-btn" onclick="toggleBucketTargets('%s')" aria-expanded="%t" aria-controls="targets-%s" aria-label="Toggle targets for %s">
-									<span id="bucket-toggle-icon-%s" class="text-xs transition-transform duration-200 font-mono select-none">%s</span>
-								</button>
-								<span class="w-2.5 h-2.5 rounded-full shrink-0 %s"></span>
-								<div class="font-bold text-sm flex items-center gap-1.5">
-									<span>%s</span>
-									%s
-									%s
-								</div>
-							</div>
-							<div class="pl-8 flex items-center gap-2 text-xs">
-								%s
-							</div>
-						</div>
-					</td>
-					<td>
-						<div class="flex flex-col gap-1 max-w-[180px]">
-							<div class="flex items-center justify-between text-[11px] font-mono text-base-content/70">
-								<span>%d%%%%</span>
-								<span>%.2f / %.2f</span>
-							</div>
-							<progress class="progress %s h-1.5 w-full" value="%d" max="100" title="%d%%%% funded"></progress>
-						</div>
-					</td>
-					<td class="text-right">
-						<div class="flex flex-col items-end gap-0.5">
-							<span class="badge %s badge-sm font-semibold">%s</span>
-							%s
-						</div>
-					</td>
-					<td class="font-mono text-right font-bold text-sm">
-						<span class="%s">%.2f</span> <span class="text-xs font-normal text-base-content/60">%s</span>
-					</td>
-					<td class="text-right">
-						<div class="flex items-center justify-end gap-1">
-							<button type="button" class="btn btn-ghost btn-xs text-primary font-semibold" onclick="openBucketDrawer('%s', '%s', '%s', '%.2f', '%s')">Inspect</button>
-							%s
-						</div>
-					</td>
-				</tr>
-				<tr id="targets-%s" class="target-subrows group-item-%s %s" data-bucket-id="%s">
-					<td colspan="5" class="p-0 border-0">
-						<div class="bg-base-200/40 border-y border-base-200 pl-10 pr-4 py-2 space-y-1">
-							%s
-						</div>
-					</td>
-				</tr>
-			`,
-				b.ID, bg.GroupID, b.ID, bg.GroupID, html.EscapeString(b.GroupName), html.EscapeString(b.Name), searchAttr,
-				b.ID, ariaExp, b.ID, html.EscapeString(b.Name),
-				b.ID, toggleIcon, statusDot,
-				html.EscapeString(b.Name), p3RiskBadge, formulaErrorBadge,
-				bufferBadge,
-				b.ProgressPercent, float64(b.TotalFundedMinor)/100.0, float64(b.TotalRequiredMinor)/100.0,
-				bProgClass, b.ProgressPercent, b.ProgressPercent,
-				b.HealthBadgeClass, b.HealthBadge, neededCell,
-				availColor, float64(b.BalanceMinor)/100.0, b.Currency,
-				b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), strings.ReplaceAll(b.GroupName, "'", "\\'"), float64(b.BalanceMinor)/100.0, b.Currency,
-				actionMenu,
-				b.ID, bg.GroupID, subrowHidden, b.ID,
-				targetsSublist.String(),
-			))
-		}
-	}
-
-	return sb.String()
-}
-
-func renderBucketCardsMobile(allBucketsCount int, bucketGroups []bucketGroupViewData, displayBuckets []bucketViewData, defaultCurr, horizonParam, filterParam, csrfToken, budgetID string) string {
-	if len(displayBuckets) == 0 {
-		return fmt.Sprintf(`
-			<div class="card card-border bg-base-100 border-base-300 p-6 text-center text-xs text-base-content/60">
-				No envelopes match the selected filter (<strong>%s</strong>).
-				<a href="/budgets/%s/budget?horizon=%s&filter=all" class="link link-primary ml-1">View all envelopes</a>
-			</div>
-		`, html.EscapeString(filterParam), budgetID, horizonParam)
-	}
-
-	var sb strings.Builder
-	for _, bg := range bucketGroups {
-		if len(bg.Buckets) == 0 {
-			continue
-		}
-
-		grpProgClass := "progress-warning"
-		if bg.ProgressPercent >= 100 {
-			grpProgClass = "progress-success"
-		}
-
-		sb.WriteString(fmt.Sprintf(`
-			<div id="mobile-group-%s" class="card card-border bg-base-200/80 border-base-300 px-3.5 py-2.5 mobile-group-header select-none mobile-group-drop-zone transition-colors" data-group-id="%s" data-group-name="%s">
-				<div class="flex items-center justify-between gap-2">
-					<div class="flex items-center gap-2 min-w-0 cursor-pointer flex-1" onclick="toggleMobileGroup('%s')">
-						<span id="mobile-group-icon-%s" class="text-xs transition-transform duration-200">▼</span>
-						<span class="uppercase tracking-wider text-xs font-black text-base-content/80 truncate">%s</span>
-						<span class="badge badge-neutral badge-xs font-mono font-normal shrink-0">%d</span>
-					</div>
-					<div class="flex items-center gap-1 shrink-0">
-						<button type="button" class="btn btn-ghost btn-xs min-h-7 px-1.5 text-base-content/60 hover:text-primary touch-manipulation" onclick="openRenameGroupModal('%s')" title="Rename Category">✏️</button>
-						<form method="POST" action="/budgets/%s/groups/move?dir=up" class="inline">
-							<input type="hidden" name="csrf_token" value="%s" />
-							<input type="hidden" name="group_name" value="%s" />
-							<input type="hidden" name="horizon" value="%s" />
-							<input type="hidden" name="filter" value="%s" />
-							<button type="submit" class="btn btn-ghost btn-xs min-h-7 px-1 text-base-content/60 hover:text-primary touch-manipulation" title="Move Up">▲</button>
-						</form>
-						<form method="POST" action="/budgets/%s/groups/move?dir=down" class="inline">
-							<input type="hidden" name="csrf_token" value="%s" />
-							<input type="hidden" name="group_name" value="%s" />
-							<input type="hidden" name="horizon" value="%s" />
-							<input type="hidden" name="filter" value="%s" />
-							<button type="submit" class="btn btn-ghost btn-xs min-h-7 px-1 text-base-content/60 hover:text-primary touch-manipulation" title="Move Down">▼</button>
-						</form>
-					</div>
-				</div>
-				<div class="flex items-center justify-between gap-3 mt-1.5 text-[11px] font-mono text-base-content/70">
-					<div class="flex items-center gap-2 flex-1 min-w-0">
-						<progress class="progress %s h-1.5 w-20 shrink-0" value="%d" max="100"></progress>
-						<span class="truncate">%.2f / %.2f</span>
-					</div>
-					<div class="shrink-0">
-						<span class="text-base-content/50">Avail:</span> <span class="font-bold text-base-content">%.2f %s</span>
-					</div>
-				</div>
-			</div>
-		`,
-			bg.GroupID, bg.GroupID, html.EscapeString(bg.GroupName),
-			bg.GroupID, bg.GroupID, html.EscapeString(bg.GroupName), len(bg.Buckets),
-			strings.ReplaceAll(bg.GroupName, "'", "\\'"),
-			budgetID, csrfToken, html.EscapeString(bg.GroupName), html.EscapeString(horizonParam), html.EscapeString(filterParam),
-			budgetID, csrfToken, html.EscapeString(bg.GroupName), html.EscapeString(horizonParam), html.EscapeString(filterParam),
-			grpProgClass, bg.ProgressPercent,
-			float64(bg.TotalFundedMinor)/100.0, float64(bg.TotalRequiredMinor)/100.0,
-			float64(bg.TotalAvailableMinor)/100.0, defaultCurr,
-		))
-
-		for _, b := range bg.Buckets {
-			statusDot := "bg-success"
-			switch b.HealthStatus {
-			case "Overspent":
-				statusDot = "bg-error"
-			case "Over-allocated":
-				statusDot = "bg-warning"
-			case "Underfunded":
-				statusDot = "bg-warning"
-			case "Optional remaining":
-				statusDot = "bg-base-300"
-			}
-
-			p3RiskBadge := ""
-			if b.HasP3AtRisk {
-				p3RiskBadge = `<span class="badge badge-error badge-outline badge-xs font-bold gap-1" title="Mandatory commitments are at risk"><span>⚠</span><span>P3 at risk</span></span>`
-			}
-
-			formulaErrorBadge := ""
-			if b.HasFormulaError {
-				formulaErrorBadge = fmt.Sprintf(`<span class="badge badge-error badge-outline badge-xs font-bold gap-1 cursor-pointer formula-error-badge" title="%s"><span>⚠</span><span>Formula Error</span></span>`, html.EscapeString(b.FormulaErrorMessage))
-			}
-
-			bufferStr := fmt.Sprintf("Buffer: +%.2f %s", float64(b.UnassignedBufferMinor)/100.0, b.Currency)
-			if b.UnassignedBufferMinor < 0 {
-				bufferStr = fmt.Sprintf("⚠ Over-allocated: %.2f %s", float64(b.UnassignedBufferMinor)/100.0, b.Currency)
-			} else if b.UnassignedBufferMinor == 0 {
-				bufferStr = fmt.Sprintf("Buffer: 0.00 %s", b.Currency)
-			}
-
-			bProgClass := "progress-warning"
-			if b.HealthStatus == "Overspent" || b.HealthStatus == "Over-allocated" {
-				bProgClass = "progress-error"
-			} else if b.ProgressPercent >= 100 {
-				bProgClass = "progress-success"
-			}
-
-			availColor := "text-base-content"
-			if b.BalanceMinor < 0 {
-				availColor = "text-error"
-			}
-
-			neededColor := "text-base-content/60"
-			if b.TotalNeededMinor > 0 {
-				neededColor = "text-warning"
-			}
-
-			var searchTokens []string
-			searchTokens = append(searchTokens, b.Name, b.GroupName, b.HealthStatus)
-			for _, t := range b.Targets {
-				searchTokens = append(searchTokens, t.Name)
-			}
-			searchAttr := html.EscapeString(strings.ToLower(strings.Join(searchTokens, " ")))
-
-			toggleIcon := "▶"
-			sublistHidden := "hidden"
-			if b.DefaultExpanded {
-				toggleIcon = "▼"
-				sublistHidden = ""
-			}
-
-			var mobileTargets strings.Builder
-			if len(b.Targets) > 0 {
-				for _, t := range b.Targets {
-					priorityText := "Optional"
-					prioBadgeClass := "badge-ghost"
-					if t.Priority == 3 {
-						priorityText = "Mandatory"
-						prioBadgeClass = "badge-error"
-					} else if t.Priority == 2 {
-						priorityText = "Recommended"
-						prioBadgeClass = "badge-primary"
-					}
-
-					rInt := t.RecurrenceInterval
-					if rInt == 0 {
-						rInt = t.RecurrenceDays
-					}
-					cadenceDisplay := t.RecurrenceCadence
-					if t.RecurrenceCadence == "CUSTOM_DAYS" {
-						if rInt == 0 {
-							rInt = 90
-						}
-						cadenceDisplay = fmt.Sprintf("%dd", rInt)
-					} else if t.RecurrenceCadence == "CUSTOM_MONTHS" {
-						if rInt == 0 {
-							rInt = 3
-						}
-						cadenceDisplay = fmt.Sprintf("%dm", rInt)
-					} else if t.RecurrenceCadence == "CUSTOM_YEARS" {
-						if rInt == 0 {
-							rInt = 1
-						}
-						cadenceDisplay = fmt.Sprintf("%dy", rInt)
-					}
-
-					dueText := ""
-					if t.DueDate > 0 {
-						dTime := time.UnixMicro(t.DueDate).UTC()
-						dueText = fmt.Sprintf(` • Due: %s`, dTime.Format("2006-01-02"))
-					}
-					goalText := ""
-					if t.CeilingAmountMinor != nil {
-						goalText = fmt.Sprintf(` • Goal: %.2f %s`, float64(*t.CeilingAmountMinor)/100.0, t.Currency)
-					}
-					luaBadge := ""
-					if t.AmountMode == "LUA_FORMULA" {
-						luaBadge = `<span class="badge badge-outline badge-xs font-mono text-secondary border-secondary">LUA</span>`
-					}
-
-					tProgClass := "progress-warning"
-					if t.CurrentFundedMinor < 0 {
-						tProgClass = "progress-error"
-					} else if t.ProgressPercent >= 100 {
-						tProgClass = "progress-success"
-					}
-
-					tNeededText := `<span class="font-mono text-[11px] text-base-content/40">✓ Funded</span>`
-					if t.NeededMinor > 0 {
-						tNeededText = fmt.Sprintf(`<span class="font-mono text-[11px] font-semibold text-warning">Needs %.2f %s</span>`, float64(t.NeededMinor)/100.0, t.Currency)
-					}
-
-					tNameDisplay := html.EscapeString(t.Name)
-					if strings.TrimSpace(tNameDisplay) == "" {
-						tNameDisplay = priorityText
-					}
-
-					mobileTargets.WriteString(fmt.Sprintf(`
-						<div class="flex flex-col gap-1 text-xs py-1.5 border-b border-base-200/60 last:border-0">
-							<div class="flex items-center justify-between gap-2">
-								<div class="flex items-center gap-1.5 min-w-0">
-									<span class="font-medium truncate">%s</span>
-									<span class="badge %s badge-xs shrink-0">%s</span>
-									%s
-								</div>
-								<div class="shrink-0">%s</div>
-							</div>
-							<div class="flex items-center justify-between gap-2 text-[11px] text-base-content/60">
-								<span class="truncate">%s%s%s</span>
-								<div class="flex items-center gap-2 shrink-0">
-									<progress class="progress %s h-1.5 w-14" value="%d" max="100"></progress>
-									<span class="font-mono text-[10px] text-base-content/70">%.2f / %.2f %s</span>
-								</div>
-							</div>
-						</div>
-					`,
-						tNameDisplay, prioBadgeClass, priorityText, luaBadge,
-						tNeededText,
-						cadenceDisplay, dueText, goalText,
-						tProgClass, t.ProgressPercent,
-						float64(t.CurrentFundedMinor)/100.0, float64(t.RequiredMinor)/100.0, t.Currency,
-					))
-				}
-			} else {
-				mobileTargets.WriteString(`<div class="text-xs text-base-content/40 italic">No targets defined in this envelope.</div>`)
-			}
-
-			actionMenu := RenderPopoverActionMenu("bucket_mob", b.ID, []TableActionItem{
-				{
-					Label:   "✏️ Edit Bucket",
-					OnClick: fmt.Sprintf("openEditBucketModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), strings.ReplaceAll(b.GroupName, "'", "\\'")),
-				},
-				{
-					Label:   "💵 Assign Funds",
-					OnClick: fmt.Sprintf("openAssignModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
-				},
-				{
-					Label:   "↔️ Move Money",
-					OnClick: fmt.Sprintf("openMoveModal('%s', '%s', '%s')", b.ID, strings.ReplaceAll(b.Name, "'", "\\'"), b.Currency),
-				},
-				{
-					Label:      "📁 Archive Bucket",
-					FormAction: fmt.Sprintf("/budgets/%s/buckets/%s/archive", budgetID, b.ID),
-					CSRFToken:  csrfToken,
-					IsDanger:   true,
-					ConfirmMsg: "Archive this bucket? It must have zero balance and zero targets.",
-				},
-			})
-
-			escapedBucketName := strings.ReplaceAll(b.Name, "'", "\\'")
-			escapedGroupName := strings.ReplaceAll(b.GroupName, "'", "\\'")
-
-			sb.WriteString(fmt.Sprintf(`
-				<div id="mobile-bucket-%s" class="card card-border bg-base-100 border-base-300 shadow-xs mobile-bucket-card mobile-group-item-%s" data-bucket-id="%s" data-group-id="%s" data-group-name="%s" data-bucket-name="%s" data-search="%s">
-					<div class="card-body p-4 gap-2.5">
-						<div class="flex items-start justify-between gap-2">
-							<div class="flex items-center gap-2 min-w-0">
-								<span class="mobile-bucket-drag-handle cursor-grab active:cursor-grabbing text-base-content/40 hover:text-primary select-none px-0.5 text-sm shrink-0" title="Drag to reorder or move category" draggable="true">⠿</span>
-								<span class="w-2.5 h-2.5 rounded-full shrink-0 %s"></span>
-								<div class="min-w-0">
-									<div class="font-bold text-sm truncate flex items-center gap-1.5">
-										<span class="truncate">%s</span>
-										%s
-									</div>
-									<div class="text-[11px] text-base-content/50 truncate">%s</div>
-								</div>
-							</div>
-							<div class="flex items-center gap-1 shrink-0">
-								<span class="badge %s badge-xs sm:badge-sm font-semibold">%s</span>
-								%s
-							</div>
-						</div>
-
-						<div class="flex justify-between items-baseline pt-1">
-							<div>
-								<span class="text-[10px] uppercase font-bold text-base-content/50">Available</span>
-								<div class="font-mono font-bold text-base %s">%.2f %s</div>
-							</div>
-							<div class="text-right">
-								<span class="text-[10px] uppercase font-bold text-base-content/50">Needed</span>
-								<div class="font-mono text-xs font-semibold %s">%.2f %s</div>
-							</div>
-						</div>
-
-						<div class="w-full">
-							<progress class="progress %s h-2 w-full" value="%d" max="100"></progress>
-							<div class="flex justify-between text-[11px] font-mono text-base-content/60 mt-1">
-								<span>%d%%%%</span>
-								<span>%s</span>
-							</div>
-						</div>
-
-						<div class="pt-2.5 border-t border-base-200 flex flex-wrap justify-between items-center gap-1.5 text-xs">
-							<button type="button" class="btn btn-ghost btn-sm min-h-8 px-2.5 gap-1.5 text-xs font-semibold touch-manipulation" onclick="toggleMobileTargets('%s')">
-								<span id="mobile-toggle-icon-%s">%s</span>
-								<span>%d targets</span>
-							</button>
-							<div class="flex items-center gap-1.5">
-								<button type="button" class="btn btn-soft btn-primary btn-sm min-h-8 px-2.5 text-xs font-semibold gap-1 touch-manipulation" onclick="openAssignModal('%s', '%s', '%s')">
-									<span>💵</span>
-									<span>Assign</span>
-								</button>
-								<button type="button" class="btn btn-ghost btn-sm min-h-8 px-2.5 text-xs text-primary font-semibold touch-manipulation" onclick="openBucketDrawer('%s', '%s', '%s', '%.2f', '%s')">Inspect</button>
-								%s
-							</div>
-						</div>
-
-						<div id="mobile-targets-%s" class="mobile-target-sublist %s pt-2 space-y-1.5 border-t border-base-200" data-bucket-id="%s">
-							%s
-						</div>
-					</div>
-				</div>
-			`,
-				b.ID, bg.GroupID, b.ID, bg.GroupID, html.EscapeString(b.GroupName), html.EscapeString(b.Name), searchAttr,
-				statusDot, html.EscapeString(b.Name), formulaErrorBadge, html.EscapeString(b.GroupName),
-				b.HealthBadgeClass, b.HealthBadge, p3RiskBadge,
-				availColor, float64(b.BalanceMinor)/100.0, b.Currency,
-				neededColor, float64(b.TotalNeededMinor)/100.0, b.Currency,
-				bProgClass, b.ProgressPercent,
-				b.ProgressPercent, bufferStr,
-				b.ID, b.ID, toggleIcon, len(b.Targets),
-				b.ID, escapedBucketName, b.Currency,
-				b.ID, escapedBucketName, escapedGroupName, float64(b.BalanceMinor)/100.0, b.Currency,
-				actionMenu,
-				b.ID, sublistHidden, b.ID,
-				mobileTargets.String(),
-			))
-		}
-	}
-
-	return sb.String()
-}
-
 // BudgetView renders the YNAB-style Budget/Envelopes view with DaisyUI 5 stats, tables, and badges.
 func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	budgetID := c.Param("budgetId")
 	role := c.Get(ContextRoleKey).(string)
 	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	userID, _ := c.Get(ContextUserIDKey).(string)
+	csrfToken, _ := c.Get("csrfToken").(string)
 
 	var budgetName, defaultCurr, tz string
 	h.mainDB.QueryRowContext(c.Request().Context(), `SELECT name, default_currency, timezone FROM budgets WHERE id = ?`, budgetID).
@@ -2215,6 +920,66 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 				t.HealthBadgeClass = "badge-success text-success-content"
 			}
 
+			// Enrich display fields for targets
+			t.HasLabel = strings.TrimSpace(t.Name) != ""
+			switch t.Priority {
+			case 3:
+				t.PriorityText = "Mandatory"
+				t.PrioBadgeClass = "badge-error"
+			case 2:
+				t.PriorityText = "Recommended"
+				t.PrioBadgeClass = "badge-primary"
+			default:
+				t.PriorityText = "Optional"
+				t.PrioBadgeClass = "badge-ghost"
+			}
+			if t.HasLabel {
+				t.MobileNameDisplay = t.Name
+			} else {
+				t.MobileNameDisplay = t.PriorityText
+			}
+
+			rInt := t.RecurrenceInterval
+			if rInt == 0 {
+				rInt = t.RecurrenceDays
+			}
+			switch t.RecurrenceCadence {
+			case "CUSTOM_DAYS":
+				if rInt == 0 {
+					rInt = 90
+				}
+				t.CadenceDisplay = fmt.Sprintf("%dd", rInt)
+			case "CUSTOM_MONTHS":
+				if rInt == 0 {
+					rInt = 3
+				}
+				t.CadenceDisplay = fmt.Sprintf("%dm", rInt)
+			case "CUSTOM_YEARS":
+				if rInt == 0 {
+					rInt = 1
+				}
+				t.CadenceDisplay = fmt.Sprintf("%dy", rInt)
+			default:
+				t.CadenceDisplay = t.RecurrenceCadence
+			}
+
+			if t.DueDate > 0 {
+				t.DueText = fmt.Sprintf(" • Due: %s", time.UnixMicro(t.DueDate).In(loc).Format("2006-01-02"))
+			}
+			if t.CeilingAmountMinor != nil {
+				t.GoalText = fmt.Sprintf(" • Goal: %.2f %s", float64(*t.CeilingAmountMinor)/100.0, t.Currency)
+			}
+			if t.CurrentFundedMinor < 0 {
+				t.ProgressClass = "progress-error"
+			} else if t.ProgressPercent >= 100 {
+				t.ProgressClass = "progress-success"
+			} else {
+				t.ProgressClass = "progress-warning"
+			}
+			t.FundedFormatted = fmt.Sprintf("%.2f", float64(t.CurrentFundedMinor)/100.0)
+			t.RequiredFormatted = fmt.Sprintf("%.2f", float64(t.RequiredMinor)/100.0)
+			t.NeededFormatted = fmt.Sprintf("%.2f", float64(t.NeededMinor)/100.0)
+
 			targetsByBucket[t.BucketID] = append(targetsByBucket[t.BucketID], t)
 		}
 	}
@@ -2326,6 +1091,109 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		b.HasP3AtRisk = (hasP3Targets && b.UnassignedBufferMinor < 0) || hasUnderfundedP3
 		b.DefaultExpanded = (b.HealthStatus == "Overspent" || b.HealthStatus == "Over-allocated" || b.HealthStatus == "Underfunded")
 
+		// Enrich bucket display fields
+		gName := b.GroupName
+		if gName == "" {
+			gName = "Needs"
+		}
+		b.GroupID = safeDOMID(gName)
+		b.EscapedName = strings.ReplaceAll(b.Name, "'", "\\'")
+		b.EscapedGroupName = strings.ReplaceAll(b.GroupName, "'", "\\'")
+		b.BalanceFormatted = fmt.Sprintf("%.2f", float64(b.BalanceMinor)/100.0)
+		b.TotalRequiredFormatted = fmt.Sprintf("%.2f", float64(b.TotalRequiredMinor)/100.0)
+		b.TotalFundedFormatted = fmt.Sprintf("%.2f", float64(b.TotalFundedMinor)/100.0)
+		b.TotalNeededFormatted = fmt.Sprintf("%.2f", float64(b.TotalNeededMinor)/100.0)
+		b.UnassignedBufferFormatted = fmt.Sprintf("%.2f", float64(b.UnassignedBufferMinor)/100.0)
+
+		if b.UnassignedBufferMinor > 0 {
+			b.BufferMobileStr = fmt.Sprintf("Buffer: +%.2f %s", float64(b.UnassignedBufferMinor)/100.0, b.Currency)
+		} else if b.UnassignedBufferMinor < 0 {
+			b.BufferMobileStr = fmt.Sprintf("⚠ Over-allocated: %.2f %s", float64(b.UnassignedBufferMinor)/100.0, b.Currency)
+		} else {
+			b.BufferMobileStr = fmt.Sprintf("Buffer: 0.00 %s", b.Currency)
+		}
+
+		switch b.HealthStatus {
+		case "Overspent":
+			b.StatusDot = "bg-error"
+		case "Over-allocated", "Underfunded":
+			b.StatusDot = "bg-warning"
+		case "Optional remaining":
+			b.StatusDot = "bg-base-300"
+		default:
+			b.StatusDot = "bg-success"
+		}
+
+		if b.HealthStatus == "Overspent" || b.HealthStatus == "Over-allocated" {
+			b.ProgressClass = "progress-error"
+		} else if b.ProgressPercent >= 100 {
+			b.ProgressClass = "progress-success"
+		} else {
+			b.ProgressClass = "progress-warning"
+		}
+
+		if b.BalanceMinor < 0 {
+			b.AvailColor = "text-error"
+		} else {
+			b.AvailColor = "text-base-content"
+		}
+
+		if b.TotalNeededMinor > 0 {
+			b.NeededColor = "text-warning"
+		} else {
+			b.NeededColor = "text-base-content/60"
+		}
+
+		searchTokens := []string{b.Name, b.GroupName}
+		for _, t := range b.Targets {
+			if strings.TrimSpace(t.Name) != "" {
+				searchTokens = append(searchTokens, t.Name)
+			}
+		}
+		b.SearchTokens = strings.ToLower(strings.Join(searchTokens, " "))
+
+		actionMenuDesktop := RenderPopoverActionMenu("bucket", b.ID, []TableActionItem{
+			{
+				Label:   "💵 Assign Funds",
+				OnClick: fmt.Sprintf("openAssignModal('%s', '%s', '%s')", b.ID, b.EscapedName, b.Currency),
+			},
+			{
+				Label:   "⇄ Move Funds",
+				OnClick: fmt.Sprintf("openMoveModal('%s', '%s', '%s')", b.ID, b.EscapedName, b.Currency),
+			},
+			{
+				Label:   "✏️ Edit Bucket",
+				OnClick: fmt.Sprintf("openEditBucketModal('%s', '%s', '%s')", b.ID, b.EscapedName, b.EscapedGroupName),
+			},
+			{
+				Label:      "🗑️ Archive Bucket",
+				FormAction: fmt.Sprintf("/budgets/%s/buckets/%s/archive", budgetID, b.ID),
+				CSRFToken:  csrfToken,
+				ConfirmMsg: "Are you sure you want to archive this bucket? Existing transactions and balances will be preserved.",
+				IsDanger:   true,
+			},
+		})
+		b.ActionMenuDesktop = template.HTML(actionMenuDesktop)
+
+		actionMenuMobile := RenderPopoverActionMenu("bucket_mob", b.ID, []TableActionItem{
+			{
+				Label:   "⇄ Move Funds",
+				OnClick: fmt.Sprintf("openMoveModal('%s', '%s', '%s')", b.ID, b.EscapedName, b.Currency),
+			},
+			{
+				Label:   "✏️ Edit Bucket",
+				OnClick: fmt.Sprintf("openEditBucketModal('%s', '%s', '%s')", b.ID, b.EscapedName, b.EscapedGroupName),
+			},
+			{
+				Label:      "🗑️ Archive Bucket",
+				FormAction: fmt.Sprintf("/budgets/%s/buckets/%s/archive", budgetID, b.ID),
+				CSRFToken:  csrfToken,
+				ConfirmMsg: "Are you sure you want to archive this bucket? Existing transactions and balances will be preserved.",
+				IsDanger:   true,
+			},
+		})
+		b.ActionMenuMobile = template.HTML(actionMenuMobile)
+
 		allBuckets = append(allBuckets, b)
 	}
 
@@ -2416,9 +1284,10 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 			continue
 		}
 		bg := bucketGroupViewData{
-			GroupName: ge.GroupName,
-			GroupID:   safeDOMID(ge.GroupName),
-			Buckets:   ge.Buckets,
+			GroupName:        ge.GroupName,
+			EscapedGroupName: strings.ReplaceAll(ge.GroupName, "'", "\\'"),
+			GroupID:          safeDOMID(ge.GroupName),
+			Buckets:          ge.Buckets,
 		}
 		for _, b := range ge.Buckets {
 			bg.TotalAvailableMinor += b.BalanceMinor
@@ -2426,6 +1295,10 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 			bg.TotalFundedMinor += b.TotalFundedMinor
 			bg.TotalNeededMinor += b.TotalNeededMinor
 		}
+		bg.TotalAvailableFormatted = fmt.Sprintf("%.2f", float64(bg.TotalAvailableMinor)/100.0)
+		bg.TotalRequiredFormatted = fmt.Sprintf("%.2f", float64(bg.TotalRequiredMinor)/100.0)
+		bg.TotalFundedFormatted = fmt.Sprintf("%.2f", float64(bg.TotalFundedMinor)/100.0)
+		bg.TotalNeededFormatted = fmt.Sprintf("%.2f", float64(bg.TotalNeededMinor)/100.0)
 		if bg.TotalRequiredMinor > 0 {
 			pct := int((bg.TotalFundedMinor * 100) / bg.TotalRequiredMinor)
 			if pct < 0 {
@@ -2437,10 +1310,13 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		} else {
 			bg.ProgressPercent = 100
 		}
+		if bg.ProgressPercent >= 100 {
+			bg.ProgressClass = "progress-success"
+		} else {
+			bg.ProgressClass = "progress-warning"
+		}
 		bucketGroups = append(bucketGroups, bg)
 	}
-
-	csrfToken, _ := c.Get("csrfToken").(string)
 
 	// Fetch user-owned accounts and balances for sidebar summary
 	accRows, err := tenantDB.QueryContext(c.Request().Context(), `
@@ -2457,7 +1333,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	}
 	defer accRows.Close()
 
-	var accountSummaryRows strings.Builder
+	var accountSummaries []accountSummaryItem
 	hasAccounts := false
 	for accRows.Next() {
 		hasAccounts = true
@@ -2465,40 +1341,21 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		var aBalance int64
 		accRows.Scan(&aName, &aBalance, &aCurr, &fType, &fVal)
 
-		iconEl := ""
+		isURL := false
+		iconVal := fVal
 		if fType == "URL" && fVal != "" {
-			iconEl = fmt.Sprintf(`<img src="%s" class="w-4 h-4 object-contain inline-block shrink-0 rounded" onerror="this.outerHTML='💳'" />`, fVal)
-		} else {
-			emojiChar := fVal
-			if emojiChar == "" {
-				emojiChar = "💳"
-			}
-			iconEl = fmt.Sprintf(`<span class="text-sm shrink-0 select-none">%s</span>`, emojiChar)
+			isURL = true
+		} else if iconVal == "" {
+			iconVal = "💳"
 		}
 
-		accountSummaryRows.WriteString(fmt.Sprintf(`
-			<div class="flex justify-between items-center text-xs gap-2">
-				<div class="flex items-center gap-1.5 min-w-0">
-					%s
-					<span class="font-medium text-base-content/70 truncate max-w-[120px]" title="%s">%s</span>
-				</div>
-				<span class="font-mono font-bold shrink-0">%.2f %s</span>
-			</div>`, iconEl, aName, aName, float64(aBalance)/100.0, aCurr))
-	}
-
-	if !hasAccounts {
-		accountSummaryRows.WriteString(fmt.Sprintf(`
-			<div class="text-xs text-base-content/50 py-1">
-				<p>No accounts connected yet.</p>
-				<a href="/budgets/%s/accounts" class="btn btn-xs btn-outline btn-primary mt-2 w-full">+ Add Account</a>
-			</div>
-		`, budgetID))
-	}
-
-	// Other bucket options for Move Money modal
-	var bucketSelectOptions strings.Builder
-	for _, b := range allBuckets {
-		bucketSelectOptions.WriteString(fmt.Sprintf(`<option value="%s">%s (%s)</option>`, b.ID, html.EscapeString(b.Name), html.EscapeString(b.GroupName)))
+		accountSummaries = append(accountSummaries, accountSummaryItem{
+			Name:             aName,
+			Currency:         aCurr,
+			BalanceFormatted: fmt.Sprintf("%.2f", float64(aBalance)/100.0),
+			IsURLIcon:        isURL,
+			IconValue:        iconVal,
+		})
 	}
 
 	// Distinct category groups for datalist in bucket modal
@@ -2510,10 +1367,6 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 			seenGroups[gName] = true
 			distinctGroups = append(distinctGroups, gName)
 		}
-	}
-	var categoryDatalistOptions strings.Builder
-	for _, g := range distinctGroups {
-		categoryDatalistOptions.WriteString(fmt.Sprintf(`<option value="%s">`, html.EscapeString(g)))
 	}
 	newBucketGroupPlaceholder := "e.g. Needs, Wants, Savings"
 	if len(distinctGroups) > 0 {
@@ -2531,2064 +1384,154 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		JOIN budget_members bm ON b.id = bm.budget_id
 		WHERE bm.user_id = ? AND b.id != ?
 		ORDER BY b.name ASC`, userID, budgetID)
-	var otherBudgetOptions strings.Builder
+	var otherBudgets []otherBudgetOptionViewData
 	hasOtherBudgets := false
 	if err == nil {
 		defer otherBudgetRows.Close()
 		for otherBudgetRows.Next() {
-			hasOtherBudgets = true
 			var oID, oName, oCurr string
 			if err := otherBudgetRows.Scan(&oID, &oName, &oCurr); err == nil {
-				otherBudgetOptions.WriteString(fmt.Sprintf(`<option value="%s">%s (%s)</option>`, oID, html.EscapeString(oName), html.EscapeString(oCurr)))
+				hasOtherBudgets = true
+				otherBudgets = append(otherBudgets, otherBudgetOptionViewData{
+					ID:       oID,
+					Name:     oName,
+					Currency: oCurr,
+				})
 			}
 		}
-	}
-	otherBudgetSelectDisabled := ""
-	if !hasOtherBudgets {
-		otherBudgetSelectDisabled = "disabled"
-		otherBudgetOptions.WriteString(`<option value="" disabled selected>No other budgets available to import from</option>`)
 	}
 
 	availCurrencies, err := budget.GetAvailableCurrencies(c.Request().Context(), tenantDB, defaultCurr)
 	if err != nil {
 		availCurrencies = []string{defaultCurr}
 	}
-	var targetCurrencyOptions strings.Builder
-	for _, curr := range availCurrencies {
-		selectedAttr := ""
-		if curr == defaultCurr {
-			selectedAttr = " selected"
-		}
-		targetCurrencyOptions.WriteString(fmt.Sprintf(`<option value="%s"%s>%s</option>`, curr, selectedAttr, curr))
-	}
-
-	structureModalHTML := fmt.Sprintf(`
-    <!-- Budget Structure Generator & Import Modal -->
-    <dialog id="structure_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6 max-w-3xl w-full sm:w-11/12 max-h-[85dvh] sm:max-h-[90vh] rounded-t-2xl sm:rounded-box overscroll-contain flex flex-col">
-            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden shrink-0"></div>
-            <div class="flex justify-between items-center mb-4 shrink-0">
-                <div class="flex items-center gap-2">
-                    <span class="text-xl">✨</span>
-                    <h3 class="font-extrabold text-lg sm:text-xl tracking-tight">Bucket Structure Assistant</h3>
-                </div>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-
-            <!-- Tabs -->
-            <div role="tablist" class="tabs tabs-lift mb-4 shrink-0">
-                <button type="button" id="tab_btn_ai" role="tab" class="tab tab-active font-semibold text-xs" onclick="switchStructureTab('ai')">
-                    ✨ Generate with AI
-                </button>
-                <button type="button" id="tab_btn_import" role="tab" class="tab font-semibold text-xs" onclick="switchStructureTab('import')">
-                    📥 Import from Budget
-                </button>
-            </div>
-
-            <!-- Tab 1: AI Prompt -->
-            <div id="structure_tab_ai" class="flex flex-col gap-3 shrink-0">
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Describe your budget in natural language</span></label>
-                    <textarea id="structure_ai_prompt" rows="3" placeholder="e.g. Rodzina 2+1, wynajem mieszkania 2800 PLN, rachunki i internet 350 PLN, zakupy spożywcze 1600 PLN, paliwo 400 PLN, poduszka finansowa 500 PLN, wakacje 300 PLN..." class="textarea textarea-bordered w-full text-xs focus:textarea-primary"></textarea>
-                    <div class="text-[10px] text-base-content/50 mt-1">Our AI assistant will propose organized bucket groups, buckets, and monthly targets.</div>
-                </div>
-                <button type="button" id="btn_generate_preview" class="btn btn-primary btn-sm self-start font-semibold shadow gap-2" onclick="runAIGeneration()">
-                    <span>✨</span>
-                    <span>Generate Preview</span>
-                </button>
-            </div>
-
-            <!-- Tab 2: Import from Budget -->
-            <div id="structure_tab_import" class="hidden flex flex-col gap-3 shrink-0">
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Select source budget to copy from</span></label>
-                    <select id="source_budget_select" class="select select-bordered w-full select-sm focus:select-primary" %s>
-                        %s
-                    </select>
-                </div>
-                <button type="button" id="btn_load_source" class="btn btn-secondary btn-sm self-start font-semibold shadow gap-2" onclick="runSourceImport()" %s>
-                    <span>📥</span>
-                    <span>Load Structure</span>
-                </button>
-            </div>
-
-            <!-- Loading Spinner -->
-            <div id="structure_loading" class="hidden flex flex-col items-center justify-center p-8 gap-3 shrink-0">
-                <span class="loading loading-spinner loading-md text-primary"></span>
-                <span class="text-xs text-base-content/60" id="structure_loading_text">Analyzing description and generating budget buckets...</span>
-            </div>
-
-            <!-- Error Banner -->
-            <div id="structure_error" class="hidden alert alert-error text-xs mt-3 shrink-0">
-                <span id="structure_error_text"></span>
-            </div>
-
-            <!-- Interactive Hierarchical Preview -->
-            <div id="structure_preview_wrapper" class="hidden flex-1 overflow-y-auto mt-4 border border-base-300 rounded-box p-4 bg-base-200/40">
-                <div class="flex items-center justify-between pb-3 border-b border-base-300 mb-3">
-                    <div class="flex items-center gap-2">
-                        <input type="checkbox" id="structure_select_all" class="checkbox checkbox-primary checkbox-xs" checked onchange="toggleSelectAllStructure(this.checked)" />
-                        <label for="structure_select_all" class="text-xs font-bold cursor-pointer">Select All Items</label>
-                    </div>
-                    <span id="structure_stats_badge" class="badge badge-neutral badge-xs font-mono">0 buckets, 0 targets</span>
-                </div>
-
-                <div id="structure_preview_list" class="space-y-4 text-xs">
-                    <!-- Populated dynamically via JS -->
-                </div>
-            </div>
-
-            <div class="modal-action mt-4 pt-3 border-t border-base-300 flex justify-between items-center shrink-0">
-                <button type="button" class="btn btn-ghost btn-sm" onclick="structure_modal.close()">Cancel</button>
-                <button type="button" id="btn_apply_structure" class="btn btn-primary btn-sm font-semibold shadow gap-2 hidden" onclick="applyStructureConfirmed()">
-                    <span>✓</span>
-                    <span>Apply Selected Structure</span>
-                </button>
-            </div>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-`, otherBudgetSelectDisabled, otherBudgetOptions.String(), otherBudgetSelectDisabled)
-
-	// Toast notification
-	toastClass := "hidden"
-	if flashMsg != "" {
-		toastClass = ""
-	}
-	toastHTML := fmt.Sprintf(`
-		<div id="budget-toast" class="toast toast-top toast-end z-50 transition-opacity duration-300 %s">
-			<div class="alert alert-success text-xs shadow-lg flex items-center gap-2">
-				<span>✓</span>
-				<span id="budget-toast-msg">%s</span>
-			</div>
-		</div>
-	`, toastClass, html.EscapeString(flashMsg))
 
 	horizonTitle := "Monthly"
-	switch horizonParam {
-	case "30d":
-		horizonTitle = "30d"
-	case "90d":
-		horizonTitle = "90d"
-	case "annual":
-		horizonTitle = "Annual"
-	case "365d":
-		horizonTitle = "365d"
-	default:
-		horizonTitle = "Monthly"
-	}
-
-	statsBannerHTML := renderBudgetStatsBanner(
-		defaultRTA, defaultCurr, rtaOtherBadges.String(),
-		horizonTitle, totalNeededAcrossAllMinor, totalMandatoryP3NeededAcrossAllMinor,
-	)
-
-	controlsToolbarHTML := renderBudgetControlsToolbar(
-		budgetID, horizonParam, filterParam, defaultCurr, csrfToken, windowDays,
-	)
-
-	filterToolbarHTML := renderBudgetFilterToolbar(
-		budgetID, horizonParam, filterParam,
-		countAll, countAttention, countOverspent, countBuffer,
-	)
-
-	desktopRowsHTML := renderBucketRowsDesktop(
-		len(allBuckets), bucketGroups, defaultCurr, horizonParam, filterParam, csrfToken, budgetID,
-	)
-
-	mobileCardsHTML := renderBucketCardsMobile(
-		len(allBuckets), bucketGroups, displayBuckets, defaultCurr, horizonParam, filterParam, csrfToken, budgetID,
-	)
-
 	horizonDisplay := "Monthly"
 	switch horizonParam {
 	case "30d":
+		horizonTitle = "30d"
 		horizonDisplay = "30d"
 	case "90d":
+		horizonTitle = "90d"
 		horizonDisplay = "90d"
 	case "annual":
+		horizonTitle = "Annual"
 		horizonDisplay = "Annual"
 	case "365d":
+		horizonTitle = "365d"
 		horizonDisplay = "365d"
 	default:
+		horizonTitle = "Monthly"
 		horizonDisplay = "Monthly"
 	}
 
-	var mainEnvelopesContent string
-	if len(allBuckets) == 0 {
-		mainEnvelopesContent = `
-			<div class="card card-border bg-base-100 border-dashed border-base-300 p-8 text-center flex flex-col items-center justify-center gap-4">
-				<div class="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-3xl font-bold">✨</div>
-				<div>
-					<h3 class="font-extrabold text-lg tracking-tight">No Buckets Created Yet</h3>
-					<p class="text-xs text-base-content/60 max-w-md mx-auto mt-1">Get started quickly by generating a complete bucket structure with AI, importing from another budget, or adding buckets manually.</p>
-				</div>
-				<div class="flex flex-wrap items-center justify-center gap-2 mt-2">
-					<button type="button" class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('ai')">
-						<span>✨</span>
-						<span>Create from Description (AI)</span>
-					</button>
-					<button type="button" class="btn btn-outline btn-secondary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('import')">
-						<span>📥</span>
-						<span>Import from Another Budget</span>
-					</button>
-					<button type="button" class="btn btn-ghost btn-sm" onclick="new_bucket_modal.showModal()">
-						<span>+</span>
-						<span>New Bucket Manually</span>
-					</button>
-				</div>
-			</div>
-		`
-	} else {
-		mainEnvelopesContent = fmt.Sprintf(`
-			<!-- Desktop Buckets Table Card -->
-			<div class="card card-border bg-base-100 border-base-300 shadow-md hidden md:block">
-				<div class="card-body p-0">
-					<div class="overflow-x-auto">
-						<table class="table table-zebra w-full">
-							<thead>
-								<tr class="bg-base-200/50">
-									<th class="font-bold">Bucket / Category &amp; Targets</th>
-									<th class="font-bold">Progress</th>
-									<th class="font-bold text-right">Needed (%s)</th>
-									<th class="font-bold text-right">Available Balance</th>
-									<th class="font-bold text-right">Actions</th>
-								</tr>
-							</thead>
-							<tbody>
-								%s
-							</tbody>
-						</table>
-					</div>
-				</div>
-			</div>
-
-			<!-- Mobile Buckets Cards List -->
-			<div class="md:hidden space-y-3">
-				%s
-			</div>
-		`, horizonDisplay, desktopRowsHTML, mobileCardsHTML)
+	rtaColor := "text-success"
+	rtaDescClass := "text-success"
+	rtaDesc := "All money assigned to envelopes"
+	if defaultRTA < 0 {
+		rtaColor = "text-error"
+		rtaDescClass = "text-error font-semibold"
+		rtaDesc = "You assigned more than you have!"
+	} else if defaultRTA > 0 {
+		rtaColor = "text-primary"
+		rtaDescClass = "text-base-content/60"
+		rtaDesc = "Assign this to envelopes below"
 	}
 
-	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en" data-theme="dark">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>Balance — %s</title>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5" rel="stylesheet" type="text/css" />
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css" rel="stylesheet" type="text/css" />
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-    <link rel="icon" type="image/x-icon" href="/favicon.ico">
-    <link rel="manifest" href="/manifest.webmanifest">
-</head>
-<body class="bg-base-200 text-base-content min-h-screen flex flex-col">
-    <!-- Navbar -->
-    <header class="navbar bg-base-100 border-b border-base-300 px-3 sm:px-6 pt-[env(safe-area-inset-top)] sticky top-0 z-30 shadow-xs min-h-14">
-        <div class="navbar-start gap-2 sm:gap-4 items-center min-w-0">
-            <a href="/budgets" class="text-xl sm:text-2xl font-black tracking-tight text-primary flex items-center gap-1.5 sm:gap-2 shrink-0">
-                <span>⚖️</span>
-                <span>Balance</span>
-            </a>
-            <div class="badge badge-neutral font-semibold gap-1.5 py-2.5 sm:py-3 max-w-[140px] sm:max-w-none truncate">
-                <span class="w-2 h-2 rounded-full bg-success shrink-0"></span>
-                <span class="truncate">%s</span>
-            </div>
-            <span class="badge badge-soft badge-primary font-semibold text-xs hidden sm:inline-flex">%s</span>
-        </div>
-        <div class="navbar-end gap-1.5 sm:gap-3 shrink-0">
-            <div class="badge badge-accent badge-soft font-bold py-2.5 sm:py-3 text-xs gap-1 sm:gap-1.5">
-                <span>⏳</span>
-                <span class="hidden sm:inline">Age of Money: %d days</span>
-                <span class="sm:hidden">%dd</span>
-            </div>
-            <form method="POST" action="/logout">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <button type="submit" class="btn btn-ghost btn-xs sm:btn-sm font-medium px-2 sm:px-3">Log Out</button>
-            </form>
-        </div>
-    </header>
-
-    <div class="flex-1 flex overflow-hidden">
-        <!-- Left Sidebar Navigation -->
-        <aside class="w-64 bg-base-100 border-r border-base-300 p-4 hidden md:flex flex-col gap-4">
-            %s
-
-            <div class="divider my-0"></div>
-
-            <div class="px-2">
-                <div class="text-xs font-bold uppercase tracking-wider text-base-content/50 mb-2">Accounts Summary</div>
-                <div class="space-y-2">
-                    %s
-                </div>
-            </div>
-        </aside>
-
-        <!-- Center Workspace -->
-        <main class="flex-1 p-4 sm:p-6 md:p-8 pb-24 md:pb-8 overflow-y-auto">
-            %s
-
-            %s
-
-            %s
-
-            %s
-
-            %s
-        </main>
-    </div>
-
-    %s
-
-    %s
-
-    <!-- Category Groups Datalist -->
-    <datalist id="existing_category_groups">
-        %s
-    </datalist>
-
-    <!-- New Bucket Modal -->
-    <dialog id="new_bucket_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
-            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight">Create New Bucket</h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form method="POST" action="/budgets/%s/buckets" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <input type="hidden" name="horizon" value="%s" />
-                <input type="hidden" name="filter" value="%s" />
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Bucket Name</span></label>
-                    <input type="text" id="new_bucket_name" name="name" required autofocus placeholder="e.g. Groceries, Living Expenses" class="input input-bordered w-full input-md focus:input-primary" />
-                </div>
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Group / Category</span></label>
-                    <input type="text" name="group_name" value="" list="existing_category_groups" required placeholder="%s" class="input input-bordered w-full input-md focus:input-primary" />
-                </div>
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="new_bucket_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Create Bucket</button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <!-- Rename Group Modal -->
-    <dialog id="rename_group_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
-            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight">Rename Category / Group</h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form id="rename_group_form" method="POST" action="/budgets/%s/groups/rename" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <input type="hidden" name="horizon" value="%s" />
-                <input type="hidden" name="filter" value="%s" />
-                <input type="hidden" id="rename_group_old_name" name="old_name" value="" />
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Category Name</span></label>
-                    <input type="text" id="rename_group_new_name" name="new_name" required autofocus placeholder="e.g. Living, Housing, Needs" class="input input-bordered w-full input-md focus:input-primary" />
-                </div>
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="rename_group_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Category Name</button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <!-- Edit Bucket Modal -->
-    <dialog id="edit_bucket_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
-            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight">Edit Bucket</h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form id="edit_bucket_form" method="POST" action="" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <input type="hidden" name="horizon" value="%s" />
-                <input type="hidden" name="filter" value="%s" />
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Bucket Name</span></label>
-                    <input type="text" id="edit_bucket_name" name="name" required autofocus class="input input-bordered w-full input-md focus:input-primary" />
-                </div>
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Group / Category</span></label>
-                    <input type="text" id="edit_bucket_group" name="group_name" required list="existing_category_groups" class="input input-bordered w-full input-md focus:input-primary" />
-                </div>
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="edit_bucket_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Changes</button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <!-- Assign Funds Modal -->
-    <dialog id="assign_funds_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
-            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight">Assign Funds to Envelope</h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form id="assign_funds_form" method="POST" action="" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <input type="hidden" name="horizon" value="%s" />
-                <input type="hidden" name="filter" value="%s" />
-                <input type="hidden" id="assign_currency" name="currency" value="%s" />
-                <div class="text-xs text-base-content/70">
-                    Assign funds directly from Ready to Assign into <span id="assign_bucket_name" class="font-bold text-primary"></span>.
-                    (Enter negative amount to return funds back to pool).
-                </div>
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Amount</span></label>
-                    <div class="join w-full">
-                        <input type="number" step="0.01" inputmode="decimal" id="assign_amount_input" name="amount" required autofocus placeholder="100.00" class="input input-bordered join-item w-full input-md focus:input-primary font-mono" />
-                        <span id="assign_currency_label" class="btn join-item btn-neutral no-animation">%s</span>
-                    </div>
-                </div>
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="assign_funds_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Assign Funds</button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <!-- Move Funds Modal -->
-    <dialog id="move_funds_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
-            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight">Move Funds Between Envelopes</h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form method="POST" action="/budgets/%s/buckets/move" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <input type="hidden" name="horizon" value="%s" />
-                <input type="hidden" name="filter" value="%s" />
-                <input type="hidden" id="move_source_id" name="source_bucket_id" value="" />
-                <input type="hidden" id="move_currency" name="currency" value="%s" />
-                <div class="text-xs text-base-content/70">
-                    Move money out of <span id="move_source_name" class="font-bold text-primary"></span> into another envelope.
-                </div>
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Destination Envelope</span></label>
-                    <select name="dest_bucket_id" required class="select select-bordered w-full select-md focus:select-primary">
-                        %s
-                    </select>
-                </div>
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Amount to Move</span></label>
-                    <div class="join w-full">
-                        <input type="number" step="0.01" min="0.01" inputmode="decimal" id="move_amount_input" name="amount" required autofocus placeholder="50.00" class="input input-bordered join-item w-full input-md focus:input-primary font-mono" />
-                        <span id="move_currency_label" class="btn join-item btn-neutral no-animation">%s</span>
-                    </div>
-                </div>
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="move_funds_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Move Funds</button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <!-- Bucket Inspector Drawer / Modal -->
-    <dialog id="bucket_drawer" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 w-full max-w-2xl max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
-            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
-            <div class="flex justify-between items-start mb-4">
-                <div>
-                    <h3 id="drawer_bucket_name" class="font-extrabold text-xl sm:text-2xl tracking-tight"></h3>
-                    <div id="drawer_bucket_meta" class="text-xs text-base-content/60 mt-0.5"></div>
-                </div>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-
-            <div class="stats stats-vertical sm:stats-horizontal shadow-sm w-full bg-base-200/60 border border-base-300 mb-6">
-                <div class="stat p-3.5 sm:p-4">
-                    <div class="stat-title text-[10px] font-bold uppercase tracking-wider">Available Envelope Balance</div>
-                    <div id="drawer_bucket_balance" class="stat-value text-xl font-mono font-black text-primary"></div>
-                </div>
-                <div class="stat p-3.5 sm:p-4">
-                    <div class="stat-title text-[10px] font-bold uppercase tracking-wider">Funded / Required</div>
-                    <div id="drawer_bucket_funded_req" class="stat-value text-base font-mono font-bold text-base-content/80"></div>
-                </div>
-                <div class="stat p-3.5 sm:p-4">
-                    <div class="stat-title text-[10px] font-bold uppercase tracking-wider">Unassigned Buffer</div>
-                    <div id="drawer_bucket_buffer" class="stat-value text-base font-mono font-bold"></div>
-                </div>
-            </div>
-
-            <!-- Target Management Section -->
-            <div class="flex justify-between items-center mb-3">
-                <h4 class="font-bold text-sm uppercase tracking-wider text-base-content/70">Targets in this Bucket</h4>
-                <div class="flex items-center gap-2">
-                    <button type="button" class="btn btn-sm sm:btn-xs btn-outline btn-secondary gap-1 font-semibold touch-manipulation" onclick="openMoveTargetFundsModal()">⇄ Move Between Targets</button>
-                    <button type="button" class="btn btn-sm sm:btn-xs btn-primary gap-1 font-semibold touch-manipulation" onclick="openNewTargetModal()">+ Add Target</button>
-                </div>
-            </div>
-
-            <div id="drawer_targets_container" class="space-y-3 mb-6">
-                <!-- Populated dynamically via JS -->
-            </div>
-
-            <div class="modal-action">
-                <button type="button" class="btn btn-ghost btn-sm" onclick="bucket_drawer.close()">Close</button>
-            </div>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <!-- Move Funds Between Targets Modal (YNAB style inside bucket) -->
-    <dialog id="move_target_funds_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
-            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight">Reallocate Target Funds</h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form method="POST" action="/budgets/%s/targets/move" class="flex flex-col gap-4">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <input type="hidden" name="horizon" value="%s" />
-                <input type="hidden" name="filter" value="%s" />
-                <input type="hidden" id="move_target_bucket_id" name="bucket_id" value="" />
-                <input type="hidden" id="move_target_currency" name="currency" value="" />
-
-                <div class="text-xs text-base-content/70">
-                    Transfer funded amounts directly between targets or envelope buffer in <span id="move_target_bucket_name" class="font-bold text-primary"></span>.
-                </div>
-
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">From (Source)</span></label>
-                        <select id="move_source_target_id" name="source_target_id" required class="select select-bordered w-full select-md focus:select-primary" onchange="updateMoveTargetOptions()">
-                        </select>
-                    </div>
-                    <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">To (Destination)</span></label>
-                        <select id="move_dest_target_id" name="dest_target_id" required class="select select-bordered w-full select-md focus:select-primary">
-                        </select>
-                    </div>
-                </div>
-
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Amount to Move</span></label>
-                    <div class="join w-full">
-                        <input type="number" step="0.01" min="0.01" inputmode="decimal" id="move_target_amount" name="amount" required autofocus placeholder="25.00" class="input input-bordered join-item w-full input-md focus:input-primary font-mono font-bold" />
-                        <span id="move_target_curr_label" class="btn join-item btn-neutral no-animation">PLN</span>
-                    </div>
-                </div>
-
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="move_target_funds_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Reallocate Funds</button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <!-- Create / Edit Target Modal -->
-    <dialog id="target_modal" class="modal modal-bottom sm:modal-middle">
-        <div class="modal-box card-border border-base-300 w-full max-w-xl max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
-            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
-            <div class="flex justify-between items-center mb-4">
-                <h3 id="target_modal_title" class="font-extrabold text-xl tracking-tight">Add Target</h3>
-                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
-            </div>
-            <form id="target_form" method="POST" action="/budgets/%s/targets" class="flex flex-col gap-4" onsubmit="prepareTargetSubmit()">
-                <input type="hidden" name="csrf_token" value="%s" />
-                <input type="hidden" name="horizon" value="%s" />
-                <input type="hidden" name="filter" value="%s" />
-                <input type="hidden" id="target_bucket_id" name="bucket_id" value="" />
-
-                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <div class="form-control sm:col-span-2">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Target Name <span class="text-base-content/50 font-normal">(optional)</span></span></label>
-                        <input type="text" id="target_name" name="name" placeholder="e.g. Monthly Rent, Electricity" class="input input-bordered w-full input-md focus:input-primary" />
-                    </div>
-                    <div class="form-control sm:col-span-1">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Currency</span></label>
-                        <select id="target_currency" name="currency" class="select select-bordered w-full select-md focus:select-primary">
-                            %s
-                        </select>
-                        <span id="target_currency_help" class="text-[10px] text-base-content/50 mt-1 hidden">(Currency cannot be changed after creation)</span>
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Target Type</span></label>
-                        <select id="target_type" name="target_type" class="select select-bordered w-full select-md focus:select-primary">
-                            <option value="EXPENSE" selected>Expense</option>
-                            <option value="SAVINGS">Savings</option>
-                            <option value="DEBT_PAYMENT">Debt Payment</option>
-                        </select>
-                    </div>
-                    <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Priority</span></label>
-                        <select id="target_priority" name="priority" class="select select-bordered w-full select-md focus:select-primary">
-                            <option value="3" selected>Mandatory (3)</option>
-                            <option value="2">Recommended (2)</option>
-                            <option value="1">Optional (1)</option>
-                        </select>
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Cadence</span></label>
-                        <select id="target_cadence" name="recurrence_cadence" class="select select-bordered w-full select-md focus:select-primary" onchange="toggleCustomDays()">
-                            <option value="MONTHLY" selected>Monthly</option>
-                            <option value="WEEKLY">Weekly</option>
-                            <option value="ANNUAL">Annual</option>
-                            <option value="ONE_OFF">One-Off</option>
-                            <option value="CUSTOM_DAYS">Custom Days</option>
-                            <option value="CUSTOM_MONTHS">Custom Months</option>
-                            <option value="CUSTOM_YEARS">Custom Years</option>
-                        </select>
-                    </div>
-                    <div class="form-control">
-                        <label class="label pb-1"><span class="label-text font-medium text-xs">Non-Spending Strategy</span></label>
-                        <select id="target_strategy" name="non_spending_strategy" class="select select-bordered w-full select-md focus:select-primary">
-                            <option value="ROLL_OVER" selected>Roll Over</option>
-                            <option value="RETURN_TO_POOL">Return to Pool</option>
-                            <option value="ARREARS_CUMULATIVE">Arrears Cumulative</option>
-                            <option value="CAP_AND_HOLD">Cap and Hold</option>
-                            <option value="PRORATE_FUTURE">Prorate Future</option>
-                        </select>
-                    </div>
-                </div>
-
-                <!-- Custom Interval Input -->
-                <div id="custom_days_container" class="hidden form-control">
-                    <label class="label pb-1"><span id="target_recurrence_interval_label" class="label-text font-medium text-xs font-semibold">Recurrence Interval (Days)</span></label>
-                    <input type="number" id="target_recurrence_days" name="recurrence_interval" min="1" max="36500" placeholder="e.g. 90 for quarterly, 180 for semi-annual" class="input input-bordered w-full input-md focus:input-primary font-mono" />
-                </div>
-
-                <!-- Due Date / Anchor Date Input -->
-                <div id="target_due_date_container" class="hidden form-control">
-                    <label class="label pb-1"><span id="target_due_date_label" class="label-text font-medium text-xs font-semibold">Anchor Due Date</span></label>
-                    <input type="date" id="target_due_date" name="due_date" class="input input-bordered w-full input-md focus:input-primary font-mono" />
-                    <span id="target_due_date_hint" class="text-[10px] text-base-content/50 mt-1">Calendar anchor date used for calculating recurring cycles</span>
-                </div>
-
-                <!-- Calculation Mode Selector -->
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Calculation Mode</span></label>
-                    <div class="join w-full grid grid-cols-2">
-                        <input class="join-item btn btn-sm btn-outline checked:btn-primary text-xs" type="radio" name="amount_mode" id="mode_fixed" value="FIXED" aria-label="Fixed Amount" checked onchange="switchAmountMode('FIXED')" />
-                        <input class="join-item btn btn-sm btn-outline checked:btn-primary text-xs" type="radio" name="amount_mode" id="mode_lua" value="LUA_FORMULA" aria-label="Dynamic Formula (Lua / AI)" onchange="switchAmountMode('LUA_FORMULA')" />
-                    </div>
-                </div>
-
-                <!-- Fixed Amount Input -->
-                <div id="fixed_amount_container" class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Period Amount</span></label>
-                    <input type="number" step="0.01" min="0" inputmode="decimal" id="target_amount" name="amount" required placeholder="1000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
-                </div>
-
-                <!-- Lua Formula & AI Assistant Container -->
-                <div id="lua_formula_container" class="hidden flex flex-col gap-3">
-                    <div class="form-control">
-                        <div class="flex justify-between items-center pb-1">
-                            <label class="label-text font-medium text-xs font-semibold">Lua Script</label>
-                            <span class="text-[10px] text-base-content/50 font-mono">minor units (int64)</span>
-                        </div>
-                        <textarea id="target_lua_script" name="lua_script" rows="3" placeholder="return math.max(0, money(2000) - target('Mortgage Installment').required)" class="textarea textarea-bordered w-full font-mono text-xs focus:textarea-primary"></textarea>
-                        <div class="text-[10px] text-base-content/60 mt-1">
-                            API: <code class="bg-base-200 px-1 rounded">money(val)</code>, <code class="bg-base-200 px-1 rounded">target(&quot;name&quot;).required</code>, <code class="bg-base-200 px-1 rounded">bucket.balance()</code>, <code class="bg-base-200 px-1 rounded">budget.income(days)</code>
-                        </div>
-                    </div>
-
-                    <div class="flex items-center gap-2">
-                        <button type="button" id="btn_validate_formula" class="btn btn-outline btn-xs gap-1 font-semibold" onclick="validateFormulaScript()">
-                            🔍 Validate &amp; Preview
-                        </button>
-                        <button type="button" id="btn_toggle_ai" class="btn btn-secondary btn-xs gap-1 font-semibold" onclick="toggleAIPanel()">
-                            ✨ Generate with AI
-                        </button>
-                    </div>
-
-                    <div id="formula_preview_box" class="hidden text-xs p-3 rounded-lg border flex flex-col gap-1"></div>
-
-                    <div id="ai_assistant_panel" class="hidden card bg-base-200/60 border border-base-300 p-3 rounded-lg flex flex-col gap-2">
-                        <div class="flex justify-between items-center">
-                            <span class="text-xs font-bold text-secondary flex items-center gap-1">✨ AI Formula Assistant</span>
-                            <span class="text-[10px] text-base-content/50">Gemini 3.8 Flash</span>
-                        </div>
-                        <div class="join w-full">
-                            <input type="text" id="ai_formula_prompt" placeholder="e.g. Save 15%% of total income over last 30 days capped at 5000 PLN" class="input input-bordered input-sm join-item w-full text-xs" />
-                            <button type="button" id="btn_generate_ai" class="btn btn-secondary btn-sm join-item" onclick="generateFormulaAI()">Generate</button>
-                        </div>
-                        <div id="ai_status_msg" class="text-xs hidden"></div>
-                    </div>
-                </div>
-
-                <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Target Ceiling / Goal (Optional)</span></label>
-                    <input type="number" step="0.01" min="0" inputmode="decimal" id="target_ceiling" name="ceiling_amount" placeholder="20000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
-                </div>
-
-                <div class="modal-action mt-6 gap-2">
-                    <button type="button" class="btn btn-ghost" onclick="target_modal.close()">Cancel</button>
-                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Target</button>
-                </div>
-            </form>
-        </div>
-        <form method="dialog" class="modal-backdrop"><button>close</button></form>
-    </dialog>
-
-    <script>
-        const currentBudgetID = '%s';
-        const csrfTokenVal = '%s';
-        const currentCurrency = '%s';
-        const currentHorizon = '%s';
-        const currentFilter = '%s';
-        const bucketsData = %s;
-
-        window.addEventListener('DOMContentLoaded', () => {
-            const toast = document.getElementById('budget-toast');
-            if (toast && !toast.classList.contains('hidden')) {
-                setTimeout(() => {
-                    toast.style.opacity = '0';
-                    setTimeout(() => toast.classList.add('hidden'), 300);
-                }, 4000);
-            }
-
-            if (window.location.hash) {
-                const el = document.querySelector(window.location.hash);
-                if (el) {
-                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    el.classList.add('bg-primary/10');
-                    setTimeout(() => el.classList.remove('bg-primary/10'), 2500);
-                }
-            }
-
-            document.querySelectorAll('.target-subrows').forEach(row => {
-                const bID = row.getAttribute('data-bucket-id');
-                const stored = localStorage.getItem('balance_bucket_expanded_' + currentBudgetID + '_' + bID);
-                if (stored !== null) {
-                    const isExp = stored === 'true';
-                    row.classList.toggle('hidden', !isExp);
-                    const icon = document.getElementById('bucket-toggle-icon-' + bID);
-                    if (icon) icon.innerText = isExp ? '▼' : '▶';
-                    const btn = document.querySelector('.target-toggle-btn[aria-controls="targets-' + bID + '"]');
-                    if (btn) btn.setAttribute('aria-expanded', isExp ? 'true' : 'false');
-                }
-            });
-
-            initBucketDragAndDrop();
-        });
-
-        function showAppToast(message, isSuccess = true) {
-            let toast = document.getElementById('budget-toast');
-            if (!toast) return;
-            const alertBox = toast.querySelector('.alert');
-            const msgEl = document.getElementById('budget-toast-msg');
-            if (msgEl) msgEl.innerText = message;
-            if (alertBox) {
-                alertBox.className = 'alert text-xs shadow-lg flex items-center gap-2 ' + (isSuccess ? 'alert-success' : 'alert-error');
-            }
-            toast.classList.remove('hidden');
-            toast.style.opacity = '1';
-            clearTimeout(window.__toastTimeout);
-            window.__toastTimeout = setTimeout(() => {
-                toast.style.opacity = '0';
-                setTimeout(() => toast.classList.add('hidden'), 300);
-            }, 4000);
-        }
-
-        function initBucketDragAndDrop() {
-            let draggedBucket = null;
-
-            // Desktop Drag Handles
-            document.querySelectorAll('.bucket-drag-handle').forEach(handle => {
-                handle.addEventListener('dragstart', (e) => {
-                    const row = handle.closest('.bucket-row');
-                    if (!row) return;
-                    draggedBucket = {
-                        type: 'desktop',
-                        id: row.getAttribute('data-bucket-id'),
-                        name: row.getAttribute('data-bucket-name'),
-                        groupId: row.getAttribute('data-group-id'),
-                        groupName: row.getAttribute('data-group-name'),
-                        rowEl: row,
-                        subrowEl: document.getElementById('targets-' + row.getAttribute('data-bucket-id'))
-                    };
-                    e.dataTransfer.effectAllowed = 'move';
-                    e.dataTransfer.setData('text/plain', draggedBucket.id);
-                    row.classList.add('opacity-40');
-                });
-
-                handle.addEventListener('dragend', () => {
-                    if (draggedBucket && draggedBucket.rowEl) {
-                        draggedBucket.rowEl.classList.remove('opacity-40');
-                    }
-                    document.querySelectorAll('.group-drop-zone').forEach(z => {
-                        z.classList.remove('bg-primary/20', 'border-primary');
-                    });
-                    draggedBucket = null;
-                });
-            });
-
-            // Desktop Drop Zones (Category Group Headers)
-            document.querySelectorAll('.group-drop-zone').forEach(zone => {
-                zone.addEventListener('dragover', (e) => {
-                    if (!draggedBucket || draggedBucket.type !== 'desktop') return;
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = 'move';
-                    zone.classList.add('bg-primary/20', 'border-primary');
-                });
-
-                zone.addEventListener('dragleave', (e) => {
-                    if (!zone.contains(e.relatedTarget)) {
-                        zone.classList.remove('bg-primary/20', 'border-primary');
-                    }
-                });
-
-                zone.addEventListener('drop', (e) => {
-                    e.preventDefault();
-                    zone.classList.remove('bg-primary/20', 'border-primary');
-                    if (!draggedBucket || draggedBucket.type !== 'desktop') return;
-
-                    const targetGroupId = zone.getAttribute('data-group-id');
-                    const targetGroupName = zone.getAttribute('data-group-name');
-                    if (targetGroupId === draggedBucket.groupId) return;
-
-                    moveBucketToGroupDOM(draggedBucket, targetGroupId, targetGroupName);
-                });
-            });
-
-            // Mobile Drag Handles
-            document.querySelectorAll('.mobile-bucket-drag-handle').forEach(handle => {
-                handle.addEventListener('dragstart', (e) => {
-                    const card = handle.closest('.mobile-bucket-card');
-                    if (!card) return;
-                    draggedBucket = {
-                        type: 'mobile',
-                        id: card.getAttribute('data-bucket-id'),
-                        name: card.getAttribute('data-bucket-name'),
-                        groupId: card.getAttribute('data-group-id'),
-                        groupName: card.getAttribute('data-group-name'),
-                        cardEl: card
-                    };
-                    e.dataTransfer.effectAllowed = 'move';
-                    e.dataTransfer.setData('text/plain', draggedBucket.id);
-                    card.classList.add('opacity-40');
-                });
-
-                handle.addEventListener('dragend', () => {
-                    if (draggedBucket && draggedBucket.cardEl) {
-                        draggedBucket.cardEl.classList.remove('opacity-40');
-                    }
-                    document.querySelectorAll('.mobile-group-drop-zone').forEach(z => {
-                        z.classList.remove('bg-primary/20', 'border-primary');
-                    });
-                    draggedBucket = null;
-                });
-            });
-
-            // Mobile Drop Zones (Category Headers)
-            document.querySelectorAll('.mobile-group-drop-zone').forEach(zone => {
-                zone.addEventListener('dragover', (e) => {
-                    if (!draggedBucket || draggedBucket.type !== 'mobile') return;
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = 'move';
-                    zone.classList.add('bg-primary/20', 'border-primary');
-                });
-
-                zone.addEventListener('dragleave', (e) => {
-                    if (!zone.contains(e.relatedTarget)) {
-                        zone.classList.remove('bg-primary/20', 'border-primary');
-                    }
-                });
-
-                zone.addEventListener('drop', (e) => {
-                    e.preventDefault();
-                    zone.classList.remove('bg-primary/20', 'border-primary');
-                    if (!draggedBucket || draggedBucket.type !== 'mobile') return;
-
-                    const targetGroupId = zone.getAttribute('data-group-id');
-                    const targetGroupName = zone.getAttribute('data-group-name');
-                    if (targetGroupId === draggedBucket.groupId) return;
-
-                    moveMobileBucketToGroupDOM(draggedBucket, targetGroupId, targetGroupName);
-                });
-            });
-        }
-
-        function moveBucketToGroupDOM(item, targetGroupId, targetGroupName) {
-            const oldGroupId = item.groupId;
-            const oldGroupName = item.groupName;
-            const row = item.rowEl;
-            const subrow = item.subrowEl;
-            const header = document.getElementById('group-header-' + targetGroupId);
-            if (!header) return;
-
-            // Save old location for rollback
-            const prevSibling = row.previousElementSibling;
-
-            // Optimistic DOM update
-            row.classList.remove('group-item-' + oldGroupId);
-            row.classList.add('group-item-' + targetGroupId);
-            row.setAttribute('data-group-id', targetGroupId);
-            row.setAttribute('data-group-name', targetGroupName);
-
-            if (subrow) {
-                subrow.classList.remove('group-item-' + oldGroupId);
-                subrow.classList.add('group-item-' + targetGroupId);
-            }
-
-            header.after(row);
-            if (subrow) {
-                row.after(subrow);
-            }
-
-            // Also update search attribute tokens
-            const searchAttr = row.getAttribute('data-search') || '';
-            row.setAttribute('data-search', searchAttr.replace(oldGroupName.toLowerCase(), targetGroupName.toLowerCase()));
-
-            // Send request to server
-            fetch('/budgets/' + currentBudgetID + '/buckets/' + item.id + '/move-group', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Accept': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest'
-                },
-                body: new URLSearchParams({
-                    'csrf_token': csrfTokenVal,
-                    'group_name': targetGroupName
-                })
-            })
-            .then(res => {
-                if (!res.ok) throw new Error('Server returned status ' + res.status);
-                return res.json();
-            })
-            .then(data => {
-                showAppToast('Bucket moved to ' + targetGroupName, true);
-            })
-            .catch(err => {
-                // Rollback DOM
-                row.classList.remove('group-item-' + targetGroupId);
-                row.classList.add('group-item-' + oldGroupId);
-                row.setAttribute('data-group-id', oldGroupId);
-                row.setAttribute('data-group-name', oldGroupName);
-                if (subrow) {
-                    subrow.classList.remove('group-item-' + targetGroupId);
-                    subrow.classList.add('group-item-' + oldGroupId);
-                }
-                if (prevSibling) {
-                    prevSibling.after(row);
-                }
-                if (subrow) {
-                    row.after(subrow);
-                }
-                showAppToast('Failed to move bucket: ' + err.message, false);
-            });
-        }
-
-        function moveMobileBucketToGroupDOM(item, targetGroupId, targetGroupName) {
-            const oldGroupId = item.groupId;
-            const oldGroupName = item.groupName;
-            const card = item.cardEl;
-            const header = document.getElementById('mobile-group-' + targetGroupId);
-            if (!header) return;
-
-            const prevSibling = card.previousElementSibling;
-
-            // Optimistic DOM update
-            card.classList.remove('mobile-group-item-' + oldGroupId);
-            card.classList.add('mobile-group-item-' + targetGroupId);
-            card.setAttribute('data-group-id', targetGroupId);
-            card.setAttribute('data-group-name', targetGroupName);
-
-            header.after(card);
-
-            fetch('/budgets/' + currentBudgetID + '/buckets/' + item.id + '/move-group', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Accept': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest'
-                },
-                body: new URLSearchParams({
-                    'csrf_token': csrfTokenVal,
-                    'group_name': targetGroupName
-                })
-            })
-            .then(res => {
-                if (!res.ok) throw new Error('Server returned status ' + res.status);
-                return res.json();
-            })
-            .then(data => {
-                showAppToast('Bucket moved to ' + targetGroupName, true);
-            })
-            .catch(err => {
-                card.classList.remove('mobile-group-item-' + targetGroupId);
-                card.classList.add('mobile-group-item-' + oldGroupId);
-                card.setAttribute('data-group-id', oldGroupId);
-                card.setAttribute('data-group-name', oldGroupName);
-                if (prevSibling) {
-                    prevSibling.after(card);
-                }
-                showAppToast('Failed to move bucket: ' + err.message, false);
-            });
-        }
-
-        function toggleBucketTargets(bID) {
-            const row = document.getElementById('targets-' + bID);
-            if (!row) return;
-            const isNowHidden = !row.classList.contains('hidden');
-            row.classList.toggle('hidden', isNowHidden);
-            const icon = document.getElementById('bucket-toggle-icon-' + bID);
-            if (icon) icon.innerText = isNowHidden ? '▶' : '▼';
-            const btn = document.querySelector('.target-toggle-btn[aria-controls="targets-' + bID + '"]');
-            if (btn) btn.setAttribute('aria-expanded', isNowHidden ? 'false' : 'true');
-            localStorage.setItem('balance_bucket_expanded_' + currentBudgetID + '_' + bID, isNowHidden ? 'false' : 'true');
-        }
-
-        function toggleMobileTargets(bID) {
-            const el = document.getElementById('mobile-targets-' + bID);
-            if (!el) return;
-            const isNowHidden = !el.classList.contains('hidden');
-            el.classList.toggle('hidden', isNowHidden);
-            const icon = document.getElementById('mobile-toggle-icon-' + bID);
-            if (icon) icon.innerText = isNowHidden ? '▶' : '▼';
-        }
-
-        function toggleGroup(groupID) {
-            const items = document.querySelectorAll('.group-item-' + groupID);
-            let anyHidden = false;
-            items.forEach(el => {
-                if (el.classList.contains('hidden')) anyHidden = true;
-            });
-            const shouldHide = !anyHidden;
-            items.forEach(el => el.classList.toggle('hidden', shouldHide));
-            const icon = document.getElementById('group-icon-' + groupID);
-            if (icon) icon.innerText = shouldHide ? '▶' : '▼';
-        }
-
-        function toggleMobileGroup(groupID) {
-            const items = document.querySelectorAll('.mobile-group-item-' + groupID);
-            let anyHidden = false;
-            items.forEach(el => {
-                if (el.classList.contains('hidden')) anyHidden = true;
-            });
-            const shouldHide = !anyHidden;
-            items.forEach(el => el.classList.toggle('hidden', shouldHide));
-            const icon = document.getElementById('mobile-group-icon-' + groupID);
-            if (icon) icon.innerText = shouldHide ? '▶' : '▼';
-        }
-
-        function expandAllEnvelopes() {
-            document.querySelectorAll('.target-subrows').forEach(row => {
-                row.classList.remove('hidden');
-                const bID = row.getAttribute('data-bucket-id');
-                const icon = document.getElementById('bucket-toggle-icon-' + bID);
-                if (icon) icon.innerText = '▼';
-                const btn = document.querySelector('.target-toggle-btn[aria-controls="targets-' + bID + '"]');
-                if (btn) btn.setAttribute('aria-expanded', 'true');
-                localStorage.setItem('balance_bucket_expanded_' + currentBudgetID + '_' + bID, 'true');
-            });
-            document.querySelectorAll('.mobile-bucket-card').forEach(card => {
-                card.classList.remove('hidden');
-            });
-            document.querySelectorAll('.mobile-group-header').forEach(hdr => {
-                const gID = hdr.getAttribute('data-group-id');
-                const icon = document.getElementById('mobile-group-icon-' + gID);
-                if (icon) icon.innerText = '▼';
-            });
-            document.querySelectorAll('.mobile-target-sublist').forEach(el => {
-                el.classList.remove('hidden');
-                const bID = el.getAttribute('data-bucket-id');
-                const icon = document.getElementById('mobile-toggle-icon-' + bID);
-                if (icon) icon.innerText = '▼';
-            });
-        }
-
-        function collapseAllEnvelopes() {
-            document.querySelectorAll('.target-subrows').forEach(row => {
-                row.classList.add('hidden');
-                const bID = row.getAttribute('data-bucket-id');
-                const icon = document.getElementById('bucket-toggle-icon-' + bID);
-                if (icon) icon.innerText = '▶';
-                const btn = document.querySelector('.target-toggle-btn[aria-controls="targets-' + bID + '"]');
-                if (btn) btn.setAttribute('aria-expanded', 'false');
-                localStorage.setItem('balance_bucket_expanded_' + currentBudgetID + '_' + bID, 'false');
-            });
-            document.querySelectorAll('.mobile-target-sublist').forEach(el => {
-                el.classList.add('hidden');
-                const bID = el.getAttribute('data-bucket-id');
-                const icon = document.getElementById('mobile-toggle-icon-' + bID);
-                if (icon) icon.innerText = '▶';
-            });
-        }
-
-        function filterEnvelopeSearch(query) {
-            const q = (query || '').toLowerCase().trim();
-            document.querySelectorAll('.bucket-row').forEach(row => {
-                const text = (row.getAttribute('data-search') || '').toLowerCase();
-                const matches = !q || text.includes(q);
-                row.classList.toggle('hidden', !matches);
-                const bID = row.getAttribute('data-bucket-id');
-                const targetRow = document.getElementById('targets-' + bID);
-                if (targetRow && !matches) {
-                    targetRow.classList.add('hidden');
-                }
-            });
-            document.querySelectorAll('.mobile-bucket-card').forEach(card => {
-                const text = (card.getAttribute('data-search') || '').toLowerCase();
-                const matches = !q || text.includes(q);
-                card.classList.toggle('hidden', !matches);
-            });
-            document.querySelectorAll('.mobile-group-header').forEach(hdr => {
-                const gID = hdr.getAttribute('data-group-id');
-                const visibleCards = document.querySelectorAll('.mobile-group-item-' + gID + ':not(.hidden)');
-                hdr.classList.toggle('hidden', q.length > 0 && visibleCards.length === 0);
-            });
-        }
-
-        function openNewBucketModal() {
-            new_bucket_modal.showModal();
-            const inp = document.getElementById('new_bucket_name');
-            if (inp) setTimeout(() => inp.focus(), 50);
-        }
-
-        function openRenameGroupModal(groupName) {
-            document.getElementById('rename_group_old_name').value = groupName;
-            const inp = document.getElementById('rename_group_new_name');
-            inp.value = groupName;
-            rename_group_modal.showModal();
-            setTimeout(() => inp.focus(), 50);
-        }
-
-        function openEditBucketModal(id, name, group) {
-            document.getElementById('edit_bucket_form').action = '/budgets/' + currentBudgetID + '/buckets/' + id + '/update';
-            const inp = document.getElementById('edit_bucket_name');
-            inp.value = name;
-            document.getElementById('edit_bucket_group').value = group;
-            edit_bucket_modal.showModal();
-            setTimeout(() => inp.focus(), 50);
-        }
-
-        function openAssignModal(id, name, curr) {
-            document.getElementById('assign_funds_form').action = '/budgets/' + currentBudgetID + '/buckets/' + id + '/assign';
-            document.getElementById('assign_bucket_name').innerText = name;
-            document.getElementById('assign_currency').value = curr;
-            document.getElementById('assign_currency_label').innerText = curr;
-            assign_funds_modal.showModal();
-            const inp = document.getElementById('assign_amount_input');
-            if (inp) setTimeout(() => inp.focus(), 50);
-        }
-
-        function openMoveModal(id, name, curr) {
-            document.getElementById('move_source_id').value = id;
-            document.getElementById('move_source_name').innerText = name;
-            document.getElementById('move_currency').value = curr;
-            document.getElementById('move_currency_label').innerText = curr;
-            move_funds_modal.showModal();
-            const inp = document.getElementById('move_amount_input');
-            if (inp) setTimeout(() => inp.focus(), 50);
-        }
-
-        let activeDrawerBucketID = '';
-
-        function openBucketDrawer(id, name, group, bal, curr) {
-            activeDrawerBucketID = id;
-            document.getElementById('drawer_bucket_name').innerText = name;
-            document.getElementById('drawer_bucket_meta').innerText = 'Group: ' + group + ' • ID: ' + id;
-            document.getElementById('drawer_bucket_balance').innerText = bal + ' ' + curr;
-
-            const b = bucketsData.find(x => x.ID === id);
-            if (b) {
-                const reqStr = (b.TotalRequiredMinor / 100).toFixed(2);
-                const fundStr = (b.TotalFundedMinor / 100).toFixed(2);
-                const bufStr = (b.UnassignedBufferMinor / 100).toFixed(2);
-                const reqEl = document.getElementById('drawer_bucket_funded_req');
-                if (reqEl) reqEl.innerText = fundStr + ' / ' + reqStr + ' ' + curr;
-                const bufEl = document.getElementById('drawer_bucket_buffer');
-                if (bufEl) {
-                    bufEl.innerText = (b.UnassignedBufferMinor > 0 ? '+' : '') + bufStr + ' ' + curr;
-                    bufEl.className = 'stat-value text-base font-mono font-bold ' + 
-                        (b.UnassignedBufferMinor < 0 ? 'text-error' : (b.UnassignedBufferMinor > 0 ? 'text-success' : 'text-base-content/60'));
-                }
-            }
-
-            const container = document.getElementById('drawer_targets_container');
-            container.innerHTML = '';
-
-            if (b && b.Targets && b.Targets.length > 0) {
-                b.Targets.forEach(t => {
-                    const card = document.createElement('div');
-                    card.className = 'card card-border bg-base-100 border-base-300 shadow-xs p-4 flex flex-col gap-2';
-                    const priorityText = t.Priority === 3 ? 'Mandatory' : (t.Priority === 2 ? 'Recommended' : 'Optional');
-                    const ceilingHtml = t.CeilingAmountMinor ? ' • <span class="font-semibold text-primary">Goal: ' + (t.CeilingAmountMinor/100).toFixed(2) + ' ' + t.Currency + '</span>' : '';
-                    const luaBadge = t.AmountMode === 'LUA_FORMULA' ? ' <span class="badge badge-outline badge-xs font-mono text-secondary border-secondary">LUA</span>' : '';
-                    const formulaErrHtml = (t.LastFormulaError && t.LastFormulaError.length > 0) ? '<div class="text-[11px] text-error font-mono mt-1">⚠️ ' + escapeHtml(t.LastFormulaError) + '</div>' : '';
-                    const rInt = t.RecurrenceInterval || t.RecurrenceDays;
-                    const cadenceDisplay = t.RecurrenceCadence === 'CUSTOM_DAYS' ? ((rInt || 90) + 'd') :
-                        (t.RecurrenceCadence === 'CUSTOM_MONTHS' ? ((rInt || 3) + 'm') :
-                        (t.RecurrenceCadence === 'CUSTOM_YEARS' ? ((rInt || 1) + 'y') : t.RecurrenceCadence));
-
-                    let dueHtml = '';
-                    if (t.DueDate && t.DueDate > 0) {
-                        const d = new Date(t.DueDate / 1000);
-                        dueHtml = ' • Due: ' + d.toISOString().split('T')[0];
-                    }
-
-                    const targetTitle = (t.Name && t.Name.trim().length > 0) ? (escapeHtml(t.Name) + luaBadge) : ('<span class="badge ' + (t.Priority === 3 ? 'badge-error' : (t.Priority === 2 ? 'badge-primary' : 'badge-ghost')) + ' badge-sm font-semibold">' + priorityText + '</span>' + luaBadge);
-
-                    card.innerHTML = 
-                        '<div class="flex justify-between items-start">' +
-                            '<div>' +
-                                '<div class="font-bold text-sm tracking-tight flex items-center gap-1">' +
-                                    targetTitle +
-                                '</div>' +
-                                '<div class="text-[11px] text-base-content/60">Priority: ' + priorityText + ' • Cadence: ' + cadenceDisplay + dueHtml + ' • Strategy: ' + t.NonSpendingStrategy + ceilingHtml + '</div>' +
-                            '</div>' +
-                            '<span class="badge ' + t.HealthBadgeClass + ' badge-sm font-semibold">' + t.HealthBadge + '</span>' +
-                        '</div>' +
-                        formulaErrHtml +
-                        '<div class="flex justify-between items-center text-xs mt-1">' +
-                            '<span class="font-mono">Funded: ' + (t.CurrentFundedMinor/100).toFixed(2) + ' / Required: ' + (t.RequiredMinor/100).toFixed(2) + ' ' + t.Currency + '</span>' +
-                            '<div class="flex items-center gap-1">' +
-                                '<button type="button" class="btn btn-ghost btn-sm sm:btn-xs text-secondary font-semibold touch-manipulation" onclick="openMoveTargetFundsModal(\'' + t.ID + '\')">⇄ Move</button>' +
-                                '<button type="button" class="btn btn-ghost btn-sm sm:btn-xs text-primary font-semibold target-edit-btn touch-manipulation" onclick="openEditTargetModal(\'' + t.ID + '\')">Edit</button>' +
-                                '<form method="POST" action="/budgets/' + currentBudgetID + '/targets/' + t.ID + '/delete" onsubmit="return confirm(\'Delete this target?\')">' +
-                                    '<input type="hidden" name="csrf_token" value="' + csrfTokenVal + '" />' +
-                                    '<input type="hidden" name="horizon" value="' + currentHorizon + '" />' +
-                                    '<input type="hidden" name="filter" value="' + currentFilter + '" />' +
-                                    '<button type="submit" class="btn btn-ghost btn-sm sm:btn-xs text-error font-semibold touch-manipulation">Delete</button>' +
-                                '</form>' +
-                            '</div>' +
-                        '</div>';
-                    container.appendChild(card);
-                });
-            } else {
-                container.innerHTML = '<div class="text-xs text-base-content/50 py-3 text-center border border-dashed border-base-300 rounded-lg">No targets added to this envelope yet.</div>';
-            }
-
-            bucket_drawer.showModal();
-        }
-
-        function openEditTargetModal(id) {
-            const b = bucketsData.find(x => x.ID === activeDrawerBucketID);
-            if (!b || !b.Targets) return;
-            const t = b.Targets.find(x => x.ID === id);
-            if (!t) return;
-
-            document.getElementById('target_modal_title').innerText = 'Edit Target';
-            document.getElementById('target_form').action = '/budgets/' + currentBudgetID + '/targets/' + t.ID + '/update';
-            document.getElementById('target_bucket_id').value = t.BucketID;
-            document.getElementById('target_name').value = t.Name;
-            document.getElementById('target_type').value = t.TargetType;
-            document.getElementById('target_priority').value = t.Priority;
-            document.getElementById('target_cadence').value = t.RecurrenceCadence;
-            const rIntVal = t.RecurrenceInterval || t.RecurrenceDays || 90;
-            if (document.getElementById('target_recurrence_days')) {
-                document.getElementById('target_recurrence_days').value = rIntVal;
-            }
-            if (document.getElementById('target_due_date')) {
-                if (t.DueDate && t.DueDate > 0) {
-                    const d = new Date(t.DueDate / 1000);
-                    document.getElementById('target_due_date').value = d.toISOString().split('T')[0];
-                } else {
-                    document.getElementById('target_due_date').value = '';
-                }
-            }
-            document.getElementById('target_strategy').value = t.NonSpendingStrategy;
-            document.getElementById('target_amount').value = (t.AmountMinor / 100).toFixed(2);
-            document.getElementById('target_ceiling').value = t.CeilingAmountMinor ? (t.CeilingAmountMinor / 100).toFixed(2) : '';
-            const currSelect = document.getElementById('target_currency');
-            if (currSelect) {
-                let hasOpt = false;
-                for (let i = 0; i < currSelect.options.length; i++) {
-                    if (currSelect.options[i].value === t.Currency) {
-                        hasOpt = true;
-                        break;
-                    }
-                }
-                if (!hasOpt && t.Currency) {
-                    const opt = document.createElement('option');
-                    opt.value = t.Currency;
-                    opt.innerText = t.Currency;
-                    currSelect.appendChild(opt);
-                }
-                currSelect.value = t.Currency;
-                currSelect.disabled = true;
-            }
-            const currHelp = document.getElementById('target_currency_help');
-            if (currHelp) {
-                currHelp.classList.remove('hidden');
-            }
-            document.getElementById('target_lua_script').value = t.LuaScript || '';
-
-            toggleCustomDays();
-            hideFormulaPreview();
-            hideAIPanel();
-
-            const mode = t.AmountMode === 'LUA_FORMULA' ? 'LUA_FORMULA' : 'FIXED';
-            switchAmountMode(mode);
-
-            target_modal.showModal();
-        }
-
-        function openMoveTargetFundsModal(preselectedSrcID, preselectedDstID) {
-            const b = bucketsData.find(x => x.ID === activeDrawerBucketID);
-            if (!b) return;
-
-            document.getElementById('move_target_bucket_id').value = b.ID;
-            document.getElementById('move_target_bucket_name').innerText = b.Name;
-            document.getElementById('move_target_currency').value = b.Currency;
-            document.getElementById('move_target_curr_label').innerText = b.Currency;
-
-            const srcSelect = document.getElementById('move_source_target_id');
-            const dstSelect = document.getElementById('move_dest_target_id');
-
-            srcSelect.innerHTML = '';
-            dstSelect.innerHTML = '';
-
-            // Add unassigned buffer option
-            const bufferOpt = document.createElement('option');
-            bufferOpt.value = 'BUFFER';
-            bufferOpt.innerText = '📂 Envelope Buffer (' + (b.UnassignedBufferMinor / 100).toFixed(2) + ' ' + b.Currency + ')';
-            srcSelect.appendChild(bufferOpt);
-
-            const dstBufferOpt = document.createElement('option');
-            dstBufferOpt.value = 'BUFFER';
-            dstBufferOpt.innerText = '📂 Envelope Buffer';
-            dstSelect.appendChild(dstBufferOpt);
-
-            if (b.Targets) {
-                b.Targets.forEach(t => {
-                    const opt1 = document.createElement('option');
-                    opt1.value = t.ID;
-                    opt1.innerText = (t.Name || 'Priority ' + t.Priority) + ' (Funded: ' + (t.CurrentFundedMinor / 100).toFixed(2) + ' ' + t.Currency + ')';
-                    srcSelect.appendChild(opt1);
-
-                    const opt2 = document.createElement('option');
-                    opt2.value = t.ID;
-                    opt2.innerText = (t.Name || 'Priority ' + t.Priority) + ' (Needs: ' + (t.NeededMinor / 100).toFixed(2) + ' ' + t.Currency + ')';
-                    dstSelect.appendChild(opt2);
-                });
-            }
-
-            if (preselectedSrcID) {
-                srcSelect.value = preselectedSrcID;
-            } else if (b.Targets && b.Targets.length > 0) {
-                srcSelect.value = b.Targets[0].ID;
-            }
-
-            if (preselectedDstID) {
-                dstSelect.value = preselectedDstID;
-            } else if (b.Targets && b.Targets.length > 1) {
-                dstSelect.value = b.Targets[1].ID;
-            } else {
-                dstSelect.value = 'BUFFER';
-            }
-
-            move_target_funds_modal.showModal();
-        }
-
-        function updateMoveTargetOptions() {
-            // Optional sync logic between selects
-        }
-
-        function openNewTargetModal() {
-            document.getElementById('target_modal_title').innerText = 'Add Target';
-            document.getElementById('target_form').action = '/budgets/' + currentBudgetID + '/targets';
-            document.getElementById('target_bucket_id').value = activeDrawerBucketID;
-            document.getElementById('target_name').value = '';
-            document.getElementById('target_type').value = 'EXPENSE';
-            document.getElementById('target_priority').value = '2';
-            document.getElementById('target_cadence').value = 'MONTHLY';
-            if (document.getElementById('target_recurrence_days')) {
-                document.getElementById('target_recurrence_days').value = '90';
-            }
-            if (document.getElementById('target_due_date')) {
-                document.getElementById('target_due_date').value = '';
-            }
-            document.getElementById('target_strategy').value = 'ROLL_OVER';
-            document.getElementById('target_amount').value = '';
-            document.getElementById('target_ceiling').value = '';
-            const newCurrSelect = document.getElementById('target_currency');
-            if (newCurrSelect) {
-                newCurrSelect.value = currentCurrency;
-                newCurrSelect.disabled = false;
-            }
-            const newCurrHelp = document.getElementById('target_currency_help');
-            if (newCurrHelp) {
-                newCurrHelp.classList.add('hidden');
-            }
-            document.getElementById('target_lua_script').value = '';
-
-            toggleCustomDays();
-            hideFormulaPreview();
-            hideAIPanel();
-            switchAmountMode('FIXED');
-
-            target_modal.showModal();
-        }
-
-        function toggleCustomDays() {
-            const cadenceSelect = document.getElementById('target_cadence');
-            const customContainer = document.getElementById('custom_days_container');
-            const rInput = document.getElementById('target_recurrence_days');
-            const rLabel = document.getElementById('target_recurrence_interval_label');
-            const dueDateContainer = document.getElementById('target_due_date_container');
-            const dueDateInput = document.getElementById('target_due_date');
-            const dueDateLabel = document.getElementById('target_due_date_label');
-            if (!cadenceSelect || !customContainer) return;
-
-            const val = cadenceSelect.value;
-            const isCustomDays = val === 'CUSTOM_DAYS';
-            const isCustomMonths = val === 'CUSTOM_MONTHS';
-            const isCustomYears = val === 'CUSTOM_YEARS';
-            const isCustom = isCustomDays || isCustomMonths || isCustomYears;
-            const isOneOff = val === 'ONE_OFF';
-
-            const isWeeklyMonthlyAnnual = val === 'WEEKLY' || val === 'MONTHLY' || val === 'ANNUAL';
-
-            if (isCustom) {
-                customContainer.classList.remove('hidden');
-                if (isCustomDays) {
-                    if (rLabel) rLabel.innerText = 'Recurrence Interval (Days)';
-                    if (rInput && (!rInput.value || parseInt(rInput.value) < 1)) rInput.value = '90';
-                } else if (isCustomMonths) {
-                    if (rLabel) rLabel.innerText = 'Recurrence Interval (Months)';
-                    if (rInput && (!rInput.value || parseInt(rInput.value) < 1)) rInput.value = '3';
-                } else if (isCustomYears) {
-                    if (rLabel) rLabel.innerText = 'Recurrence Interval (Years)';
-                    if (rInput && (!rInput.value || parseInt(rInput.value) < 1)) rInput.value = '1';
-                }
-            } else {
-                customContainer.classList.add('hidden');
-            }
-
-            if (dueDateContainer && dueDateInput) {
-                if (isCustomMonths || isCustomYears) {
-                    dueDateContainer.classList.remove('hidden');
-                    dueDateInput.required = true;
-                    if (dueDateLabel) dueDateLabel.innerHTML = 'Anchor Due Date <span class="text-error">*</span>';
-                    if (!dueDateInput.value) {
-                        const d = new Date();
-                        dueDateInput.value = d.toISOString().split('T')[0];
-                    }
-                } else if (isOneOff) {
-                    dueDateContainer.classList.remove('hidden');
-                    dueDateInput.required = false;
-                    if (dueDateLabel) dueDateLabel.innerText = 'Target Due Date (Optional)';
-                } else if (isWeeklyMonthlyAnnual) {
-                    dueDateContainer.classList.remove('hidden');
-                    dueDateInput.required = false;
-                    if (dueDateLabel) dueDateLabel.innerText = 'Anchor Due Date (Optional)';
-                } else {
-                    dueDateContainer.classList.add('hidden');
-                    dueDateInput.required = false;
-                }
-            }
-        }
-
-        function switchAmountMode(mode) {
-            const isLua = mode === 'LUA_FORMULA';
-            const rFixed = document.getElementById('mode_fixed');
-            const rLua = document.getElementById('mode_lua');
-            if (rFixed) rFixed.checked = !isLua;
-            if (rLua) rLua.checked = isLua;
-
-            const fixedContainer = document.getElementById('fixed_amount_container');
-            const luaContainer = document.getElementById('lua_formula_container');
-            const targetAmt = document.getElementById('target_amount');
-
-            if (isLua) {
-                if (fixedContainer) fixedContainer.classList.add('hidden');
-                if (luaContainer) luaContainer.classList.remove('hidden');
-                if (targetAmt) targetAmt.removeAttribute('required');
-            } else {
-                if (fixedContainer) fixedContainer.classList.remove('hidden');
-                if (luaContainer) luaContainer.classList.add('hidden');
-                if (targetAmt) targetAmt.setAttribute('required', 'required');
-            }
-        }
-
-        function toggleAIPanel() {
-            const panel = document.getElementById('ai_assistant_panel');
-            if (panel) panel.classList.toggle('hidden');
-        }
-
-        function hideAIPanel() {
-            const panel = document.getElementById('ai_assistant_panel');
-            if (panel) panel.classList.add('hidden');
-            const statusMsg = document.getElementById('ai_status_msg');
-            if (statusMsg) {
-                statusMsg.innerText = '';
-                statusMsg.classList.add('hidden');
-            }
-        }
-
-        function showFormulaPreview(type, htmlContent) {
-            const box = document.getElementById('formula_preview_box');
-            if (!box) return;
-            box.className = 'text-xs p-3 rounded-lg border flex flex-col gap-1 ' + 
-                (type === 'success' ? 'bg-success/10 border-success/30 text-success' : 
-                (type === 'error' ? 'bg-error/10 border-error/30 text-error' : 'bg-base-200 border-base-300'));
-            box.innerHTML = htmlContent;
-            box.classList.remove('hidden');
-        }
-
-        function hideFormulaPreview() {
-            const box = document.getElementById('formula_preview_box');
-            if (box) {
-                box.innerHTML = '';
-                box.classList.add('hidden');
-            }
-        }
-
-        function generateFormulaAI() {
-            const promptInput = document.getElementById('ai_formula_prompt');
-            const prompt = promptInput ? promptInput.value.trim() : '';
-            const statusMsg = document.getElementById('ai_status_msg');
-            const btnGen = document.getElementById('btn_generate_ai');
-
-            if (!prompt) {
-                if (statusMsg) {
-                    statusMsg.className = 'text-xs text-error mt-1';
-                    statusMsg.innerText = 'Please describe the formula in natural language.';
-                    statusMsg.classList.remove('hidden');
-                }
-                return;
-            }
-
-            if (statusMsg) {
-                statusMsg.className = 'text-xs text-base-content/70 mt-1 flex items-center gap-1';
-                statusMsg.innerHTML = '<span class="loading loading-spinner loading-xs"></span> Generating formula with AI...';
-                statusMsg.classList.remove('hidden');
-            }
-            if (btnGen) btnGen.disabled = true;
-
-            const dueDateInput = document.getElementById('target_due_date');
-            const dueDateVal = dueDateInput ? dueDateInput.value : '';
-            const targetNameInput = document.getElementById('target_name');
-            const targetNameVal = targetNameInput ? targetNameInput.value.trim() : '';
-
-            fetch('/api/v1/budgets/' + currentBudgetID + '/targets/generate-formula', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRF-Token': csrfTokenVal
-                },
-                body: JSON.stringify({
-                    current_bucket_name: document.getElementById('drawer_bucket_name').innerText.trim() || 'General',
-                    target_currency: (document.getElementById('target_currency') ? document.getElementById('target_currency').value : '') || currentCurrency || 'PLN',
-                    user_prompt: prompt,
-                    window_days: 30,
-                    due_date: dueDateVal,
-                    target_name: targetNameVal
-                })
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (btnGen) btnGen.disabled = false;
-                if (data.error || !data.lua_script) {
-                    if (statusMsg) {
-                        statusMsg.className = 'text-xs text-error mt-1';
-                        statusMsg.innerText = data.error || 'Failed generating formula';
-                    }
-                } else {
-                    if (statusMsg) {
-                        statusMsg.className = 'text-xs text-success mt-1';
-                        statusMsg.innerHTML = '✨ <strong>Generated:</strong> ' + escapeHtml(data.explanation || '');
-                    }
-                    document.getElementById('target_lua_script').value = data.lua_script;
-                    validateFormulaScript();
-                }
-            })
-            .catch(err => {
-                if (btnGen) btnGen.disabled = false;
-                if (statusMsg) {
-                    statusMsg.className = 'text-xs text-error mt-1';
-                    statusMsg.innerText = 'Network error: ' + err.message;
-                }
-            });
-        }
-
-        function validateFormulaScript() {
-            const script = document.getElementById('target_lua_script').value.trim();
-            if (!script) {
-                showFormulaPreview('error', '⚠️ Please enter a Lua script to validate.');
-                return;
-            }
-
-            const dueDateInput = document.getElementById('target_due_date');
-            const dueDateVal = dueDateInput ? dueDateInput.value : '';
-
-            showFormulaPreview('info', '<div class="flex items-center gap-1"><span class="loading loading-spinner loading-xs"></span> Validating and running dry-run evaluation...</div>');
-
-            fetch('/api/v1/budgets/' + currentBudgetID + '/targets/validate-formula', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRF-Token': csrfTokenVal
-                },
-                body: JSON.stringify({
-                    lua_script: script,
-                    due_date: dueDateVal
-                })
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.valid) {
-                    let depsHtml = (data.dependencies && data.dependencies.length > 0) 
-                        ? 'Dependencies: <span class="font-mono">' + escapeHtml(data.dependencies.join(', ')) + '</span>' 
-                        : 'No external target dependencies';
-                    let previewHtml = '';
-                    if (data.evaluated_minor !== undefined && data.evaluated_minor !== null) {
-                        const evalAmt = (data.evaluated_minor / 100).toFixed(2);
-                        previewHtml = '<div class="font-bold text-sm text-primary mt-1">Calculated Preview: ' + evalAmt + ' ' + currentCurrency + '</div>';
-                        document.getElementById('target_amount').value = evalAmt;
-                    }
-                    showFormulaPreview('success', 
-                        '<div class="flex items-center gap-1 font-bold text-success">✓ Valid Sandboxed Formula</div>' +
-                        '<div class="text-[11px] text-base-content/70">' + depsHtml + '</div>' +
-                        previewHtml
-                    );
-                } else {
-                    showFormulaPreview('error', 
-                        '<div class="font-bold text-error">✕ Validation Failed</div>' +
-                        '<div class="font-mono text-[11px]">' + escapeHtml(data.error || 'Invalid script') + '</div>'
-                    );
-                }
-            })
-            .catch(err => {
-                showFormulaPreview('error', '✕ Network error: ' + escapeHtml(err.message));
-            });
-        }
-
-        function prepareTargetSubmit() {
-            const rLua = document.getElementById('mode_lua');
-            const targetAmt = document.getElementById('target_amount');
-            if (rLua && rLua.checked) {
-                if (!targetAmt.value || targetAmt.value.trim() === '') {
-                    targetAmt.value = '0.00';
-                }
-            }
-        }
-
-        function openStructureModal(tab) {
-            document.getElementById('structure_error').classList.add('hidden');
-            document.getElementById('structure_preview_wrapper').classList.add('hidden');
-            document.getElementById('btn_apply_structure').classList.add('hidden');
-            switchStructureTab(tab || 'ai');
-            structure_modal.showModal();
-        }
-
-        function switchStructureTab(tab) {
-            const isAI = tab === 'ai';
-            document.getElementById('tab_btn_ai').className = isAI ? 'tab tab-active font-semibold text-xs' : 'tab font-semibold text-xs';
-            document.getElementById('tab_btn_import').className = !isAI ? 'tab tab-active font-semibold text-xs' : 'tab font-semibold text-xs';
-            document.getElementById('structure_tab_ai').classList.toggle('hidden', !isAI);
-            document.getElementById('structure_tab_import').classList.toggle('hidden', isAI);
-        }
-
-        let loadedStructureData = null;
-
-        function runAIGeneration() {
-            const prompt = document.getElementById('structure_ai_prompt').value.trim();
-            if (!prompt) {
-                showStructureError('Please enter a budget description.');
-                return;
-            }
-            showStructureLoading(true, 'Analyzing description and generating budget buckets with AI...');
-            fetch('/budgets/' + currentBudgetID + '/structure/generate-ai-preview', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfTokenVal },
-                body: JSON.stringify({ prompt: prompt, currency: currentCurrency })
-            })
-            .then(res => res.json())
-            .then(data => {
-                showStructureLoading(false);
-                if (data.error) {
-                    showStructureError(data.error);
-                } else {
-                    renderPreviewData(data);
-                }
-            })
-            .catch(err => {
-                showStructureLoading(false);
-                showStructureError(err.message || 'Generation failed');
-            });
-        }
-
-        function runSourceImport() {
-            const sel = document.getElementById('source_budget_select');
-            if (!sel || !sel.value) {
-                showStructureError('Please select a source budget.');
-                return;
-            }
-            showStructureLoading(true, 'Loading buckets and targets from source budget...');
-            fetch('/budgets/' + currentBudgetID + '/structure/preview-source?source_budget_id=' + encodeURIComponent(sel.value))
-            .then(res => res.json())
-            .then(data => {
-                showStructureLoading(false);
-                if (data.error) {
-                    showStructureError(data.error);
-                } else {
-                    renderPreviewData(data);
-                }
-            })
-            .catch(err => {
-                showStructureLoading(false);
-                showStructureError(err.message || 'Import failed');
-            });
-        }
-
-        function showStructureLoading(show, text) {
-            document.getElementById('structure_loading').classList.toggle('hidden', !show);
-            document.getElementById('structure_error').classList.add('hidden');
-            if (show) {
-                document.getElementById('structure_preview_wrapper').classList.add('hidden');
-                document.getElementById('btn_apply_structure').classList.add('hidden');
-                if (text) document.getElementById('structure_loading_text').innerText = text;
-            }
-        }
-
-        function showStructureError(msg) {
-            const el = document.getElementById('structure_error');
-            document.getElementById('structure_error_text').innerText = msg;
-            el.classList.remove('hidden');
-        }
-
-        function onBucketGroupChange(gIdx, bIdx, val) {
-            const customInput = document.querySelector('.bucket-custom-group-input[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
-            if (customInput) {
-                const isNew = (val === '__NEW__');
-                customInput.classList.toggle('hidden', !isNew);
-                if (isNew) {
-                    customInput.focus();
-                }
-            }
-        }
-
-        function onBucketConflictChange(gIdx, bIdx, action) {
-            const bucketCard = document.querySelector('.bucket-card[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
-            if (bucketCard) {
-                bucketCard.classList.toggle('opacity-50', action === 'SKIP');
-            }
-            const bChk = document.querySelector('.bucket-chk[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
-            if (bChk) {
-                bChk.checked = (action !== 'SKIP');
-                onBucketCheckboxToggle(gIdx, bIdx, bChk.checked);
-            }
-            updateCountsBadge();
-        }
-
-        function renderPreviewData(data) {
-            loadedStructureData = data;
-            const container = document.getElementById('structure_preview_list');
-            container.innerHTML = '';
-
-            let totalBuckets = 0;
-            let totalTargets = 0;
-
-            if (!data.groups || data.groups.length === 0) {
-                showStructureError('No buckets or categories could be generated.');
-                return;
-            }
-
-            // Gather all distinct group names (from existing groups in budget + proposed groups)
-            const groupSet = new Set();
-            if (data.existing_groups && Array.isArray(data.existing_groups)) {
-                data.existing_groups.forEach(g => { if (g && g.trim()) groupSet.add(g.trim()); });
-            }
-            if (data.groups && Array.isArray(data.groups)) {
-                data.groups.forEach(g => { if (g && g.group_name && g.group_name.trim()) groupSet.add(g.group_name.trim()); });
-            }
-            const allKnownGroups = Array.from(groupSet);
-
-            data.groups.forEach((g, gIdx) => {
-                const groupEl = document.createElement('div');
-                groupEl.className = 'border border-base-300 rounded-lg p-3 bg-base-100 shadow-xs flex flex-col gap-2';
-
-                let bucketsHtml = '';
-                if (g.buckets) {
-                    g.buckets.forEach((b, bIdx) => {
-                        totalBuckets++;
-                        let targetsHtml = '';
-                        if (b.targets) {
-                            b.targets.forEach((t, tIdx) => {
-                                totalTargets++;
-                                const pVal = t.priority || 2;
-                                const amtVal = (t.amount_minor / 100).toFixed(2);
-
-                                targetsHtml += 
-                                    '<div class="flex items-center gap-2 pl-6 py-1 border-t border-base-200">' +
-                                        '<input type="checkbox" class="checkbox checkbox-primary checkbox-xs target-chk" checked data-group="' + gIdx + '" data-bucket="' + bIdx + '" data-target="' + tIdx + '" onchange="updateCountsBadge()">' +
-                                        '<input type="text" class="input input-bordered input-xs flex-1 target-name-input" value="' + escapeHtml(t.name) + '" data-group="' + gIdx + '" data-bucket="' + bIdx + '" data-target="' + tIdx + '">' +
-                                        '<div class="flex items-center gap-1 shrink-0">' +
-                                            '<input type="number" step="0.01" class="input input-bordered input-xs w-20 text-right font-mono target-amount-input" value="' + amtVal + '" data-group="' + gIdx + '" data-bucket="' + bIdx + '" data-target="' + tIdx + '">' +
-                                            '<span class="text-[10px] font-bold text-base-content/60">' + (t.currency || currentCurrency) + '</span>' +
-                                        '</div>' +
-                                        '<select class="select select-bordered select-xs target-prio-select shrink-0 font-medium" data-group="' + gIdx + '" data-bucket="' + bIdx + '" data-target="' + tIdx + '">' +
-                                            '<option value="3"' + (pVal === 3 ? ' selected' : '') + ' class="text-error font-bold">P3 - Mandatory</option>' +
-                                            '<option value="2"' + (pVal === 2 ? ' selected' : '') + ' class="text-primary font-bold">P2 - Recommended</option>' +
-                                            '<option value="1"' + (pVal === 1 ? ' selected' : '') + ' class="text-base-content/60 font-medium">P1 - Optional</option>' +
-                                        '</select>' +
-                                    '</div>';
-                            });
-                        }
-
-                        // Group selector options
-                        const currentBucketGroup = g.group_name || 'General';
-                        let groupOptionsHtml = '';
-                        allKnownGroups.forEach(grpName => {
-                            const isSelected = (grpName === currentBucketGroup);
-                            groupOptionsHtml += '<option value="' + escapeHtml(grpName) + '"' + (isSelected ? ' selected' : '') + '>' + escapeHtml(grpName) + '</option>';
-                        });
-                        groupOptionsHtml += '<option value="__NEW__">+ New Group...</option>';
-
-                        // Conflict resolution UI if existing bucket detected
-                        let conflictHtml = '';
-                        if (b.is_existing) {
-                            conflictHtml = 
-                                '<div class="flex flex-wrap items-center gap-1.5 bg-warning/10 border border-warning/30 rounded px-2 py-1 text-[11px] mt-1">' +
-                                    '<span class="badge badge-warning badge-xs font-bold gap-1">⚠️ Existing Bucket</span>' +
-                                    (b.existing_group ? '<span class="text-[10px] text-base-content/60">(currently in: ' + escapeHtml(b.existing_group) + ')</span>' : '') +
-                                    '<span class="font-semibold text-base-content/80 ml-auto">Conflict:</span>' +
-                                    '<select class="select select-bordered select-xs bucket-conflict-select font-semibold" data-group="' + gIdx + '" data-bucket="' + bIdx + '" onchange="onBucketConflictChange(' + gIdx + ', ' + bIdx + ', this.value)">' +
-                                        '<option value="MERGE" selected>Add new targets (Merge)</option>' +
-                                        '<option value="REPLACE">Replace existing targets (Overwrite)</option>' +
-                                        '<option value="SKIP">Skip bucket (Ignore)</option>' +
-                                    '</select>' +
-                                '</div>';
-                        }
-
-                        bucketsHtml += 
-                            '<div class="border border-base-200 rounded p-2 bg-base-200/30 flex flex-col gap-1.5 bucket-card" data-group="' + gIdx + '" data-bucket="' + bIdx + '">' +
-                                '<div class="flex flex-wrap items-center gap-2">' +
-                                    '<input type="checkbox" class="checkbox checkbox-primary checkbox-xs bucket-chk" checked data-group="' + gIdx + '" data-bucket="' + bIdx + '" onchange="onBucketCheckboxToggle(' + gIdx + ', ' + bIdx + ', this.checked)">' +
-                                    '<span class="text-xs font-bold text-primary">📁</span>' +
-                                    '<input type="text" class="input input-bordered input-xs font-bold flex-1 min-w-[120px] bucket-name-input" value="' + escapeHtml(b.name) + '" data-group="' + gIdx + '" data-bucket="' + bIdx + '">' +
-                                    '<div class="flex items-center gap-1 shrink-0">' +
-                                        '<span class="text-[11px] text-base-content/60 font-medium">Group:</span>' +
-                                        '<select class="select select-bordered select-xs bucket-group-select" data-group="' + gIdx + '" data-bucket="' + bIdx + '" onchange="onBucketGroupChange(' + gIdx + ', ' + bIdx + ', this.value)">' +
-                                            groupOptionsHtml +
-                                        '</select>' +
-                                        '<input type="text" class="input input-bordered input-xs hidden w-28 bucket-custom-group-input" placeholder="New group..." data-group="' + gIdx + '" data-bucket="' + bIdx + '">' +
-                                    '</div>' +
-                                '</div>' +
-                                conflictHtml +
-                                (targetsHtml ? '<div class="flex flex-col">' + targetsHtml + '</div>' : '') +
-                            '</div>';
-                    });
-                }
-
-                groupEl.innerHTML = 
-                    '<div class="flex items-center justify-between pb-1">' +
-                        '<span class="font-extrabold text-xs uppercase tracking-wider text-base-content/70">' + escapeHtml(g.group_name || 'General') + '</span>' +
-                    '</div>' +
-                    '<div class="flex flex-col gap-2">' + bucketsHtml + '</div>';
-
-                container.appendChild(groupEl);
-            });
-
-            document.getElementById('structure_stats_badge').innerText = totalBuckets + ' buckets, ' + totalTargets + ' targets';
-            document.getElementById('structure_select_all').checked = true;
-            document.getElementById('structure_preview_wrapper').classList.remove('hidden');
-            document.getElementById('btn_apply_structure').classList.remove('hidden');
-        }
-
-        function escapeHtml(str) {
-            return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-        }
-
-        function onBucketCheckboxToggle(gIdx, bIdx, checked) {
-            const targets = document.querySelectorAll('.target-chk[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
-            targets.forEach(t => t.checked = checked);
-            updateCountsBadge();
-        }
-
-        function toggleSelectAllStructure(checked) {
-            document.querySelectorAll('.bucket-chk, .target-chk').forEach(c => c.checked = checked);
-            updateCountsBadge();
-        }
-
-        function updateCountsBadge() {
-            const bChecked = document.querySelectorAll('.bucket-chk:checked').length;
-            const tChecked = document.querySelectorAll('.target-chk:checked').length;
-            document.getElementById('structure_stats_badge').innerText = bChecked + ' buckets, ' + tChecked + ' targets selected';
-        }
-
-        function applyStructureConfirmed() {
-            if (!loadedStructureData) return;
-
-            const groupBucketsMap = new Map();
-
-            loadedStructureData.groups.forEach((g, gIdx) => {
-                if (!g.buckets) return;
-                g.buckets.forEach((b, bIdx) => {
-                    const bChk = document.querySelector('.bucket-chk[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
-                    if (bChk && bChk.checked) {
-                        const nameInput = document.querySelector('.bucket-name-input[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
-                        const bucketName = nameInput ? nameInput.value.trim() : b.name;
-
-                        // Target group resolution
-                        let targetGroup = g.group_name || 'Default';
-                        const grpSelect = document.querySelector('.bucket-group-select[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
-                        if (grpSelect) {
-                            if (grpSelect.value === '__NEW__') {
-                                const customInput = document.querySelector('.bucket-custom-group-input[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
-                                if (customInput && customInput.value.trim()) {
-                                    targetGroup = customInput.value.trim();
-                                }
-                            } else if (grpSelect.value) {
-                                targetGroup = grpSelect.value.trim();
-                            }
-                        }
-
-                        // Conflict resolution
-                        let conflictRes = 'MERGE';
-                        const conflictSelect = document.querySelector('.bucket-conflict-select[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"]');
-                        if (conflictSelect) {
-                            conflictRes = conflictSelect.value;
-                        }
-                        if (conflictRes === 'SKIP') {
-                            return; // User opted to skip this bucket entirely
-                        }
-
-                        const finalTargets = [];
-                        if (b.targets) {
-                            b.targets.forEach((t, tIdx) => {
-                                const tChk = document.querySelector('.target-chk[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"][data-target="' + tIdx + '"]');
-                                if (tChk && tChk.checked) {
-                                    const tNameInput = document.querySelector('.target-name-input[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"][data-target="' + tIdx + '"]');
-                                    const tAmtInput = document.querySelector('.target-amount-input[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"][data-target="' + tIdx + '"]');
-                                    const tPrioSelect = document.querySelector('.target-prio-select[data-group="' + gIdx + '"][data-bucket="' + bIdx + '"][data-target="' + tIdx + '"]');
-
-                                    const tName = tNameInput ? tNameInput.value.trim() : t.name;
-                                    let amtMinor = t.amount_minor;
-                                    if (tAmtInput) {
-                                        const parsed = parseFloat(tAmtInput.value);
-                                        if (!isNaN(parsed) && parsed >= 0) {
-                                            amtMinor = Math.round(parsed * 100);
-                                        }
-                                    }
-                                    let priority = t.priority || 2;
-                                    if (tPrioSelect) {
-                                        const pVal = parseInt(tPrioSelect.value, 10);
-                                        if (!isNaN(pVal) && pVal >= 1 && pVal <= 3) {
-                                            priority = pVal;
-                                        }
-                                    }
-
-                                    finalTargets.push({
-                                        name: tName,
-                                        target_type: t.target_type || 'EXPENSE',
-                                        priority: priority,
-                                        amount_minor: amtMinor,
-                                        currency: t.currency || currentCurrency,
-                                        recurrence_cadence: t.recurrence_cadence || 'MONTHLY',
-                                        recurrence_days: t.recurrence_days || null,
-                                        non_spending_strategy: t.non_spending_strategy || 'RETURN_TO_POOL'
-                                    });
-                                }
-                            });
-                        }
-
-                        const bucketData = {
-                            name: bucketName,
-                            conflict_resolution: conflictRes,
-                            targets: finalTargets
-                        };
-
-                        if (!groupBucketsMap.has(targetGroup)) {
-                            groupBucketsMap.set(targetGroup, []);
-                        }
-                        groupBucketsMap.get(targetGroup).push(bucketData);
-                    }
-                });
-            });
-
-            const finalGroups = [];
-            groupBucketsMap.forEach((buckets, grpName) => {
-                if (buckets.length > 0) {
-                    finalGroups.push({
-                        group_name: grpName,
-                        buckets: buckets
-                    });
-                }
-            });
-
-            if (finalGroups.length === 0) {
-                showStructureError('No buckets or targets selected.');
-                return;
-            }
-
-            const btn = document.getElementById('btn_apply_structure');
-            btn.disabled = true;
-            btn.innerHTML = '<span class="loading loading-spinner loading-xs"></span> Applying...';
-
-            fetch('/budgets/' + currentBudgetID + '/structure/apply', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-CSRF-Token': csrfTokenVal
-                },
-                body: JSON.stringify({ groups: finalGroups })
-            })
-            .then(res => res.json())
-            .then(data => {
-                if (data.error) {
-                    btn.disabled = false;
-                    btn.innerHTML = '<span>✓</span><span>Apply Selected Structure</span>';
-                    showStructureError(data.error);
-                } else {
-                    window.location.reload();
-                }
-            })
-            .catch(err => {
-                btn.disabled = false;
-                btn.innerHTML = '<span>✓</span><span>Apply Selected Structure</span>';
-                showStructureError(err.message || 'Failed applying structure');
-            });
-        }
-    </script>
-</body>
-</html>`,
-		budgetName, budgetName, role, aomHeadline, aomHeadline, csrfToken,
-		RenderSidebarNavigation(budgetID, "budget"),
-		accountSummaryRows.String(),
-		toastHTML,
-		statsBannerHTML,
-		controlsToolbarHTML,
-		filterToolbarHTML,
-		mainEnvelopesContent,
-		RenderBottomDock(budgetID, "budget"),
-		structureModalHTML,
-		categoryDatalistOptions.String(),
-		budgetID, csrfToken, horizonParam, filterParam, newBucketGroupPlaceholder,
-		budgetID, csrfToken, horizonParam, filterParam,
-		csrfToken, horizonParam, filterParam,
-		csrfToken, horizonParam, filterParam, defaultCurr, defaultCurr,
-		budgetID, csrfToken, horizonParam, filterParam, defaultCurr, bucketSelectOptions.String(), defaultCurr,
-		budgetID, csrfToken, horizonParam, filterParam,
-		budgetID, csrfToken, horizonParam, filterParam, targetCurrencyOptions.String(),
-		budgetID, csrfToken, defaultCurr, horizonParam, filterParam, toJSONString(allBuckets))
+	var topCurrencies, extraCurrencies []rtaCurrencyBadgeViewData
+	limit := 3
+	displayCount := len(nonDefaultCurrencies)
+	if displayCount > limit {
+		displayCount = limit
+	}
+	for i := 0; i < displayCount; i++ {
+		item := nonDefaultCurrencies[i]
+		color := "badge-info"
+		if item.amt < 0 {
+			color = "badge-error"
+		}
+		topCurrencies = append(topCurrencies, rtaCurrencyBadgeViewData{
+			Currency:        item.curr,
+			AmountFormatted: fmt.Sprintf("%.2f", float64(item.amt)/100.0),
+			BadgeColor:      color,
+		})
+	}
+	for i := limit; i < len(nonDefaultCurrencies); i++ {
+		item := nonDefaultCurrencies[i]
+		color := "badge-info"
+		if item.amt < 0 {
+			color = "badge-error"
+		}
+		extraCurrencies = append(extraCurrencies, rtaCurrencyBadgeViewData{
+			Currency:        item.curr,
+			AmountFormatted: fmt.Sprintf("%.2f", float64(item.amt)/100.0),
+			BadgeColor:      color,
+		})
+	}
+
+	allBucketsJSON, _ := json.Marshal(allBuckets)
+	// Preserve unescaped unicode entities like & in JSON so scripts match raw strings
+	rawBucketsJSON := strings.ReplaceAll(string(allBucketsJSON), "\\u0026", "&")
+
+	dateFormat, timeFormat := GetUserDateTimePreferences(c)
+
+	pageData := budgetPageViewData{
+		BudgetID:                   budgetID,
+		BudgetName:                 budgetName,
+		Role:                       role,
+		DefaultCurr:                defaultCurr,
+		HorizonParam:               horizonParam,
+		HorizonTitle:               horizonTitle,
+		HorizonDisplay:             horizonDisplay,
+		IsHorizonMonthly:           horizonParam == "monthly",
+		WindowDays:                 windowDays,
+		FilterParam:                filterParam,
+		IsFilterAll:                filterParam == "all" || filterParam == "",
+		FlashMsg:                   flashMsg,
+		AOMHeadline:                aomHeadline,
+		DateFormat:                 dateFormat,
+		TimeFormat:                 timeFormat,
+		CSRFToken:                  csrfToken,
+		SidebarHTML:                template.HTML(RenderSidebarNavigation(budgetID, "budget")),
+		BottomDockHTML:             template.HTML(RenderBottomDock(budgetID, "budget")),
+		DateTimeFormatterScript:    template.HTML(DateTimeFormatterScript()),
+		HasAccounts:                hasAccounts,
+		AccountSummaries:           accountSummaries,
+		RTAColor:                   rtaColor,
+		RTADescClass:               rtaDescClass,
+		RTADesc:                    rtaDesc,
+		DefaultRTAFormatted:        fmt.Sprintf("%.2f", float64(defaultRTA)/100.0),
+		HasNonDefaultRTACurrencies: len(nonDefaultCurrencies) > 0,
+		TopRTACurrencies:           topCurrencies,
+		ExtraRTACurrencies:         extraCurrencies,
+		TotalNeededFormatted:       fmt.Sprintf("%.2f", float64(totalNeededAcrossAllMinor)/100.0),
+		HasMandatoryP3Needed:       totalMandatoryP3NeededAcrossAllMinor > 0,
+		MandatoryP3NeededFormatted: fmt.Sprintf("%.2f", float64(totalMandatoryP3NeededAcrossAllMinor)/100.0),
+		CountAll:                   countAll,
+		CountAttention:             countAttention,
+		CountOverspent:             countOverspent,
+		CountBuffer:                countBuffer,
+		AllBucketsCount:            len(allBuckets),
+		DisplayBucketsCount:        len(displayBuckets),
+		BucketGroups:               bucketGroups,
+		AllBuckets:                 allBuckets,
+		DistinctGroups:             distinctGroups,
+		NewBucketGroupPlaceholder:  newBucketGroupPlaceholder,
+		HasOtherBudgets:            hasOtherBudgets,
+		OtherBudgets:               otherBudgets,
+		AvailableCurrencies:        availCurrencies,
+		BucketsJSON:                template.JS(rawBucketsJSON),
+	}
+
+	htmlContent, err := templates.RenderString("workspace/budget", pageData)
+	if err != nil {
+		logger.Error(c.Request().Context(), "Failed rendering budget template", "error", err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to render page")
+	}
 
 	return c.HTML(http.StatusOK, htmlContent)
+
 }
 
 func toJSONString(v any) string {

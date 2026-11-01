@@ -1,0 +1,137 @@
+{{- define "workspace/settings" -}}
+{{- template "shared/base" . -}}
+{{- end -}}
+
+{{- define "title" -}}Balance — {{.BudgetName}} Settings{{- end -}}
+
+{{- define "navbar_start_extra" -}}
+<span class="badge badge-soft badge-primary font-semibold text-xs">{{.Role}}</span>
+{{- end -}}
+
+{{- define "content" -}}
+<div class="max-w-4xl">
+    <div class="mb-6">
+        <h1 class="text-2xl font-black tracking-tight">Budget Settings</h1>
+        <p class="text-xs text-base-content/60 mt-1">Configure workspace preferences, default timezones, and ledger parameters.</p>
+    </div>
+
+    <div class="space-y-6">
+        <div class="card card-border bg-base-100 border-base-300 shadow-md">
+            <div class="card-body p-6">
+                <h2 class="card-title text-lg font-bold mb-2">General Information</h2>
+                {{- if .IsOwner}}
+                <form method="POST" action="/budgets/{{.BudgetID}}/settings" class="flex flex-col gap-4">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Budget Name</span></label>
+                        <input type="text" name="name" value="{{.BudgetName}}" required class="input input-bordered w-full input-md focus:input-primary font-semibold" />
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div class="form-control">
+                            <label class="label pb-1"><span class="label-text font-medium text-xs">Default Currency</span></label>
+                            <input type="text" value="{{.DefaultCurrency}}" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed font-mono text-xs" />
+                            <label class="label pt-1"><span class="label-text-alt text-base-content/50">Base currency is immutable once provisioned</span></label>
+                        </div>
+                        <div class="form-control">
+                            <label class="label pb-1"><span class="label-text font-medium text-xs">IANA Timezone</span></label>
+                            <input type="text" name="timezone" value="{{.Timezone}}" class="input input-bordered w-full input-md focus:input-primary text-xs" />
+                        </div>
+                    </div>
+                    <div class="card-actions justify-end mt-4">
+                        <button type="submit" class="btn btn-primary btn-sm shadow font-semibold">Save Settings</button>
+                    </div>
+                </form>
+                {{- else}}
+                <div class="flex flex-col gap-4">
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Budget Name</span></label>
+                        <input type="text" value="{{.BudgetName}}" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed font-semibold" />
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div class="form-control">
+                            <label class="label pb-1"><span class="label-text font-medium text-xs">Default Currency</span></label>
+                            <input type="text" value="{{.DefaultCurrency}}" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed font-mono text-xs" />
+                        </div>
+                        <div class="form-control">
+                            <label class="label pb-1"><span class="label-text font-medium text-xs">IANA Timezone</span></label>
+                            <input type="text" value="{{.Timezone}}" disabled class="input input-bordered w-full input-md bg-base-200 cursor-not-allowed text-xs" />
+                        </div>
+                    </div>
+                    <div class="alert alert-info alert-soft text-xs mt-2">
+                        <span>ℹ️ You are viewing budget settings with <strong>{{.Role}}</strong> permissions. Only the OWNER can update budget properties.</span>
+                    </div>
+                </div>
+                {{- end}}
+            </div>
+        </div>
+
+        <!-- Personalization Shortcut Card -->
+        <div class="card card-border bg-base-100 border-base-300 shadow-md">
+            <div class="card-body p-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="card-title text-base font-bold flex items-center gap-2">
+                            <span>👤</span>
+                            <span>Personal Preferences</span>
+                        </h2>
+                        <p class="text-xs text-base-content/60 mt-1">Configure your personal date format ({{.DateFormat}}) and time format ({{.TimeFormat}}).</p>
+                    </div>
+                    <a href="/budgets/{{.BudgetID}}/settings/profile" class="btn btn-sm btn-outline btn-primary font-medium">
+                        Customize Formats →
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        {{- if .IsOwner}}
+        <!-- Diagnostic Tools Shortcut Card -->
+        <div class="card card-border bg-base-100 border-base-300 shadow-md">
+            <div class="card-body p-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="card-title text-base font-bold flex items-center gap-2">
+                            <span>🛠️</span>
+                            <span>Narzędzia diagnostyczne (Debug)</span>
+                        </h2>
+                        <p class="text-xs text-base-content/60 mt-1">Sprawdź integralność finansową, osierocone salda i wykonaj akcje naprawcze bilansu.</p>
+                    </div>
+                    <a href="/budgets/{{.BudgetID}}/debug" class="btn btn-sm btn-outline btn-warning font-medium">
+                        Otwórz Narzędzia Debug →
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <div class="card card-border bg-base-100 border-error/30 shadow-md">
+            <div class="card-body p-6">
+                <h2 class="card-title text-error text-lg font-bold flex items-center gap-2">
+                    <span>⚠️</span>
+                    <span>Danger Zone</span>
+                </h2>
+                <p class="text-xs text-base-content/70">
+                    Permanently delete this budget envelope, ledger records, transactions, and account history.
+                    This action cannot be undone.
+                </p>
+                <div class="card-actions justify-end mt-4">
+                    <form method="POST" action="/budgets/{{.BudgetID}}/delete" onsubmit="return confirm('Are you absolutely sure you want to delete this budget? All data will be permanently wiped.')">
+                        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                        <button type="submit" class="btn btn-error btn-sm shadow font-semibold">
+                            Delete Budget
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        {{- else}}
+        <div class="card card-border bg-base-100 border-base-300 shadow-sm opacity-70">
+            <div class="card-body p-6">
+                <h2 class="card-title text-base font-bold text-base-content/70">Danger Zone</h2>
+                <p class="text-xs text-base-content/60">
+                    Only the budget OWNER can delete or destroy this workspace.
+                </p>
+            </div>
+        </div>
+        {{- end}}
+    </div>
+</div>
+{{- end -}}

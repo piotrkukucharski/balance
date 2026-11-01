@@ -1,0 +1,1058 @@
+{{- define "workspace/budget" -}}
+{{- template "shared/base" . -}}
+{{- end -}}
+
+{{- define "title" -}}Balance — {{.BudgetName}}{{- end -}}
+
+{{- define "navbar_start_extra" -}}
+<span class="badge badge-soft badge-primary font-semibold text-xs hidden sm:inline-flex">{{.Role}}</span>
+{{- end -}}
+
+{{- define "navbar_end" -}}
+<div class="badge badge-accent badge-soft font-bold py-2.5 sm:py-3 text-xs gap-1 sm:gap-1.5">
+    <span>⏳</span>
+    <span class="hidden sm:inline">Age of Money: {{.AOMHeadline}} days</span>
+    <span class="sm:hidden">{{.AOMHeadline}}d</span>
+</div>
+<form method="POST" action="/logout">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+    <button type="submit" class="btn btn-ghost btn-xs sm:btn-sm font-medium px-2 sm:px-3">Log Out</button>
+</form>
+{{- end -}}
+
+{{- define "sidebar_extra" -}}
+<div class="divider my-0"></div>
+<div class="px-2">
+    <div class="text-xs font-bold uppercase tracking-wider text-base-content/50 mb-2">Accounts Summary</div>
+    <div class="space-y-2">
+        {{- if .HasAccounts}}
+        {{- range .AccountSummaries}}
+        <div class="flex justify-between items-center text-xs gap-2">
+            <div class="flex items-center gap-1.5 min-w-0">
+                {{- if .IsURLIcon}}
+                <img src="{{.IconValue}}" class="w-4 h-4 object-contain inline-block shrink-0 rounded" onerror="this.outerHTML='💳'" />
+                {{- else}}
+                <span class="text-sm shrink-0 select-none">{{.IconValue}}</span>
+                {{- end}}
+                <span class="font-medium text-base-content/70 truncate max-w-[120px]" title="{{.Name}}">{{.Name}}</span>
+            </div>
+            <span class="font-mono font-bold shrink-0">{{.BalanceFormatted}} {{.Currency}}</span>
+        </div>
+        {{- end}}
+        {{- else}}
+        <div class="text-xs text-base-content/50 py-1">
+            <p>No accounts connected yet.</p>
+            <a href="/budgets/{{.BudgetID}}/accounts" class="btn btn-xs btn-outline btn-primary mt-2 w-full">+ Add Account</a>
+        </div>
+        {{- end}}
+    </div>
+</div>
+{{- end -}}
+
+{{- define "content" -}}
+    <!-- Toast Notification -->
+    <div id="budget-toast" class="toast toast-top toast-end z-50 transition-opacity duration-300 {{if not .FlashMsg}}hidden{{end}}">
+        <div class="alert alert-success text-xs shadow-lg flex items-center gap-2">
+            <span>✓</span>
+            <span id="budget-toast-msg">{{.FlashMsg}}</span>
+        </div>
+    </div>
+
+    <!-- Stats Banner -->
+    <div class="stats stats-horizontal shadow-md w-full bg-base-100 border border-base-300 mb-4 grid grid-cols-1 md:grid-cols-2">
+        <div class="stat p-5">
+            <div class="stat-figure text-success text-3xl hidden sm:block">💵</div>
+            <div class="stat-title text-xs font-bold uppercase tracking-wider flex items-center gap-1.5">
+                <span class="sm:hidden text-base">💵</span>
+                <span>Ready to Assign</span>
+            </div>
+            <div class="stat-value {{.RTAColor}} text-2xl md:text-3xl font-black tracking-tight mt-0.5">
+                {{.DefaultRTAFormatted}} {{.DefaultCurr}}
+            </div>
+            {{- if .HasNonDefaultRTACurrencies}}
+            <div class="flex flex-wrap items-center gap-1.5 mt-1.5">
+                {{- range .TopRTACurrencies}}
+                <span class="badge {{.BadgeColor}} badge-sm font-bold font-mono">{{.AmountFormatted}} {{.Currency}}</span>
+                {{- end}}
+                {{- if .ExtraRTACurrencies}}
+                <div class="dropdown dropdown-end dropdown-top">
+                    <label tabindex="0" class="badge badge-neutral badge-sm font-bold cursor-pointer hover:badge-primary transition-colors">+{{len .ExtraRTACurrencies}} walut</label>
+                    <div tabindex="0" class="dropdown-content z-20 menu p-2.5 shadow-xl bg-base-100 rounded-box border border-base-300 w-52 gap-1.5 text-xs">
+                        <div class="font-bold text-[11px] uppercase tracking-wider text-base-content/60 px-1 pb-1 border-b border-base-200">Pozostałe waluty</div>
+                        {{- range .ExtraRTACurrencies}}
+                        <div class="flex items-center justify-between px-1 py-0.5">
+                            <span class="font-bold">{{.Currency}}:</span>
+                            <span class="badge {{.BadgeColor}} badge-xs font-mono font-bold">{{.AmountFormatted}} {{.Currency}}</span>
+                        </div>
+                        {{- end}}
+                    </div>
+                </div>
+                {{- end}}
+            </div>
+            {{- end}}
+            <div class="stat-desc text-xs {{.RTADescClass}} mt-1.5">{{.RTADesc}}</div>
+        </div>
+
+        <div class="stat p-5 border-t md:border-t-0 md:border-l border-base-200">
+            <div class="stat-figure text-primary text-3xl hidden sm:block">🎯</div>
+            <div class="stat-title text-xs font-bold uppercase tracking-wider flex items-center gap-1.5">
+                <span class="sm:hidden text-base">🎯</span>
+                <span>Needed ({{.HorizonTitle}})</span>
+            </div>
+            <div class="stat-value text-primary text-2xl md:text-3xl font-black tracking-tight mt-0.5">
+                {{.TotalNeededFormatted}} <span class="text-xs font-normal text-base-content/60">{{.DefaultCurr}}</span>
+            </div>
+            <div class="stat-desc text-xs mt-1.5">
+                {{- if .HasMandatoryP3Needed}}
+                of which Mandatory: <span class="font-mono font-bold text-error">{{.MandatoryP3NeededFormatted}} {{.DefaultCurr}}</span>
+                {{- else}}
+                <span class="text-success font-medium">✓ All mandatory targets funded</span>
+                {{- end}}
+            </div>
+        </div>
+    </div>
+
+    <!-- Controls Toolbar -->
+    <div class="card card-border bg-base-100 border-base-300 shadow-xs mb-4 px-3 py-2.5 sm:px-4 sm:py-3 flex flex-row flex-wrap justify-between items-center gap-2 sm:gap-3">
+        <div class="flex items-center gap-2 sm:gap-2.5">
+            <label for="mobile_horizon_select" class="flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-base-content/70 shrink-0">
+                <span>⏱️</span>
+                <span class="hidden xs:inline sm:inline">Horizon:</span>
+            </label>
+            <select id="mobile_horizon_select" aria-label="Select Horizon" class="select select-bordered select-sm sm:hidden font-semibold text-xs min-h-8 h-8 w-auto pr-7" onchange="if(this.value) window.location.href=this.value">
+                <option value="/budgets/{{.BudgetID}}/budget?horizon=monthly&filter={{.FilterParam}}"{{if .IsHorizonMonthly}} selected{{end}}>Monthly ({{.WindowDays}}d)</option>
+                <option value="/budgets/{{.BudgetID}}/budget?horizon=30d&filter={{.FilterParam}}"{{if eq .HorizonParam "30d"}} selected{{end}}>30d</option>
+                <option value="/budgets/{{.BudgetID}}/budget?horizon=90d&filter={{.FilterParam}}"{{if eq .HorizonParam "90d"}} selected{{end}}>90d</option>
+                <option value="/budgets/{{.BudgetID}}/budget?horizon=annual&filter={{.FilterParam}}"{{if eq .HorizonParam "annual"}} selected{{end}}>Annual</option>
+                <option value="/budgets/{{.BudgetID}}/budget?horizon=365d&filter={{.FilterParam}}"{{if eq .HorizonParam "365d"}} selected{{end}}>365d</option>
+            </select>
+            <div class="hidden sm:inline-flex join">
+                <a href="/budgets/{{.BudgetID}}/budget?horizon=monthly&filter={{.FilterParam}}" class="btn btn-xs join-item {{if .IsHorizonMonthly}}btn-primary{{else}}btn-ghost{{end}}">Monthly</a>
+                <a href="/budgets/{{.BudgetID}}/budget?horizon=30d&filter={{.FilterParam}}" class="btn btn-xs join-item {{if eq .HorizonParam "30d"}}btn-primary{{else}}btn-ghost{{end}}">30d</a>
+                <a href="/budgets/{{.BudgetID}}/budget?horizon=90d&filter={{.FilterParam}}" class="btn btn-xs join-item {{if eq .HorizonParam "90d"}}btn-primary{{else}}btn-ghost{{end}}">90d</a>
+                <a href="/budgets/{{.BudgetID}}/budget?horizon=annual&filter={{.FilterParam}}" class="btn btn-xs join-item {{if eq .HorizonParam "annual"}}btn-primary{{else}}btn-ghost{{end}}">Annual</a>
+                <a href="/budgets/{{.BudgetID}}/budget?horizon=365d&filter={{.FilterParam}}" class="btn btn-xs join-item {{if eq .HorizonParam "365d"}}btn-primary{{else}}btn-ghost{{end}}">365d</a>
+            </div>
+            <span class="text-[11px] text-base-content/50 font-medium hidden md:inline">({{.WindowDays}} days requirement window)</span>
+        </div>
+
+        <div class="flex items-center gap-2 shrink-0">
+            <form method="POST" action="/budgets/{{.BudgetID}}/budget/auto-assign" class="inline">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <input type="hidden" name="currency" value="{{.DefaultCurr}}" />
+                <input type="hidden" name="horizon" value="{{.HorizonParam}}" />
+                <input type="hidden" name="filter" value="{{.FilterParam}}" />
+                <button type="submit" class="btn btn-sm sm:btn-xs btn-outline btn-primary font-semibold shadow-xs gap-1 sm:gap-1.5 min-h-8 touch-manipulation">
+                    <span>⚡</span>
+                    <span class="sm:hidden">Auto-Assign</span>
+                    <span class="hidden sm:inline">Auto-Assign by Priority</span>
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Filter Toolbar -->
+    <div class="flex flex-col lg:flex-row lg:justify-between lg:items-center gap-2.5 sm:gap-3 mb-4">
+        <div class="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2 sm:gap-3 w-full lg:w-auto">
+            <div class="grid grid-cols-2 sm:inline-flex sm:join gap-1.5 sm:gap-0 w-full sm:w-auto">
+                <a href="/budgets/{{.BudgetID}}/budget?horizon={{.HorizonParam}}&filter=all" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation {{if .IsFilterAll}}btn-primary{{else}}btn-ghost border border-base-300{{end}}">
+                    <span>All</span> <span class="badge badge-xs sm:badge-sm font-mono">{{.CountAll}}</span>
+                </a>
+                <a href="/budgets/{{.BudgetID}}/budget?horizon={{.HorizonParam}}&filter=attention" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation {{if eq .FilterParam "attention"}}btn-primary{{else}}btn-ghost border border-base-300{{end}}">
+                    <span class="truncate">Needs attention</span> <span class="badge badge-xs sm:badge-sm font-mono badge-warning">{{.CountAttention}}</span>
+                </a>
+                <a href="/budgets/{{.BudgetID}}/budget?horizon={{.HorizonParam}}&filter=overspent" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation {{if eq .FilterParam "overspent"}}btn-primary{{else}}btn-ghost border border-base-300{{end}}">
+                    <span>Overspent</span> <span class="badge badge-xs sm:badge-sm font-mono badge-error">{{.CountOverspent}}</span>
+                </a>
+                <a href="/budgets/{{.BudgetID}}/budget?horizon={{.HorizonParam}}&filter=buffer" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation {{if eq .FilterParam "buffer"}}btn-primary{{else}}btn-ghost border border-base-300{{end}}">
+                    <span>Has buffer</span> <span class="badge badge-xs sm:badge-sm font-mono badge-info">{{.CountBuffer}}</span>
+                </a>
+            </div>
+            <div class="join grid grid-cols-2 sm:inline-flex w-full sm:w-auto">
+                <button type="button" class="btn btn-sm btn-ghost border border-base-300 join-item text-xs touch-manipulation" onclick="expandAllEnvelopes()">Expand all</button>
+                <button type="button" class="btn btn-sm btn-ghost border border-base-300 join-item text-xs touch-manipulation" onclick="collapseAllEnvelopes()">Collapse all</button>
+            </div>
+        </div>
+        <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full lg:w-auto">
+            <div class="relative w-full sm:w-48">
+                <input type="text" id="envelope_search_input" placeholder="Search envelopes..." class="input input-bordered input-sm w-full text-xs pl-8" oninput="filterEnvelopeSearch(this.value)" />
+                <span class="absolute left-2.5 top-2 text-xs opacity-50 select-none">🔍</span>
+            </div>
+            <div class="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
+                <button type="button" class="btn btn-outline btn-primary btn-sm gap-1.5 shadow-xs font-semibold w-full sm:w-auto touch-manipulation" onclick="openStructureModal('ai')">
+                    <span>✨</span>
+                    <span>AI / Import</span>
+                </button>
+                <button type="button" class="btn btn-primary btn-sm gap-1.5 shadow font-semibold w-full sm:w-auto touch-manipulation" onclick="openNewBucketModal()">
+                    <span>+</span>
+                    <span>New Bucket</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Envelopes Content -->
+    {{- if eq .AllBucketsCount 0}}
+    <div class="card card-border bg-base-100 border-dashed border-base-300 p-8 text-center flex flex-col items-center justify-center gap-4">
+        <div class="w-14 h-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center text-3xl font-bold">✨</div>
+        <div>
+            <h3 class="font-extrabold text-lg tracking-tight">No Buckets Created Yet</h3>
+            <p class="text-xs text-base-content/60 max-w-md mx-auto mt-1">Get started quickly by generating a complete bucket structure with AI, importing from another budget, or adding buckets manually.</p>
+        </div>
+        <div class="flex flex-wrap items-center justify-center gap-2 mt-2">
+            <button type="button" class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('ai')">
+                <span>✨</span>
+                <span>Create from Description (AI)</span>
+            </button>
+            <button type="button" class="btn btn-outline btn-secondary btn-sm shadow font-semibold gap-1.5" onclick="openStructureModal('import')">
+                <span>📥</span>
+                <span>Import from Another Budget</span>
+            </button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="new_bucket_modal.showModal()">
+                <span>+</span>
+                <span>New Bucket Manually</span>
+            </button>
+        </div>
+    </div>
+    {{- else}}
+    <!-- Desktop Buckets Table Card -->
+    <div class="card card-border bg-base-100 border-base-300 shadow-md hidden md:block">
+        <div class="card-body p-0">
+            <div class="overflow-x-auto">
+                <table class="table table-zebra w-full">
+                    <thead>
+                        <tr class="bg-base-200/50">
+                            <th class="font-bold">Bucket / Category &amp; Targets</th>
+                            <th class="font-bold">Progress</th>
+                            <th class="font-bold text-right">Needed ({{.HorizonDisplay}})</th>
+                            <th class="font-bold text-right">Available Balance</th>
+                            <th class="font-bold text-right">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{- if eq .DisplayBucketsCount 0}}
+                        <tr>
+                            <td colspan="5" class="p-8 text-center text-xs text-base-content/60">
+                                No envelopes match the selected filter (<strong>{{.FilterParam}}</strong>).
+                                <a href="/budgets/{{.BudgetID}}/budget?horizon={{.HorizonParam}}&filter=all" class="link link-primary ml-1">View all envelopes</a>
+                            </td>
+                        </tr>
+                        {{- else}}
+                        {{- range .BucketGroups}}
+                        <tr id="group-header-{{.GroupID}}" class="bg-base-200/80 font-bold border-t-2 border-base-300 group-header select-none group-drop-zone transition-colors" data-group-id="{{.GroupID}}" data-group-name="{{.GroupName}}">
+                            <td class="py-2.5">
+                                <div class="flex items-center gap-2">
+                                    <div class="flex items-center gap-2 cursor-pointer" onclick="toggleGroup('{{.GroupID}}')">
+                                        <span id="group-icon-{{.GroupID}}" class="text-xs transition-transform duration-200">▼</span>
+                                        <span class="uppercase tracking-wider text-xs font-black text-base-content/80">{{.GroupName}}</span>
+                                        <span class="badge badge-neutral badge-xs font-mono font-normal">{{len .Buckets}} envelopes</span>
+                                    </div>
+                                    <div class="flex items-center gap-0.5 ml-2">
+                                        <button type="button" class="btn btn-ghost btn-xs p-1 h-6 min-h-0 text-base-content/60 hover:text-primary" onclick="openRenameGroupModal('{{.EscapedGroupName}}')" title="Rename Category">
+                                            ✏️
+                                        </button>
+                                        <form method="POST" action="/budgets/{{$.BudgetID}}/groups/move?dir=up" class="inline">
+                                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
+                                            <input type="hidden" name="group_name" value="{{.GroupName}}" />
+                                            <input type="hidden" name="horizon" value="{{$.HorizonParam}}" />
+                                            <input type="hidden" name="filter" value="{{$.FilterParam}}" />
+                                            <button type="submit" class="btn btn-ghost btn-xs p-0.5 h-6 min-h-0 text-base-content/60 hover:text-primary" title="Move Up">▲</button>
+                                        </form>
+                                        <form method="POST" action="/budgets/{{$.BudgetID}}/groups/move?dir=down" class="inline">
+                                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
+                                            <input type="hidden" name="group_name" value="{{.GroupName}}" />
+                                            <input type="hidden" name="horizon" value="{{$.HorizonParam}}" />
+                                            <input type="hidden" name="filter" value="{{$.FilterParam}}" />
+                                            <button type="submit" class="btn btn-ghost btn-xs p-0.5 h-6 min-h-0 text-base-content/60 hover:text-primary" title="Move Down">▼</button>
+                                        </form>
+                                    </div>
+                                </div>
+                            </td>
+                            <td class="py-2.5">
+                                <div class="flex items-center gap-2 max-w-[200px]" title="{{.ProgressPercent}}% funded">
+                                    <progress class="progress {{.ProgressClass}} h-1.5 w-24" value="{{.ProgressPercent}}" max="100"></progress>
+                                    <span class="text-xs font-mono text-base-content/70">{{.TotalFundedFormatted}} / {{.TotalRequiredFormatted}}</span>
+                                </div>
+                            </td>
+                            <td class="py-2.5 text-right font-mono text-xs font-bold text-base-content/80">
+                                {{.TotalNeededFormatted}} <span class="text-[10px] font-normal text-base-content/50">{{$.DefaultCurr}}</span>
+                            </td>
+                            <td class="py-2.5 text-right font-mono text-xs font-bold">
+                                {{.TotalAvailableFormatted}} <span class="text-[10px] font-normal text-base-content/50">{{$.DefaultCurr}}</span>
+                            </td>
+                            <td class="py-2.5"></td>
+                        </tr>
+                        {{- range $b := .Buckets}}
+                        <tr id="bucket-{{$b.ID}}" class="hover transition-colors bucket-row group-item-{{$b.GroupID}}" data-bucket-id="{{$b.ID}}" data-group-id="{{$b.GroupID}}" data-group-name="{{$b.GroupName}}" data-bucket-name="{{$b.Name}}" data-search="{{$b.SearchTokens}}">
+                            <td>
+                                <div class="flex flex-col gap-1">
+                                    <div class="flex items-center gap-2">
+                                        <span class="bucket-drag-handle cursor-grab active:cursor-grabbing text-base-content/40 hover:text-primary select-none px-0.5 text-sm" title="Drag to reorder or move category" draggable="true">⠿</span>
+                                        <button type="button" class="btn btn-ghost btn-xs btn-circle p-0 h-6 w-6 target-toggle-btn" onclick="toggleBucketTargets('{{$b.ID}}')" aria-expanded="{{$b.DefaultExpanded}}" aria-controls="targets-{{$b.ID}}" aria-label="Toggle targets for {{$b.Name}}">
+                                            <span id="bucket-toggle-icon-{{$b.ID}}" class="text-xs transition-transform duration-200 font-mono select-none">{{if $b.DefaultExpanded}}▼{{else}}▶{{end}}</span>
+                                        </button>
+                                        <span class="w-2.5 h-2.5 rounded-full shrink-0 {{$b.StatusDot}}"></span>
+                                        <div class="font-bold text-sm flex items-center gap-1.5">
+                                            <span>{{$b.Name}}</span>
+                                            {{- if $b.HasP3AtRisk}}
+                                            <span class="badge badge-error badge-outline badge-xs font-bold gap-1" title="Mandatory commitments are at risk"><span>⚠</span><span>P3 at risk</span></span>
+                                            {{- end}}
+                                            {{- if $b.HasFormulaError}}
+                                            <span class="badge badge-error badge-outline badge-xs font-bold gap-1 cursor-pointer formula-error-badge" title="{{$b.FormulaErrorMessage}}"><span>⚠</span><span>Formula Error</span></span>
+                                            {{- end}}
+                                        </div>
+                                    </div>
+                                    <div class="pl-8 flex items-center gap-2 text-xs">
+                                        {{- if gt $b.UnassignedBufferMinor 0}}
+                                        <span class="text-[11px] font-mono text-base-content/60">Buffer: <span class="text-success font-semibold">+{{$b.UnassignedBufferFormatted}} {{$b.Currency}}</span></span>
+                                        {{- else if lt $b.UnassignedBufferMinor 0}}
+                                        <span class="text-[11px] font-mono text-error font-semibold">⚠ Over-allocated: {{$b.UnassignedBufferFormatted}} {{$b.Currency}}</span>
+                                        {{- else}}
+                                        <span class="text-[11px] font-mono text-base-content/40">Buffer: 0.00 {{$b.Currency}}</span>
+                                        {{- end}}
+                                    </div>
+                                </div>
+                            </td>
+                            <td>
+                                <div class="flex flex-col gap-1 max-w-[180px]">
+                                    <div class="flex items-center justify-between text-[11px] font-mono text-base-content/70">
+                                        <span>{{$b.ProgressPercent}}%</span>
+                                        <span>{{$b.TotalFundedFormatted}} / {{$b.TotalRequiredFormatted}}</span>
+                                    </div>
+                                    <progress class="progress {{$b.ProgressClass}} h-1.5 w-full" value="{{$b.ProgressPercent}}" max="100" title="{{$b.ProgressPercent}}% funded"></progress>
+                                </div>
+                            </td>
+                            <td class="text-right">
+                                <div class="flex flex-col items-end gap-0.5">
+                                    <span class="badge {{$b.HealthBadgeClass}} badge-sm font-semibold">{{$b.HealthBadge}}</span>
+                                    {{- if gt $b.TotalNeededMinor 0}}
+                                    <span class="text-[11px] font-mono text-warning font-semibold">Needs {{$b.TotalNeededFormatted}} {{$b.Currency}}</span>
+                                    {{- else}}
+                                    <span class="text-[11px] font-mono text-base-content/40">✓ Fully funded</span>
+                                    {{- end}}
+                                </div>
+                            </td>
+                            <td class="font-mono text-right font-bold text-sm">
+                                <span class="{{$b.AvailColor}}">{{$b.BalanceFormatted}}</span> <span class="text-xs font-normal text-base-content/60">{{$b.Currency}}</span>
+                            </td>
+                            <td class="text-right">
+                                <div class="flex items-center justify-end gap-1">
+                                    <button type="button" class="btn btn-ghost btn-xs text-primary font-semibold" onclick="openBucketDrawer('{{$b.ID}}', '{{$b.EscapedName}}', '{{$b.EscapedGroupName}}', '{{$b.BalanceFormatted}}', '{{$b.Currency}}')">Inspect</button>
+                                    {{$b.ActionMenuDesktop}}
+                                </div>
+                            </td>
+                        </tr>
+                        <tr id="targets-{{$b.ID}}" class="target-subrows group-item-{{$b.GroupID}} {{if not $b.DefaultExpanded}}hidden{{end}}" data-bucket-id="{{$b.ID}}">
+                            <td colspan="5" class="p-0 border-0">
+                                <div class="bg-base-200/40 border-y border-base-200 pl-10 pr-4 py-2 space-y-1">
+                                    {{- if $b.Targets}}
+                                    {{- range $t := $b.Targets}}
+                                    <div class="flex items-center justify-between py-1 border-b border-base-200/60 last:border-0 text-xs">
+                                        <div class="flex items-center gap-2 min-w-0">
+                                            <span class="text-base-content/40 font-mono select-none">├</span>
+                                            {{- if $t.HasLabel}}
+                                            <span class="font-medium truncate">{{$t.Name}}</span>
+                                            {{- end}}
+                                            <span class="badge {{$t.PrioBadgeClass}} badge-xs">{{$t.PriorityText}}</span>
+                                            <span class="text-[11px] text-base-content/50 truncate">{{$t.CadenceDisplay}}{{$t.DueText}}{{$t.GoalText}}</span>
+                                            {{- if eq $t.AmountMode "LUA_FORMULA"}}
+                                            <span class="badge badge-outline badge-xs font-mono text-secondary border-secondary">LUA</span>
+                                            {{- end}}
+                                        </div>
+                                        <div class="flex items-center gap-4 shrink-0">
+                                            <div class="flex items-center gap-2" title="{{$t.ProgressPercent}}% funded">
+                                                <progress class="progress {{$t.ProgressClass}} h-1.5 w-16" value="{{$t.ProgressPercent}}" max="100"></progress>
+                                                <span class="font-mono text-[11px] text-base-content/70">{{$t.FundedFormatted}} / {{$t.RequiredFormatted}} {{$t.Currency}}</span>
+                                            </div>
+                                            <span class="badge {{$t.HealthBadgeClass}} badge-xs font-semibold">{{$t.HealthBadge}}</span>
+                                            <div class="text-right min-w-[90px]">
+                                                {{- if gt $t.NeededMinor 0}}
+                                                <span class="font-mono text-xs font-semibold text-warning">Needs {{$t.NeededFormatted}} {{$t.Currency}}</span>
+                                                {{- else}}
+                                                <span class="font-mono text-xs text-base-content/40">✓ Funded</span>
+                                                {{- end}}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    {{- end}}
+                                    {{- else}}
+                                    <div class="text-xs text-base-content/40 italic py-1">No targets defined in this envelope.</div>
+                                    {{- end}}
+                                </div>
+                            </td>
+                        </tr>
+                        {{- end}}
+                        {{- end}}
+                        {{- end}}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mobile Buckets Cards List -->
+    <div class="md:hidden space-y-3">
+        {{- if eq .DisplayBucketsCount 0}}
+        <div class="card card-border bg-base-100 border-base-300 p-6 text-center text-xs text-base-content/60">
+            No envelopes match the selected filter (<strong>{{.FilterParam}}</strong>).
+            <a href="/budgets/{{.BudgetID}}/budget?horizon={{.HorizonParam}}&filter=all" class="link link-primary ml-1">View all envelopes</a>
+        </div>
+        {{- else}}
+        {{- range .BucketGroups}}
+        {{- if .Buckets}}
+        <div id="mobile-group-{{.GroupID}}" class="card card-border bg-base-200/80 border-base-300 px-3.5 py-2.5 mobile-group-header select-none mobile-group-drop-zone transition-colors" data-group-id="{{.GroupID}}" data-group-name="{{.GroupName}}">
+            <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2 min-w-0 cursor-pointer flex-1" onclick="toggleMobileGroup('{{.GroupID}}')">
+                    <span id="mobile-group-icon-{{.GroupID}}" class="text-xs transition-transform duration-200">▼</span>
+                    <span class="uppercase tracking-wider text-xs font-black text-base-content/80 truncate">{{.GroupName}}</span>
+                    <span class="badge badge-neutral badge-xs font-mono font-normal shrink-0">{{len .Buckets}}</span>
+                </div>
+                <div class="flex items-center gap-1 shrink-0">
+                    <button type="button" class="btn btn-ghost btn-xs min-h-7 px-1.5 text-base-content/60 hover:text-primary touch-manipulation" onclick="openRenameGroupModal('{{.EscapedGroupName}}')" title="Rename Category">✏️</button>
+                    <form method="POST" action="/budgets/{{$.BudgetID}}/groups/move?dir=up" class="inline">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
+                        <input type="hidden" name="group_name" value="{{.GroupName}}" />
+                        <input type="hidden" name="horizon" value="{{$.HorizonParam}}" />
+                        <input type="hidden" name="filter" value="{{$.FilterParam}}" />
+                        <button type="submit" class="btn btn-ghost btn-xs min-h-7 px-1 text-base-content/60 hover:text-primary touch-manipulation" title="Move Up">▲</button>
+                    </form>
+                    <form method="POST" action="/budgets/{{$.BudgetID}}/groups/move?dir=down" class="inline">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
+                        <input type="hidden" name="group_name" value="{{.GroupName}}" />
+                        <input type="hidden" name="horizon" value="{{$.HorizonParam}}" />
+                        <input type="hidden" name="filter" value="{{$.FilterParam}}" />
+                        <button type="submit" class="btn btn-ghost btn-xs min-h-7 px-1 text-base-content/60 hover:text-primary touch-manipulation" title="Move Down">▼</button>
+                    </form>
+                </div>
+            </div>
+            <div class="flex items-center justify-between gap-3 mt-1.5 text-[11px] font-mono text-base-content/70">
+                <div class="flex items-center gap-2 flex-1 min-w-0">
+                    <progress class="progress {{.ProgressClass}} h-1.5 w-20 shrink-0" value="{{.ProgressPercent}}" max="100"></progress>
+                    <span class="truncate">{{.TotalFundedFormatted}} / {{.TotalRequiredFormatted}}</span>
+                </div>
+                <div class="shrink-0">
+                    <span class="text-base-content/50">Avail:</span> <span class="font-bold text-base-content">{{.TotalAvailableFormatted}} {{$.DefaultCurr}}</span>
+                </div>
+            </div>
+        </div>
+        {{- range $b := .Buckets}}
+        <div id="mobile-bucket-{{$b.ID}}" class="card card-border bg-base-100 border-base-300 shadow-xs mobile-bucket-card mobile-group-item-{{$b.GroupID}}" data-bucket-id="{{$b.ID}}" data-group-id="{{$b.GroupID}}" data-group-name="{{$b.GroupName}}" data-bucket-name="{{$b.Name}}" data-search="{{$b.SearchTokens}}">
+            <div class="card-body p-4 gap-2.5">
+                <div class="flex items-start justify-between gap-2">
+                    <div class="flex items-center gap-2 min-w-0">
+                        <span class="mobile-bucket-drag-handle cursor-grab active:cursor-grabbing text-base-content/40 hover:text-primary select-none px-0.5 text-sm shrink-0" title="Drag to reorder or move category" draggable="true">⠿</span>
+                        <span class="w-2.5 h-2.5 rounded-full shrink-0 {{$b.StatusDot}}"></span>
+                        <div class="min-w-0">
+                            <div class="font-bold text-sm truncate flex items-center gap-1.5">
+                                <span class="truncate">{{$b.Name}}</span>
+                                {{- if $b.HasFormulaError}}
+                                <span class="badge badge-error badge-outline badge-xs font-bold gap-1 cursor-pointer formula-error-badge" title="{{$b.FormulaErrorMessage}}"><span>⚠</span><span>Formula Error</span></span>
+                                {{- end}}
+                            </div>
+                            <div class="text-[11px] text-base-content/50 truncate">{{$b.GroupName}}</div>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-1 shrink-0">
+                        <span class="badge {{$b.HealthBadgeClass}} badge-xs sm:badge-sm font-semibold">{{$b.HealthBadge}}</span>
+                        {{- if $b.HasP3AtRisk}}
+                        <span class="badge badge-error badge-outline badge-xs font-bold gap-1" title="Mandatory commitments are at risk"><span>⚠</span><span>P3 at risk</span></span>
+                        {{- end}}
+                    </div>
+                </div>
+
+                <div class="flex justify-between items-baseline pt-1">
+                    <div>
+                        <span class="text-[10px] uppercase font-bold text-base-content/50">Available</span>
+                        <div class="font-mono font-bold text-base {{$b.AvailColor}}">{{$b.BalanceFormatted}} {{$b.Currency}}</div>
+                    </div>
+                    <div class="text-right">
+                        <span class="text-[10px] uppercase font-bold text-base-content/50">Needed</span>
+                        <div class="font-mono text-xs font-semibold {{$b.NeededColor}}">{{$b.TotalNeededFormatted}} {{$b.Currency}}</div>
+                    </div>
+                </div>
+
+                <div class="w-full">
+                    <progress class="progress {{$b.ProgressClass}} h-2 w-full" value="{{$b.ProgressPercent}}" max="100"></progress>
+                    <div class="flex justify-between text-[11px] font-mono text-base-content/60 mt-1">
+                        <span>{{$b.ProgressPercent}}%</span>
+                        <span>{{$b.BufferMobileStr}}</span>
+                    </div>
+                </div>
+
+                <div class="pt-2.5 border-t border-base-200 flex flex-wrap justify-between items-center gap-1.5 text-xs">
+                    <button type="button" class="btn btn-ghost btn-sm min-h-8 px-2.5 gap-1.5 text-xs font-semibold touch-manipulation" onclick="toggleMobileTargets('{{$b.ID}}')">
+                        <span id="mobile-toggle-icon-{{$b.ID}}">{{if $b.DefaultExpanded}}▼{{else}}▶{{end}}</span>
+                        <span>{{len $b.Targets}} targets</span>
+                    </button>
+                    <div class="flex items-center gap-1.5">
+                        <button type="button" class="btn btn-soft btn-primary btn-sm min-h-8 px-2.5 text-xs font-semibold gap-1 touch-manipulation" onclick="openAssignModal('{{$b.ID}}', '{{$b.EscapedName}}', '{{$b.Currency}}')">
+                            <span>💵</span>
+                            <span>Assign</span>
+                        </button>
+                        <button type="button" class="btn btn-ghost btn-sm min-h-8 px-2.5 text-xs text-primary font-semibold touch-manipulation" onclick="openBucketDrawer('{{$b.ID}}', '{{$b.EscapedName}}', '{{$b.EscapedGroupName}}', '{{$b.BalanceFormatted}}', '{{$b.Currency}}')">Inspect</button>
+                        {{$b.ActionMenuMobile}}
+                    </div>
+                </div>
+
+                <div id="mobile-targets-{{$b.ID}}" class="mobile-target-sublist {{if not $b.DefaultExpanded}}hidden{{end}} pt-2 space-y-1.5 border-t border-base-200" data-bucket-id="{{$b.ID}}">
+                    {{- if $b.Targets}}
+                    {{- range $t := $b.Targets}}
+                    <div class="flex flex-col gap-1 text-xs py-1.5 border-b border-base-200/60 last:border-0">
+                        <div class="flex items-center justify-between gap-2">
+                            <div class="flex items-center gap-1.5 min-w-0">
+                                <span class="font-medium truncate">{{$t.MobileNameDisplay}}</span>
+                                <span class="badge {{$t.PrioBadgeClass}} badge-xs shrink-0">{{$t.PriorityText}}</span>
+                                {{- if eq $t.AmountMode "LUA_FORMULA"}}
+                                <span class="badge badge-outline badge-xs font-mono text-secondary border-secondary">LUA</span>
+                                {{- end}}
+                            </div>
+                            <div class="shrink-0">
+                                {{- if gt $t.NeededMinor 0}}
+                                <span class="font-mono text-[11px] font-semibold text-warning">Needs {{$t.NeededFormatted}} {{$t.Currency}}</span>
+                                {{- else}}
+                                <span class="font-mono text-[11px] text-base-content/40">✓ Funded</span>
+                                {{- end}}
+                            </div>
+                        </div>
+                        <div class="flex items-center justify-between gap-2 text-[11px] text-base-content/60">
+                            <span class="truncate">{{$t.CadenceDisplay}}{{$t.DueText}}{{$t.GoalText}}</span>
+                            <div class="flex items-center gap-2 shrink-0">
+                                <progress class="progress {{$t.ProgressClass}} h-1.5 w-14" value="{{$t.ProgressPercent}}" max="100"></progress>
+                                <span class="font-mono text-[10px] text-base-content/70">{{$t.FundedFormatted}} / {{$t.RequiredFormatted}} {{$t.Currency}}</span>
+                            </div>
+                        </div>
+                    </div>
+                    {{- end}}
+                    {{- else}}
+                    <div class="text-xs text-base-content/40 italic">No targets defined in this envelope.</div>
+                    {{- end}}
+                </div>
+            </div>
+        </div>
+        {{- end}}
+        {{- end}}
+        {{- end}}
+        {{- end}}
+    </div>
+    {{- end}}
+{{- end -}}
+
+{{- define "modals" -}}
+    <!-- Budget Structure Generator & Import Modal -->
+    <dialog id="structure_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6 max-w-3xl w-full sm:w-11/12 max-h-[85dvh] sm:max-h-[90vh] rounded-t-2xl sm:rounded-box overscroll-contain flex flex-col">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden shrink-0"></div>
+            <div class="flex justify-between items-center mb-4 shrink-0">
+                <div class="flex items-center gap-2">
+                    <span class="text-xl">✨</span>
+                    <h3 class="font-extrabold text-lg sm:text-xl tracking-tight">Bucket Structure Assistant</h3>
+                </div>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+
+            <!-- Tabs -->
+            <div role="tablist" class="tabs tabs-lift mb-4 shrink-0">
+                <button type="button" id="tab_btn_ai" role="tab" class="tab tab-active font-semibold text-xs" onclick="switchStructureTab('ai')">
+                    ✨ Generate with AI
+                </button>
+                <button type="button" id="tab_btn_import" role="tab" class="tab font-semibold text-xs" onclick="switchStructureTab('import')">
+                    📥 Import from Budget
+                </button>
+            </div>
+
+            <!-- Tab 1: AI Prompt -->
+            <div id="structure_tab_ai" class="flex flex-col gap-3 shrink-0">
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Describe your budget in natural language</span></label>
+                    <textarea id="structure_ai_prompt" rows="3" placeholder="e.g. Rodzina 2+1, wynajem mieszkania 2800 PLN, rachunki i internet 350 PLN, zakupy spożywcze 1600 PLN, paliwo 400 PLN, poduszka finansowa 500 PLN, wakacje 300 PLN..." class="textarea textarea-bordered w-full text-xs focus:textarea-primary"></textarea>
+                    <div class="text-[10px] text-base-content/50 mt-1">Our AI assistant will propose organized bucket groups, buckets, and monthly targets.</div>
+                </div>
+                <button type="button" id="btn_generate_preview" class="btn btn-primary btn-sm self-start font-semibold shadow gap-2" onclick="runAIGeneration()">
+                    <span>✨</span>
+                    <span>Generate Preview</span>
+                </button>
+            </div>
+
+            <!-- Tab 2: Import from Budget -->
+            <div id="structure_tab_import" class="hidden flex flex-col gap-3 shrink-0">
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Select source budget to copy from</span></label>
+                    <select id="source_budget_select" class="select select-bordered w-full select-sm focus:select-primary" {{if not .HasOtherBudgets}}disabled{{end}}>
+                        {{- if .HasOtherBudgets}}
+                        {{- range .OtherBudgets}}
+                        <option value="{{.ID}}">{{.Name}} ({{.Currency}})</option>
+                        {{- end}}
+                        {{- else}}
+                        <option value="" disabled selected>No other budgets available to import from</option>
+                        {{- end}}
+                    </select>
+                </div>
+                <button type="button" id="btn_load_source" class="btn btn-secondary btn-sm self-start font-semibold shadow gap-2" onclick="runSourceImport()" {{if not .HasOtherBudgets}}disabled{{end}}>
+                    <span>📥</span>
+                    <span>Load Structure</span>
+                </button>
+            </div>
+
+            <!-- Loading Spinner -->
+            <div id="structure_loading" class="hidden flex flex-col items-center justify-center p-8 gap-3 shrink-0">
+                <span class="loading loading-spinner loading-md text-primary"></span>
+                <span class="text-xs text-base-content/60" id="structure_loading_text">Analyzing description and generating budget buckets...</span>
+            </div>
+
+            <!-- Error Banner -->
+            <div id="structure_error" class="hidden alert alert-error text-xs mt-3 shrink-0">
+                <span id="structure_error_text"></span>
+            </div>
+
+            <!-- Interactive Hierarchical Preview -->
+            <div id="structure_preview_wrapper" class="hidden flex-1 overflow-y-auto mt-4 border border-base-300 rounded-box p-4 bg-base-200/40">
+                <div class="flex items-center justify-between pb-3 border-b border-base-300 mb-3">
+                    <div class="flex items-center gap-2">
+                        <input type="checkbox" id="structure_select_all" class="checkbox checkbox-primary checkbox-xs" checked onchange="toggleSelectAllStructure(this.checked)" />
+                        <label for="structure_select_all" class="text-xs font-bold cursor-pointer">Select All Items</label>
+                    </div>
+                    <span id="structure_stats_badge" class="badge badge-neutral badge-xs font-mono">0 buckets, 0 targets</span>
+                </div>
+
+                <div id="structure_preview_list" class="space-y-4 text-xs">
+                    <!-- Populated dynamically via JS -->
+                </div>
+            </div>
+
+            <div class="modal-action mt-4 pt-3 border-t border-base-300 flex justify-between items-center shrink-0">
+                <button type="button" class="btn btn-ghost btn-sm" onclick="structure_modal.close()">Cancel</button>
+                <button type="button" id="btn_apply_structure" class="btn btn-primary btn-sm font-semibold shadow gap-2 hidden" onclick="applyStructureConfirmed()">
+                    <span>✓</span>
+                    <span>Apply Selected Structure</span>
+                </button>
+            </div>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Category Groups Datalist -->
+    <datalist id="existing_category_groups">
+        {{- range .DistinctGroups}}
+        <option value="{{.}}">
+        {{- end}}
+    </datalist>
+
+    <!-- New Bucket Modal -->
+    <dialog id="new_bucket_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Create New Bucket</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form method="POST" action="/budgets/{{.BudgetID}}/buckets" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <input type="hidden" name="horizon" value="{{.HorizonParam}}" />
+                <input type="hidden" name="filter" value="{{.FilterParam}}" />
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Bucket Name</span></label>
+                    <input type="text" id="new_bucket_name" name="name" required autofocus placeholder="e.g. Groceries, Living Expenses" class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Group / Category</span></label>
+                    <input type="text" name="group_name" value="" list="existing_category_groups" required placeholder="{{.NewBucketGroupPlaceholder}}" class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="new_bucket_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Create Bucket</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Rename Group Modal -->
+    <dialog id="rename_group_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Rename Category / Group</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form id="rename_group_form" method="POST" action="/budgets/{{.BudgetID}}/groups/rename" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <input type="hidden" name="horizon" value="{{.HorizonParam}}" />
+                <input type="hidden" name="filter" value="{{.FilterParam}}" />
+                <input type="hidden" id="rename_group_old_name" name="old_name" value="" />
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Category Name</span></label>
+                    <input type="text" id="rename_group_new_name" name="new_name" required autofocus placeholder="e.g. Living, Housing, Needs" class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="rename_group_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Category Name</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Edit Bucket Modal -->
+    <dialog id="edit_bucket_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Edit Bucket</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form id="edit_bucket_form" method="POST" action="" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <input type="hidden" name="horizon" value="{{.HorizonParam}}" />
+                <input type="hidden" name="filter" value="{{.FilterParam}}" />
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Bucket Name</span></label>
+                    <input type="text" id="edit_bucket_name" name="name" required autofocus class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Group / Category</span></label>
+                    <input type="text" id="edit_bucket_group" name="group_name" required list="existing_category_groups" class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="edit_bucket_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Changes</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Assign Funds Modal -->
+    <dialog id="assign_funds_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Assign Funds to Envelope</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form id="assign_funds_form" method="POST" action="" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <input type="hidden" name="horizon" value="{{.HorizonParam}}" />
+                <input type="hidden" name="filter" value="{{.FilterParam}}" />
+                <input type="hidden" id="assign_currency" name="currency" value="{{.DefaultCurr}}" />
+                <div class="text-xs text-base-content/70">
+                    Assign funds directly from Ready to Assign into <span id="assign_bucket_name" class="font-bold text-primary"></span>.
+                    (Enter negative amount to return funds back to pool).
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Amount</span></label>
+                    <div class="join w-full">
+                        <input type="number" step="0.01" inputmode="decimal" id="assign_amount_input" name="amount" required autofocus placeholder="100.00" class="input input-bordered join-item w-full input-md focus:input-primary font-mono" />
+                        <span id="assign_currency_label" class="btn join-item btn-neutral no-animation">{{.DefaultCurr}}</span>
+                    </div>
+                </div>
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="assign_funds_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Assign Funds</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Move Funds Modal -->
+    <dialog id="move_funds_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Move Funds Between Envelopes</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form method="POST" action="/budgets/{{.BudgetID}}/buckets/move" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <input type="hidden" name="horizon" value="{{.HorizonParam}}" />
+                <input type="hidden" name="filter" value="{{.FilterParam}}" />
+                <input type="hidden" id="move_source_id" name="source_bucket_id" value="" />
+                <input type="hidden" id="move_currency" name="currency" value="{{.DefaultCurr}}" />
+                <div class="text-xs text-base-content/70">
+                    Move money out of <span id="move_source_name" class="font-bold text-primary"></span> into another envelope.
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Destination Envelope</span></label>
+                    <select name="dest_bucket_id" required class="select select-bordered w-full select-md focus:select-primary">
+                        {{- range .AllBuckets}}
+                        <option value="{{.ID}}">{{.Name}} ({{.GroupName}})</option>
+                        {{- end}}
+                    </select>
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Amount to Move</span></label>
+                    <div class="join w-full">
+                        <input type="number" step="0.01" min="0.01" inputmode="decimal" id="move_amount_input" name="amount" required autofocus placeholder="50.00" class="input input-bordered join-item w-full input-md focus:input-primary font-mono" />
+                        <span id="move_currency_label" class="btn join-item btn-neutral no-animation">{{.DefaultCurr}}</span>
+                    </div>
+                </div>
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="move_funds_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Move Funds</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Bucket Inspector Drawer / Modal -->
+    <dialog id="bucket_drawer" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 w-full max-w-2xl max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
+            <div class="flex justify-between items-start mb-4">
+                <div>
+                    <h3 id="drawer_bucket_name" class="font-extrabold text-xl sm:text-2xl tracking-tight"></h3>
+                    <div id="drawer_bucket_meta" class="text-xs text-base-content/60 mt-0.5"></div>
+                </div>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+
+            <div class="stats stats-vertical sm:stats-horizontal shadow-sm w-full bg-base-200/60 border border-base-300 mb-6">
+                <div class="stat p-3.5 sm:p-4">
+                    <div class="stat-title text-[10px] font-bold uppercase tracking-wider">Available Envelope Balance</div>
+                    <div id="drawer_bucket_balance" class="stat-value text-xl font-mono font-black text-primary"></div>
+                </div>
+                <div class="stat p-3.5 sm:p-4">
+                    <div class="stat-title text-[10px] font-bold uppercase tracking-wider">Funded / Required</div>
+                    <div id="drawer_bucket_funded_req" class="stat-value text-base font-mono font-bold text-base-content/80"></div>
+                </div>
+                <div class="stat p-3.5 sm:p-4">
+                    <div class="stat-title text-[10px] font-bold uppercase tracking-wider">Unassigned Buffer</div>
+                    <div id="drawer_bucket_buffer" class="stat-value text-base font-mono font-bold"></div>
+                </div>
+            </div>
+
+            <!-- Target Management Section -->
+            <div class="flex justify-between items-center mb-3">
+                <h4 class="font-bold text-sm uppercase tracking-wider text-base-content/70">Targets in this Bucket</h4>
+                <div class="flex items-center gap-2">
+                    <button type="button" class="btn btn-sm sm:btn-xs btn-outline btn-secondary gap-1 font-semibold touch-manipulation" onclick="openMoveTargetFundsModal()">⇄ Move Between Targets</button>
+                    <button type="button" class="btn btn-sm sm:btn-xs btn-primary gap-1 font-semibold touch-manipulation" onclick="openNewTargetModal()">+ Add Target</button>
+                </div>
+            </div>
+
+            <div id="drawer_targets_container" class="space-y-3 mb-6">
+                <!-- Populated dynamically via JS -->
+            </div>
+
+            <div class="modal-action">
+                <button type="button" class="btn btn-ghost btn-sm" onclick="bucket_drawer.close()">Close</button>
+            </div>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Move Funds Between Targets Modal (YNAB style inside bucket) -->
+    <dialog id="move_target_funds_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Reallocate Target Funds</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form method="POST" action="/budgets/{{.BudgetID}}/targets/move" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <input type="hidden" name="horizon" value="{{.HorizonParam}}" />
+                <input type="hidden" name="filter" value="{{.FilterParam}}" />
+                <input type="hidden" id="move_target_bucket_id" name="bucket_id" value="" />
+                <input type="hidden" id="move_target_currency" name="currency" value="" />
+
+                <div class="text-xs text-base-content/70">
+                    Transfer funded amounts directly between targets or envelope buffer in <span id="move_target_bucket_name" class="font-bold text-primary"></span>.
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">From (Source)</span></label>
+                        <select id="move_source_target_id" name="source_target_id" required class="select select-bordered w-full select-md focus:select-primary" onchange="updateMoveTargetOptions()">
+                        </select>
+                    </div>
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">To (Destination)</span></label>
+                        <select id="move_dest_target_id" name="dest_target_id" required class="select select-bordered w-full select-md focus:select-primary">
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Amount to Move</span></label>
+                    <div class="join w-full">
+                        <input type="number" step="0.01" min="0.01" inputmode="decimal" id="move_target_amount" name="amount" required autofocus placeholder="25.00" class="input input-bordered join-item w-full input-md focus:input-primary font-mono font-bold" />
+                        <span id="move_target_curr_label" class="btn join-item btn-neutral no-animation">PLN</span>
+                    </div>
+                </div>
+
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="move_target_funds_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Reallocate Funds</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- Create / Edit Target Modal -->
+    <dialog id="target_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 w-full max-w-xl max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
+            <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
+            <div class="flex justify-between items-center mb-4">
+                <h3 id="target_modal_title" class="font-extrabold text-xl tracking-tight">Add Target</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form id="target_form" method="POST" action="/budgets/{{.BudgetID}}/targets" class="flex flex-col gap-4" onsubmit="prepareTargetSubmit()">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <input type="hidden" name="horizon" value="{{.HorizonParam}}" />
+                <input type="hidden" name="filter" value="{{.FilterParam}}" />
+                <input type="hidden" id="target_bucket_id" name="bucket_id" value="" />
+
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div class="form-control sm:col-span-2">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Target Name <span class="text-base-content/50 font-normal">(optional)</span></span></label>
+                        <input type="text" id="target_name" name="name" placeholder="e.g. Monthly Rent, Electricity" class="input input-bordered w-full input-md focus:input-primary" />
+                    </div>
+                    <div class="form-control sm:col-span-1">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Currency</span></label>
+                        <select id="target_currency" name="currency" class="select select-bordered w-full select-md focus:select-primary">
+                            {{- range .AvailableCurrencies}}
+                            <option value="{{.}}"{{if eq . $.DefaultCurr}} selected{{end}}>{{.}}</option>
+                            {{- end}}
+                        </select>
+                        <span id="target_currency_help" class="text-[10px] text-base-content/50 mt-1 hidden">(Currency cannot be changed after creation)</span>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Target Type</span></label>
+                        <select id="target_type" name="target_type" class="select select-bordered w-full select-md focus:select-primary">
+                            <option value="EXPENSE" selected>Expense</option>
+                            <option value="SAVINGS">Savings</option>
+                            <option value="DEBT_PAYMENT">Debt Payment</option>
+                        </select>
+                    </div>
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Priority</span></label>
+                        <select id="target_priority" name="priority" class="select select-bordered w-full select-md focus:select-primary">
+                            <option value="3" selected>Mandatory (3)</option>
+                            <option value="2">Recommended (2)</option>
+                            <option value="1">Optional (1)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Cadence</span></label>
+                        <select id="target_cadence" name="recurrence_cadence" class="select select-bordered w-full select-md focus:select-primary" onchange="toggleCustomDays()">
+                            <option value="MONTHLY" selected>Monthly</option>
+                            <option value="WEEKLY">Weekly</option>
+                            <option value="ANNUAL">Annual</option>
+                            <option value="ONE_OFF">One-Off</option>
+                            <option value="CUSTOM_DAYS">Custom Days</option>
+                            <option value="CUSTOM_MONTHS">Custom Months</option>
+                            <option value="CUSTOM_YEARS">Custom Years</option>
+                        </select>
+                    </div>
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Non-Spending Strategy</span></label>
+                        <select id="target_strategy" name="non_spending_strategy" class="select select-bordered w-full select-md focus:select-primary">
+                            <option value="ROLL_OVER" selected>Roll Over</option>
+                            <option value="RETURN_TO_POOL">Return to Pool</option>
+                            <option value="ARREARS_CUMULATIVE">Arrears Cumulative</option>
+                            <option value="CAP_AND_HOLD">Cap and Hold</option>
+                            <option value="PRORATE_FUTURE">Prorate Future</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Custom Interval Input -->
+                <div id="custom_days_container" class="hidden form-control">
+                    <label class="label pb-1"><span id="target_recurrence_interval_label" class="label-text font-medium text-xs font-semibold">Recurrence Interval (Days)</span></label>
+                    <input type="number" id="target_recurrence_days" name="recurrence_interval" min="1" max="36500" placeholder="e.g. 90 for quarterly, 180 for semi-annual" class="input input-bordered w-full input-md focus:input-primary font-mono" />
+                </div>
+
+                <!-- Due Date / Anchor Date Input -->
+                <div id="target_due_date_container" class="hidden form-control">
+                    <label class="label pb-1"><span id="target_due_date_label" class="label-text font-medium text-xs font-semibold">Anchor Due Date</span></label>
+                    <input type="date" id="target_due_date" name="due_date" class="input input-bordered w-full input-md focus:input-primary font-mono" />
+                    <span id="target_due_date_hint" class="text-[10px] text-base-content/50 mt-1">Calendar anchor date used for calculating recurring cycles</span>
+                </div>
+
+                <!-- Calculation Mode Selector -->
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Calculation Mode</span></label>
+                    <div class="join w-full grid grid-cols-2">
+                        <input class="join-item btn btn-sm btn-outline checked:btn-primary text-xs" type="radio" name="amount_mode" id="mode_fixed" value="FIXED" aria-label="Fixed Amount" checked onchange="switchAmountMode('FIXED')" />
+                        <input class="join-item btn btn-sm btn-outline checked:btn-primary text-xs" type="radio" name="amount_mode" id="mode_lua" value="LUA_FORMULA" aria-label="Dynamic Formula (Lua / AI)" onchange="switchAmountMode('LUA_FORMULA')" />
+                    </div>
+                </div>
+
+                <!-- Fixed Amount Input -->
+                <div id="fixed_amount_container" class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Period Amount</span></label>
+                    <input type="number" step="0.01" min="0" inputmode="decimal" id="target_amount" name="amount" required placeholder="1000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
+                </div>
+
+                <!-- Lua Formula & AI Assistant Container -->
+                <div id="lua_formula_container" class="hidden flex flex-col gap-3">
+                    <div class="form-control">
+                        <div class="flex justify-between items-center pb-1">
+                            <label class="label-text font-medium text-xs font-semibold">Lua Script</label>
+                            <span class="text-[10px] text-base-content/50 font-mono">minor units (int64)</span>
+                        </div>
+                        <textarea id="target_lua_script" name="lua_script" rows="3" placeholder="return math.max(0, money(2000) - target('Mortgage Installment').required)" class="textarea textarea-bordered w-full font-mono text-xs focus:textarea-primary"></textarea>
+                        <div class="text-[10px] text-base-content/60 mt-1">
+                            API: <code class="bg-base-200 px-1 rounded">money(val)</code>, <code class="bg-base-200 px-1 rounded">target(&quot;name&quot;).required</code>, <code class="bg-base-200 px-1 rounded">bucket.balance()</code>, <code class="bg-base-200 px-1 rounded">budget.income(days)</code>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-2">
+                        <button type="button" id="btn_validate_formula" class="btn btn-outline btn-xs gap-1 font-semibold" onclick="validateFormulaScript()">
+                            🔍 Validate &amp; Preview
+                        </button>
+                        <button type="button" id="btn_toggle_ai" class="btn btn-secondary btn-xs gap-1 font-semibold" onclick="toggleAIPanel()">
+                            ✨ Generate with AI
+                        </button>
+                    </div>
+
+                    <div id="formula_preview_box" class="hidden text-xs p-3 rounded-lg border flex flex-col gap-1"></div>
+
+                    <div id="ai_assistant_panel" class="hidden card bg-base-200/60 border border-base-300 p-3 rounded-lg flex flex-col gap-2">
+                        <div class="flex justify-between items-center">
+                            <span class="text-xs font-bold text-secondary flex items-center gap-1">✨ AI Formula Assistant</span>
+                            <span class="text-[10px] text-base-content/50">Gemini 3.8 Flash</span>
+                        </div>
+                        <div class="join w-full">
+                            <input type="text" id="ai_formula_prompt" placeholder="e.g. Save 15% of total income over last 30 days capped at 5000 PLN" class="input input-bordered input-sm join-item w-full text-xs" />
+                            <button type="button" id="btn_generate_ai" class="btn btn-secondary btn-sm join-item" onclick="generateFormulaAI()">Generate</button>
+                        </div>
+                        <div id="ai_status_msg" class="text-xs hidden"></div>
+                    </div>
+                </div>
+
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Target Ceiling / Goal (Optional)</span></label>
+                    <input type="number" step="0.01" min="0" inputmode="decimal" id="target_ceiling" name="ceiling_amount" placeholder="20000.00" class="input input-bordered w-full input-md focus:input-primary font-mono" />
+                </div>
+
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="target_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Save Target</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+{{- end -}}
+
+{{- define "scripts" -}}
+<script>
+    window.currentBudgetID = '{{.BudgetID}}';
+    window.csrfTokenVal = '{{.CSRFToken}}';
+    window.currentCurrency = '{{.DefaultCurr}}';
+    window.currentHorizon = '{{.HorizonParam}}';
+    window.currentFilter = '{{.FilterParam}}';
+    window.bucketsData = {{.BucketsJSON}};
+</script>
+<script src="{{staticPath "workspace/budget.js"}}"></script>
+{{- end -}}

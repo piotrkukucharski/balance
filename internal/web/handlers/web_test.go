@@ -22,6 +22,7 @@ import (
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/service"
+	"github.com/balance/balance/internal/web/templates"
 	"github.com/labstack/echo/v4"
 )
 
@@ -1094,25 +1095,39 @@ func TestTargetModalAndLuaFormulaAssistant(t *testing.T) {
 		t.Fatalf("BudgetView failed: %v", err)
 	}
 	body := bvRec.Body.String()
-	if !strings.Contains(body, "target-edit-btn") {
-		t.Fatalf("expected BudgetView to contain target-edit-btn")
+
+	// Verify JS asset linked and loaded
+	budgetJS, err := templates.ReadStaticFile("workspace/budget.js")
+	if err != nil {
+		t.Fatalf("failed reading workspace/budget.js: %v", err)
 	}
-	if !strings.Contains(body, "openEditTargetModal") {
-		t.Fatalf("expected BudgetView to contain openEditTargetModal function")
+	jsStr := string(budgetJS)
+
+	if !strings.Contains(body, "target_modal") {
+		t.Fatalf("expected BudgetView to contain target_modal dialog")
 	}
-	if !strings.Contains(body, "switchAmountMode") {
-		t.Fatalf("expected BudgetView to contain switchAmountMode function")
+	if !strings.Contains(body, "/static/workspace/budget.") || !strings.Contains(body, ".js") {
+		t.Fatalf("expected BudgetView to reference hashed workspace/budget.js static script")
 	}
-	if !strings.Contains(body, "generateFormulaAI") {
-		t.Fatalf("expected BudgetView to contain generateFormulaAI function")
+	if !strings.Contains(jsStr, "target-edit-btn") {
+		t.Fatalf("expected budget.js to contain target-edit-btn")
 	}
-	if !strings.Contains(body, "validateFormulaScript") {
-		t.Fatalf("expected BudgetView to contain validateFormulaScript function")
+	if !strings.Contains(jsStr, "openEditTargetModal") {
+		t.Fatalf("expected budget.js to contain openEditTargetModal function")
+	}
+	if !strings.Contains(jsStr, "switchAmountMode") {
+		t.Fatalf("expected budget.js to contain switchAmountMode function")
+	}
+	if !strings.Contains(jsStr, "generateFormulaAI") {
+		t.Fatalf("expected budget.js to contain generateFormulaAI function")
+	}
+	if !strings.Contains(jsStr, "validateFormulaScript") {
+		t.Fatalf("expected budget.js to contain validateFormulaScript function")
 	}
 	if !strings.Contains(body, "mode_lua") || !strings.Contains(body, "mode_fixed") {
 		t.Fatalf("expected target_modal to have calculation mode radio inputs")
 	}
-	if !strings.Contains(body, "target_recurrence_days") || !strings.Contains(body, "toggleCustomDays") {
+	if !strings.Contains(body, "target_recurrence_days") || !strings.Contains(jsStr, "toggleCustomDays") {
 		t.Fatalf("expected target_modal to have recurrence interval input and toggleCustomDays function")
 	}
 	if !strings.Contains(body, "CUSTOM_DAYS") || !strings.Contains(body, "CUSTOM_MONTHS") || !strings.Contains(body, "CUSTOM_YEARS") {

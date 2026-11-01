@@ -1,0 +1,87 @@
+{{- define "members/view" -}}
+{{- template "shared/base" . -}}
+{{- end -}}
+
+{{- define "title" -}}Balance — Members & Access{{- end -}}
+
+{{- define "content" -}}
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+                <div>
+                    <h1 class="text-2xl font-black tracking-tight">Members & Access Control</h1>
+                    <p class="text-xs text-base-content/60 mt-1">Multi-user RBAC hierarchy: OWNER, ADMIN, EDITOR, and VIEWER roles.</p>
+                </div>
+                <button class="btn btn-primary btn-sm shadow font-semibold gap-1.5" onclick="invite_modal.showModal()">
+                    <span>+</span>
+                    <span>Invite Member</span>
+                </button>
+            </div>
+
+            <div class="card card-border bg-base-100 border-base-300 shadow-md">
+                <div class="card-body p-0">
+                    <div class="overflow-x-auto">
+                        <table class="table table-zebra w-full">
+                            <thead>
+                                <tr class="bg-base-200/50">
+                                    <th class="font-bold">Collaborator</th>
+                                    <th class="font-bold">Assigned Role</th>
+                                    <th class="font-bold">Member Since</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {{- range .Members}}
+                                <tr class="hover">
+                                    <td>
+                                        <div class="flex items-center gap-3">
+                                            <div class="avatar placeholder">
+                                                <div class="bg-base-300 text-base-content rounded-full w-9">
+                                                    <span class="text-xs font-bold">{{.Initial}}</span>
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <div class="font-bold text-sm">{{.Name}}</div>
+                                                <div class="text-xs text-base-content/50">{{.Email}}</div>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td><span class="badge {{.RoleBadge}} font-bold text-xs">{{.Role}}</span></td>
+                                    <td class="text-xs font-mono text-base-content/60">{{.JoinedTag}}</td>
+                                </tr>
+                                {{- end}}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+{{- end -}}
+
+{{- define "modals" -}}
+    <!-- Invite Member Modal -->
+    <dialog id="invite_modal" class="modal modal-bottom sm:modal-middle">
+        <div class="modal-box card-border border-base-300 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-extrabold text-xl tracking-tight">Invite Collaborator</h3>
+                <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+            </div>
+            <form method="POST" action="/budgets/{{.BudgetID}}/settings/members/invite" class="flex flex-col gap-4">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Invited Email Address</span></label>
+                    <input type="email" name="email" required placeholder="collaborator@example.com" class="input input-bordered w-full input-md focus:input-primary" />
+                </div>
+                <div class="form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Permission Role</span></label>
+                    <select name="role" class="select select-bordered w-full select-md focus:select-primary">
+                        <option value="EDITOR" selected>EDITOR — Can record transactions, modify buckets and targets</option>
+                        <option value="VIEWER">VIEWER — Strictly read-only access to dashboard and reports</option>
+                        <option value="ADMIN">ADMIN — Can invite members and restore historical audit versions</option>
+                    </select>
+                </div>
+                <div class="modal-action mt-6 gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="invite_modal.close()">Cancel</button>
+                    <button type="submit" class="btn btn-primary font-semibold shadow-md">Send Invitation</button>
+                </div>
+            </form>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+{{- end -}}

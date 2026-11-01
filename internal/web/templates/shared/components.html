@@ -1,0 +1,76 @@
+{{- define "shared/popover_action_menu" -}}
+		<button popovertarget="{{.TargetID}}" style="anchor-name:{{.AnchorName}}" class="btn btn-ghost btn-sm sm:btn-xs min-h-8 sm:min-h-6 px-2 touch-manipulation" aria-label="More actions">•••</button>
+		<ul class="dropdown dropdown-end menu p-2 shadow-lg bg-base-100 rounded-box w-40 text-xs border border-base-300{{.ExtraClass}}" popover id="{{.TargetID}}" style="position-anchor:{{.AnchorName}}; position-try-fallbacks: flip-block, --flip-block; margin: 0;" onbeforetoggle="if(event.newState==='open'){const r=this.getBoundingClientRect();if(window.innerHeight-r.bottom<120){this.classList.add('dropdown-top');}}else{this.classList.remove('dropdown-top');}">
+			{{- range .Items -}}
+				{{- if .FormAction -}}
+				<li>
+					<form method="POST" action="{{.FormAction}}"{{if .ConfirmAttr}}{{.ConfirmAttr}}{{end}}>
+						<input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+						<button type="submit" class="{{if .IsDanger}}text-error {{end}}text-left w-full">{{.Label}}</button>
+					</form>
+				</li>
+				{{- else if .HXGet -}}
+				<li><button type="button"{{if .IsDanger}} class="text-error"{{end}} hx-get="{{.HXGet}}" hx-target="body" hx-swap="beforeend">{{.Label}}</button></li>
+				{{- else -}}
+				<li><a{{if .IsDanger}} class="text-error"{{end}} onclick="{{.OnClickAttr}}">{{.Label}}</a></li>
+				{{- end -}}
+			{{- end }}
+		</ul>
+{{- end -}}
+
+{{- define "shared/sidebar_nav" -}}
+            <ul class="menu menu-md w-full p-0 gap-1">
+                <li><a href="/budgets/{{.BudgetID}}/budget"{{if eq .ActiveItem "budget"}} class="active font-bold"{{end}}>📂 1. Budget (Buckets)</a></li>
+                <li><a href="/budgets/{{.BudgetID}}/accounts"{{if eq .ActiveItem "accounts"}} class="active font-bold"{{end}}>💳 2. Accounts</a></li>
+                <li><a href="/budgets/{{.BudgetID}}/transactions"{{if eq .ActiveItem "transactions"}} class="active font-bold"{{end}}>💸 3. Transactions</a></li>
+                <li><a href="/budgets/{{.BudgetID}}/automations"{{if eq .ActiveItem "automations"}} class="active font-bold"{{end}}>⚡ 4. Automations</a></li>
+                <li><a href="/budgets/{{.BudgetID}}/reports"{{if eq .ActiveItem "reports"}} class="active font-bold"{{end}}>📊 5. Reports</a></li>
+                <li><a href="/budgets/{{.BudgetID}}/parties"{{if eq .ActiveItem "parties"}} class="active font-bold"{{end}}>🏢 6. External Parties</a></li>
+                <li>
+                    <details open>
+                        <summary{{if .IsSettingsGroup}} class="font-bold text-primary"{{end}}>
+                            <a href="/budgets/{{.BudgetID}}/settings" class="grow">⚙️ 7. Settings</a>
+                        </summary>
+                        <ul class="before:hidden">
+                            <li><a href="/budgets/{{.BudgetID}}/settings"{{if eq .ActiveItem "settings"}} class="active font-bold"{{end}}>General</a></li>
+                            <li><a href="/budgets/{{.BudgetID}}/settings/members"{{if eq .ActiveItem "members"}} class="active font-bold"{{end}}>👥 Members</a></li>
+                            <li><a href="/budgets/{{.BudgetID}}/settings/tokens"{{if eq .ActiveItem "tokens"}} class="active font-bold"{{end}}>🔑 API Tokens</a></li>
+                            <li><a href="{{.ProfileLink}}"{{if eq .ActiveItem "profile"}} class="active font-bold"{{end}}>👤 Profile & Preferences</a></li>
+                        </ul>
+                    </details>
+                </li>
+            </ul>
+{{- end -}}
+
+{{- define "shared/bottom_dock" -}}
+    <div class="dock dock-md md:hidden bg-base-100/95 backdrop-blur-xs border-t border-base-300 z-40 pb-[env(safe-area-inset-bottom)] shadow-lg" role="navigation" aria-label="Mobile Bottom Navigation">
+        <a href="/budgets/{{.BudgetID}}/budget" class="{{if eq .ActiveItem "budget"}}dock-active text-primary font-semibold touch-manipulation min-h-12{{else}}touch-manipulation min-h-12 text-base-content/70{{end}}">
+            <span class="text-xl leading-none">📂</span>
+            <span class="dock-label text-[11px]">Budget</span>
+        </a>
+        <a href="/budgets/{{.BudgetID}}/accounts" class="{{if eq .ActiveItem "accounts"}}dock-active text-primary font-semibold touch-manipulation min-h-12{{else}}touch-manipulation min-h-12 text-base-content/70{{end}}">
+            <span class="text-xl leading-none">💳</span>
+            <span class="dock-label text-[11px]">Accounts</span>
+        </a>
+        <a href="/budgets/{{.BudgetID}}/transactions" class="{{if eq .ActiveItem "transactions"}}dock-active text-primary font-semibold touch-manipulation min-h-12{{else}}touch-manipulation min-h-12 text-base-content/70{{end}}">
+            <span class="text-xl leading-none">💸</span>
+            <span class="dock-label text-[11px]">Txns</span>
+        </a>
+        <a href="/budgets/{{.BudgetID}}/automations" class="{{if eq .ActiveItem "automations"}}dock-active text-primary font-semibold touch-manipulation min-h-12{{else}}touch-manipulation min-h-12 text-base-content/70{{end}}">
+            <span class="text-xl leading-none">⚡</span>
+            <span class="dock-label text-[11px]">Rules</span>
+        </a>
+        <a href="/budgets/{{.BudgetID}}/reports" class="{{if eq .ActiveItem "reports"}}dock-active text-primary font-semibold touch-manipulation min-h-12{{else}}touch-manipulation min-h-12 text-base-content/70{{end}}">
+            <span class="text-xl leading-none">📊</span>
+            <span class="dock-label text-[11px]">Reports</span>
+        </a>
+        <a href="/budgets/{{.BudgetID}}/settings" class="{{if eq .ActiveItem "settings"}}dock-active text-primary font-semibold touch-manipulation min-h-12{{else}}touch-manipulation min-h-12 text-base-content/70{{end}}">
+            <span class="text-xl leading-none">⚙️</span>
+            <span class="dock-label text-[11px]">Settings</span>
+        </a>
+    </div>
+{{- end -}}
+
+{{- define "shared/time_tag" -}}
+<time datetime="{{.ISOStr}}" data-format-date="{{.DateFormat}}" data-format-time="{{.TimeFormat}}">{{.FormattedText}}</time>
+{{- end -}}
