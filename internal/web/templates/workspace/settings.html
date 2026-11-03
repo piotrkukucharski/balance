@@ -83,6 +83,133 @@
             </div>
         </div>
 
+        <!-- Time Horizons Management Card -->
+        <div class="card card-border bg-base-100 border-base-300 shadow-md">
+            <div class="card-body p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <div>
+                        <h2 class="card-title text-lg font-bold flex items-center gap-2">
+                            <span>⏱️</span>
+                            <span>{{t .Locale "settings-horizons-card"}}</span>
+                        </h2>
+                        <p class="text-xs text-base-content/60 mt-1">{{t .Locale "settings-horizons-desc"}}</p>
+                    </div>
+                </div>
+
+                <!-- User Default Horizon Preference Form -->
+                <div class="bg-base-200/50 p-4 rounded-xl border border-base-300 mb-6">
+                    <form method="POST" action="/budgets/{{.BudgetID}}/settings/default-horizon" class="flex flex-col sm:flex-row sm:items-end gap-3">
+                        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                        <div class="form-control flex-1">
+                            <label class="label pb-1">
+                                <span class="label-text font-bold text-xs">{{t .Locale "settings-horizons-user-default"}}</span>
+                            </label>
+                            <select name="default_horizon_id" class="select select-bordered w-full select-sm focus:select-primary text-xs font-semibold">
+                                {{- range .VisibleHorizons}}
+                                <option value="{{.ID}}" {{if eq .ID $.UserDefaultHorizonID}}selected{{end}}>{{.OptionLabel}}</option>
+                                {{- end}}
+                            </select>
+                            <span class="text-[11px] text-base-content/50 mt-1">{{t .Locale "settings-horizons-user-default-desc"}}</span>
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-sm font-semibold shadow-xs shrink-0">
+                            {{t .Locale "settings-horizons-save-pref-btn"}}
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Horizons Table -->
+                <div class="space-y-3">
+                    <h3 class="text-xs font-bold uppercase tracking-wider text-base-content/70">{{t .Locale "settings-horizons-table-title"}}</h3>
+                    <div class="overflow-x-auto border border-base-300 rounded-xl">
+                        <table class="table table-sm w-full">
+                            <thead>
+                                <tr class="bg-base-200/60 text-xs">
+                                    <th>{{t .Locale "settings-horizons-col-horizon"}}</th>
+                                    <th>{{t .Locale "settings-horizons-col-type"}}</th>
+                                    <th>{{t .Locale "settings-horizons-col-status"}}</th>
+                                    <th class="text-right">{{t .Locale "settings-horizons-col-actions"}}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {{- range .Horizons}}
+                                <tr class="hover">
+                                    <td class="font-bold text-xs">
+                                        <div class="flex items-center gap-1.5">
+                                            <span>{{.ToolbarLabel}}</span>
+                                            {{- if .IsDefault}}
+                                            <span class="badge badge-primary badge-xs font-semibold">{{t $.Locale "settings-horizons-status-default"}}</span>
+                                            {{- end}}
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <span class="badge {{.TypeBadge}} badge-xs font-mono">{{.Name}}</span>
+                                    </td>
+                                    <td>
+                                        {{- if .IsHidden}}
+                                        <span class="badge badge-ghost badge-xs text-base-content/50">{{t $.Locale "settings-horizons-status-hidden"}}</span>
+                                        {{- else}}
+                                        <span class="badge badge-success badge-soft badge-xs font-semibold">{{t $.Locale "settings-horizons-status-visible"}}</span>
+                                        {{- end}}
+                                    </td>
+                                    <td class="text-right">
+                                        {{- if $.IsOwner}}
+                                        <div class="flex items-center justify-end gap-1.5">
+                                            {{- if .IsHidden}}
+                                            <form method="POST" action="/budgets/{{$.BudgetID}}/settings/horizons/toggle" class="inline">
+                                                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
+                                                <input type="hidden" name="horizon_id" value="{{.ID}}" />
+                                                <input type="hidden" name="action" value="show" />
+                                                <button type="submit" class="btn btn-ghost btn-xs text-success font-semibold">{{t $.Locale "settings-horizons-btn-show"}}</button>
+                                            </form>
+                                            {{- else}}
+                                            <button type="button" class="btn btn-ghost btn-xs text-warning font-semibold" onclick="handleHorizonAction('{{.ID}}', 'hide', '{{.ToolbarLabel}}')">
+                                                {{t $.Locale "settings-horizons-btn-hide"}}
+                                            </button>
+                                            {{- end}}
+                                            {{- if .CanDelete}}
+                                            <button type="button" class="btn btn-ghost btn-xs text-error font-semibold" onclick="handleHorizonAction('{{.ID}}', 'delete', '{{.ToolbarLabel}}')">
+                                                {{t $.Locale "settings-horizons-btn-delete"}}
+                                            </button>
+                                            {{- end}}
+                                        </div>
+                                        {{- else}}
+                                        <span class="text-[10px] text-base-content/40 italic">OWNER only</span>
+                                        {{- end}}
+                                    </td>
+                                </tr>
+                                {{- end}}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                {{- if .IsOwner}}
+                <!-- Add New Horizon Form -->
+                <div class="divider my-4"></div>
+                <div class="bg-base-200/40 p-4 rounded-xl border border-base-300">
+                    <h3 class="text-xs font-bold uppercase tracking-wider text-base-content/80 mb-3">{{t .Locale "settings-horizons-add-title"}}</h3>
+                    <form method="POST" action="/budgets/{{.BudgetID}}/settings/horizons" class="flex flex-col sm:flex-row items-stretch sm:items-end gap-3">
+                        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                        <div class="form-control flex-1">
+                            <label class="label pb-1"><span class="label-text font-medium text-xs">{{t .Locale "settings-horizons-add-type"}}</span></label>
+                            <select name="horizon_type" id="new_horizon_type" class="select select-bordered w-full select-sm text-xs" onchange="toggleHorizonInputFields()">
+                                <option value="ROLLING_DAYS">{{t .Locale "settings-horizons-opt-rolling"}}</option>
+                                <option value="CALENDAR_DAY_OF_MONTH">{{t .Locale "settings-horizons-opt-day-of-month"}}</option>
+                            </select>
+                        </div>
+                        <div class="form-control flex-1" id="field_days_value">
+                            <label class="label pb-1"><span class="label-text font-medium text-xs">{{t .Locale "settings-horizons-label-days"}}</span></label>
+                            <input type="number" id="input_days_value" name="days_value" min="1" max="3650" value="5" class="input input-bordered w-full input-sm text-xs font-mono" />
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-sm font-semibold shadow-xs shrink-0">
+                            + {{t .Locale "settings-horizons-btn-add"}}
+                        </button>
+                    </form>
+                </div>
+                {{- end}}
+            </div>
+        </div>
+
         {{- if .IsOwner}}
         <!-- Diagnostic Tools Shortcut Card -->
         <div class="card card-border bg-base-100 border-base-300 shadow-md">
@@ -133,4 +260,128 @@
         {{- end}}
     </div>
 </div>
+
+<!-- Reassign Users Modal -->
+<dialog id="horizon_reassign_modal" class="modal modal-bottom sm:modal-middle">
+    <div class="modal-box card-border border-base-300 p-6">
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="font-extrabold text-xl tracking-tight text-warning flex items-center gap-2">
+                <span>⚠️</span>
+                <span>{{t .Locale "settings-horizons-modal-title"}}</span>
+            </h3>
+            <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
+        </div>
+        <p class="text-xs text-base-content/70 mb-3">{{t .Locale "settings-horizons-modal-desc"}}</p>
+        <ul id="horizon_affected_users_list" class="menu bg-base-200/60 rounded-box p-2 text-xs mb-4 max-h-36 overflow-y-auto"></ul>
+
+        <form id="horizon_reassign_form" method="POST" action="" class="flex flex-col gap-4">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+            <input type="hidden" id="modal_horizon_id" name="horizon_id" value="" />
+            <input type="hidden" id="modal_horizon_action" name="action" value="" />
+            <div class="form-control">
+                <label class="label pb-1"><span class="label-text font-bold text-xs">{{t .Locale "settings-horizons-modal-select-fallback"}}</span></label>
+                <select name="fallback_horizon_id" id="modal_fallback_select" required class="select select-bordered select-sm w-full text-xs font-semibold">
+                    {{- range .VisibleHorizons}}
+                    <option value="{{.ID}}" data-id="{{.ID}}">{{.OptionLabel}}</option>
+                    {{- end}}
+                </select>
+            </div>
+            <div class="modal-action mt-4 gap-2">
+                <button type="button" class="btn btn-ghost btn-sm" onclick="horizon_reassign_modal.close()">Cancel</button>
+                <button type="submit" class="btn btn-warning btn-sm font-semibold shadow">
+                    {{t .Locale "settings-horizons-modal-confirm-btn"}}
+                </button>
+            </div>
+        </form>
+    </div>
+    <form method="dialog" class="modal-backdrop"><button>close</button></form>
+</dialog>
+
+<script>
+function toggleHorizonInputFields() {
+    const sel = document.getElementById('new_horizon_type');
+    const inputDays = document.getElementById('input_days_value');
+    if (!sel || !inputDays) return;
+    if (sel.value === 'CALENDAR_DAY_OF_MONTH') {
+        inputDays.min = "1";
+        inputDays.max = "28";
+        if (parseInt(inputDays.value) > 28) inputDays.value = "10";
+    } else {
+        inputDays.min = "1";
+        inputDays.max = "3650";
+        if (parseInt(inputDays.value) < 1) inputDays.value = "5";
+    }
+}
+
+async function handleHorizonAction(horizonId, action, label) {
+    const budgetId = '{{.BudgetID}}';
+    try {
+        const resp = await fetch(`/budgets/${budgetId}/settings/horizons/affected-users?horizon_id=${encodeURIComponent(horizonId)}`);
+        if (!resp.ok) throw new Error('Failed checking affected users');
+        const data = await resp.json();
+        if (data.count > 0) {
+            const listEl = document.getElementById('horizon_affected_users_list');
+            listEl.innerHTML = '';
+            data.users.forEach(u => {
+                const li = document.createElement('li');
+                li.innerHTML = `<span class="font-medium">👤 ${u.display_name} <span class="text-base-content/50">(${u.email})</span></span>`;
+                listEl.appendChild(li);
+            });
+            document.getElementById('modal_horizon_id').value = horizonId;
+            document.getElementById('modal_horizon_action').value = action;
+            const form = document.getElementById('horizon_reassign_form');
+            form.action = action === 'delete' ? `/budgets/${budgetId}/settings/horizons/delete` : `/budgets/${budgetId}/settings/horizons/toggle`;
+            
+            // Disable the current horizon in fallback options
+            const opts = document.querySelectorAll('#modal_fallback_select option');
+            let hasSelected = false;
+            opts.forEach(opt => {
+                if (opt.getAttribute('data-id') === horizonId) {
+                    opt.disabled = true;
+                    opt.hidden = true;
+                } else {
+                    opt.disabled = false;
+                    opt.hidden = false;
+                    if (!hasSelected) {
+                        opt.selected = true;
+                        hasSelected = true;
+                    }
+                }
+            });
+
+            horizon_reassign_modal.showModal();
+        } else {
+            // Direct submission
+            const f = document.createElement('form');
+            f.method = 'POST';
+            f.action = action === 'delete' ? `/budgets/${budgetId}/settings/horizons/delete` : `/budgets/${budgetId}/settings/horizons/toggle`;
+            
+            const csrf = document.createElement('input');
+            csrf.type = 'hidden';
+            csrf.name = 'csrf_token';
+            csrf.value = '{{.CSRFToken}}';
+            f.appendChild(csrf);
+
+            const hid = document.createElement('input');
+            hid.type = 'hidden';
+            hid.name = 'horizon_id';
+            hid.value = horizonId;
+            f.appendChild(hid);
+
+            if (action === 'hide') {
+                const act = document.createElement('input');
+                act.type = 'hidden';
+                act.name = 'action';
+                act.value = 'hide';
+                f.appendChild(act);
+            }
+
+            document.body.appendChild(f);
+            f.submit();
+        }
+    } catch (e) {
+        alert(e.message || 'Error occurred');
+    }
+}
+</script>
 {{- end -}}

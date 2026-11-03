@@ -131,6 +131,48 @@ settings-currency-immutable = Base currency is immutable once provisioned
 settings-timezone = IANA Timezone
 settings-save-btn = Save Settings
 settings-role-notice = You are viewing budget settings with { $role } permissions. Only the OWNER can update budget properties.
+
+# Time Horizons Card
+settings-horizons-card = Time Horizons
+settings-horizons-desc = Configure rolling and calendar requirement windows. Each member can pick their default view.
+settings-horizons-user-default = Your Default Horizon
+settings-horizons-user-default-desc = The horizon activated automatically when you open this budget.
+settings-horizons-save-pref-btn = Save Default Horizon
+settings-horizons-table-title = Available Horizons
+settings-horizons-col-horizon = Horizon
+settings-horizons-col-type = Type
+settings-horizons-col-status = Status
+settings-horizons-col-actions = Actions
+settings-horizons-type-monthly = Calendar Month
+settings-horizons-type-annual = Calendar Year
+settings-horizons-type-rolling = Rolling Window
+settings-horizons-type-calendar-day = Calendar Day of Month
+settings-horizons-status-default = Active Default
+settings-horizons-status-visible = Visible
+settings-horizons-status-hidden = Hidden
+settings-horizons-btn-hide = Hide
+settings-horizons-btn-show = Show
+settings-horizons-btn-delete = Delete
+settings-horizons-add-title = Add New Horizon
+settings-horizons-add-type = Horizon Type
+settings-horizons-opt-rolling = Rolling Days (1-3650)
+settings-horizons-opt-day-of-month = Calendar Day of Month (1-28)
+settings-horizons-label-days = Number of Days
+settings-horizons-label-day-num = Day of Month
+settings-horizons-btn-add = Add Horizon
+settings-horizons-modal-title = Reassign Users Before Hiding/Deleting
+settings-horizons-modal-desc = The horizon you are about to hide or delete is currently set as the default for the following budget members:
+settings-horizons-modal-select-fallback = Select an alternative visible horizon for these members:
+settings-horizons-modal-confirm-btn = Confirm and Reassign
+settings-horizons-owner-only-notice = Only the budget OWNER can add, hide, or delete budget horizons.
+
+# Horizon Labels
+horizon-name-monthly = Monthly
+horizon-name-annual = Annual
+horizon-name-rolling = { $days }d
+horizon-name-calendar-toolbar = Until { $day }th
+horizon-name-calendar-full = Until the { $day }th of the month
+
 settings-personal-pref-title = Personal Preferences
 settings-personal-pref-desc = Configure your personal date format ({ $dateFormat }) and time format ({ $timeFormat }).
 settings-personal-pref-btn = Customize Formats →

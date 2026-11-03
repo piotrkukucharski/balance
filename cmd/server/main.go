@@ -158,6 +158,8 @@ func main() {
 	tenantViewer.GET("/automations", automationsHandler.AutomationsView)
 	tenantViewer.GET("/automations/:id/version/:ver/load", automationsHandler.LoadVersion)
 	tenantViewer.GET("/settings", workspaceHandler.SettingsView)
+	tenantViewer.POST("/settings/default-horizon", workspaceHandler.SetUserDefaultHorizonHandler)
+	tenantViewer.GET("/settings/horizons/affected-users", workspaceHandler.CheckHorizonAffectedUsers)
 	tenantViewer.GET("/settings/members", membersHandler.MembersView)
 	tenantViewer.GET("/settings/tokens", tokensHandler.TokensView)
 	tenantViewer.POST("/settings/tokens", tokensHandler.CreateToken)
@@ -241,6 +243,9 @@ func main() {
 
 	tenantOwner := authGroup.Group("/budgets/:budgetId", handlers.TenantAuthzMiddleware(tenantMgr, "OWNER"))
 	tenantOwner.POST("/settings", workspaceHandler.UpdateBudget)
+	tenantOwner.POST("/settings/horizons", workspaceHandler.CreateHorizonHandler)
+	tenantOwner.POST("/settings/horizons/toggle", workspaceHandler.ToggleHorizonHiddenHandler)
+	tenantOwner.POST("/settings/horizons/delete", workspaceHandler.DeleteHorizonHandler)
 	tenantOwner.POST("/update", workspaceHandler.UpdateBudget)
 	tenantOwner.POST("/clone", workspaceHandler.CloneBudget)
 	tenantOwner.POST("/delete", workspaceHandler.DeleteBudget)

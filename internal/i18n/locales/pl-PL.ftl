@@ -131,6 +131,48 @@ settings-currency-immutable = Główna waluta jest niezmienna po utworzeniu bud�
 settings-timezone = Strefa czasowa IANA
 settings-save-btn = Zapisz ustawienia
 settings-role-notice = Przeglądasz ustawienia budżetu z uprawnieniami { $role }. Tylko WŁAŚCICIEL (OWNER) może modyfikować parametry budżetu.
+
+# Time Horizons Card
+settings-horizons-card = Horyzonty Czasowe
+settings-horizons-desc = Konfiguruj kroczące i kalendarzowe okna kalkulacji. Każdy członek może wybrać swój domyślny widok.
+settings-horizons-user-default = Twój Domyślny Horyzont
+settings-horizons-user-default-desc = Horyzont aktywowany automatycznie po wejściu do tego budżetu.
+settings-horizons-save-pref-btn = Zapisz domyślny horyzont
+settings-horizons-table-title = Dostępne Horyzonty
+settings-horizons-col-horizon = Horyzont
+settings-horizons-col-type = Typ
+settings-horizons-col-status = Status
+settings-horizons-col-actions = Akcje
+settings-horizons-type-monthly = Miesiąc kalendarzowy
+settings-horizons-type-annual = Rok kalendarzowy
+settings-horizons-type-rolling = Okno kroczące
+settings-horizons-type-calendar-day = Dzień miesiąca
+settings-horizons-status-default = Twój domyślny
+settings-horizons-status-visible = Widoczny
+settings-horizons-status-hidden = Ukryty
+settings-horizons-btn-hide = Ukryj
+settings-horizons-btn-show = Pokaż
+settings-horizons-btn-delete = Usuń
+settings-horizons-add-title = Dodaj Nowy Horyzont
+settings-horizons-add-type = Typ horyzontu
+settings-horizons-opt-rolling = Dni kroczące (1-3650)
+settings-horizons-opt-day-of-month = Dzień miesiąca (1-28)
+settings-horizons-label-days = Liczba dni
+settings-horizons-label-day-num = Dzień miesiąca
+settings-horizons-btn-add = Dodaj horyzont
+settings-horizons-modal-title = Przypisz użytkowników przed ukryciem/usunięciem
+settings-horizons-modal-desc = Horyzont, który chcesz ukryć lub usunąć, jest obecnie ustawiony jako domyślny dla następujących członków budżetu:
+settings-horizons-modal-select-fallback = Wybierz alternatywny widoczny horyzont dla tych osób:
+settings-horizons-modal-confirm-btn = Potwierdź i przepisz
+settings-horizons-owner-only-notice = Tylko WŁAŚCICIEL (OWNER) budżetu może dodawać, ukrywać lub usuwać horyzonty czasowe.
+
+# Horizon Labels
+horizon-name-monthly = Miesięczny
+horizon-name-annual = Roczny
+horizon-name-rolling = { $days }d
+horizon-name-calendar-toolbar = Do { $day }.
+horizon-name-calendar-full = Do { $day }. dnia miesiąca
+
 settings-personal-pref-title = Preferencje osobiste
 settings-personal-pref-desc = Skonfiguruj własny format daty ({ $dateFormat }) oraz czasu ({ $timeFormat }).
 settings-personal-pref-btn = Dostosuj formaty →

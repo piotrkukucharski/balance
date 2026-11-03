@@ -192,7 +192,7 @@
                     <label class="label pb-1"><span class="label-text font-medium text-xs">Budget Name</span></label>
                     <input type="text" name="name" required placeholder="Personal & Family Budget" class="input input-bordered w-full input-md focus:input-primary" />
                 </div>
-                <div class="grid grid-cols-2 gap-4">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div class="form-control">
                         <label class="label pb-1"><span class="label-text font-medium text-xs">Primary Currency</span></label>
                         <select name="default_currency" class="select select-bordered w-full select-md focus:select-primary">
@@ -205,6 +205,16 @@
                     <div class="form-control">
                         <label class="label pb-1"><span class="label-text font-medium text-xs">IANA Timezone</span></label>
                         <input type="text" name="timezone" value="Europe/Warsaw" required class="input input-bordered w-full input-md focus:input-primary" />
+                    </div>
+                    <div class="form-control">
+                        <label class="label pb-1"><span class="label-text font-medium text-xs">Initial Horizon</span></label>
+                        <select name="default_horizon" class="select select-bordered w-full select-md focus:select-primary text-xs">
+                            <option value="monthly" selected>Monthly (calendar)</option>
+                            <option value="30d">30d (rolling)</option>
+                            <option value="90d">90d (rolling)</option>
+                            <option value="annual">Annual (calendar)</option>
+                            <option value="365d">365d (rolling)</option>
+                        </select>
                     </div>
                 </div>
 

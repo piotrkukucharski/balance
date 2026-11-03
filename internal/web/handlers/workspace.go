@@ -36,6 +36,26 @@ type budgetCardViewData struct {
 	IsOwner     bool
 }
 
+type horizonOptionViewData struct {
+	ID           string
+	Name         string
+	Days         int
+	IsSelected   bool
+	TypeBadge    string
+	IsDefault    bool
+	IsSystem     bool
+	IsHidden     bool
+	CanDelete    bool
+	OptionLabel  string
+	ToolbarLabel string
+}
+
+type horizonMemberAffectedViewData struct {
+	UserID      string
+	DisplayName string
+	Email       string
+}
+
 type budgetsListViewData struct {
 	Locale                  string
 	NumberFormat            string
@@ -65,6 +85,9 @@ type settingsPageViewData struct {
 	SidebarHTML             template.HTML
 	BottomDockHTML          template.HTML
 	DateTimeFormatterScript template.HTML
+	UserDefaultHorizonID    string
+	Horizons                []horizonOptionViewData
+	VisibleHorizons         []horizonOptionViewData
 }
 
 type WorkspaceHandler struct {
@@ -154,7 +177,39 @@ func (h *WorkspaceHandler) BudgetsList(c echo.Context) error {
 	return c.HTML(http.StatusOK, htmlContent)
 }
 
-// SettingsView renders the budget settings page (general settings, name, timezone, and danger zone).
+func formatHorizonLabels(h budget.BudgetHorizon, locale string, now time.Time, loc *time.Location) (name, toolbarLabel, optionLabel string) {
+	switch h.HorizonType {
+	case budget.HorizonTypeMonthly:
+		name = i18n.T(locale, "horizon-name-monthly")
+		toolbarLabel = name
+		optionLabel = fmt.Sprintf("%s (%s)", name, i18n.T(locale, "settings-horizons-type-monthly"))
+	case budget.HorizonTypeAnnual:
+		name = i18n.T(locale, "horizon-name-annual")
+		toolbarLabel = name
+		optionLabel = fmt.Sprintf("%s (%s)", name, i18n.T(locale, "settings-horizons-type-annual"))
+	case budget.HorizonTypeRollingDays:
+		days := 30
+		if h.DaysValue != nil {
+			days = *h.DaysValue
+		}
+		name = fmt.Sprintf("%dd", days)
+		toolbarLabel = i18n.T(locale, "horizon-name-rolling", "days", days)
+		optionLabel = fmt.Sprintf("%s (%s)", toolbarLabel, i18n.T(locale, "settings-horizons-type-rolling"))
+	case budget.HorizonTypeCalendarDayOfMonth:
+		day := 10
+		if h.DaysValue != nil {
+			day = *h.DaysValue
+		}
+		name = fmt.Sprintf("day-%d", day)
+		toolbarLabel = i18n.T(locale, "horizon-name-calendar-toolbar", "day", day)
+		optionLabel = i18n.T(locale, "horizon-name-calendar-full", "day", day)
+	default:
+		name = h.ID
+		toolbarLabel = h.ID
+		optionLabel = h.ID
+	}
+	return
+}
 func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
 	budgetID := c.Param("budgetId")
 	role := c.Get(ContextRoleKey).(string)
@@ -169,11 +224,56 @@ func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
 	}
 
 	csrfToken, _ := c.Get("csrfToken").(string)
+	userID, _ := c.Get(ContextUserIDKey).(string)
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
 	userLocale := GetUserLocale(c)
 	userNumberFormat := GetUserNumberFormat(c)
 	sidebarHTML := RenderSidebarNavigation(budgetID, "settings", userLocale)
 	bottomDockHTML := RenderBottomDock(budgetID, "settings", userLocale)
 	dFormat, tFormat := GetUserDateTimePreferences(c)
+
+	loc := time.UTC
+	if timezone != "" {
+		if l, err := time.LoadLocation(timezone); err == nil {
+			loc = l
+		}
+	}
+	nowInTz := time.Now().In(loc)
+
+	// Fetch user default horizon and all horizons
+	userDefaultHorizon, _ := budget.GetUserDefaultHorizon(c.Request().Context(), tenantDB, userID)
+	allHorizons, _ := budget.ListBudgetHorizons(c.Request().Context(), tenantDB, false)
+
+	var horizonsViewData []horizonOptionViewData
+	var visibleHorizonsViewData []horizonOptionViewData
+
+	for _, bh := range allHorizons {
+		hName, tLabel, optLabel := formatHorizonLabels(bh, userLocale, nowInTz, loc)
+		_, wDays, _ := budget.ParseHorizonIdentifier(bh.ID, nowInTz, loc)
+		typeBadge := "badge-info"
+		if bh.HorizonType == budget.HorizonTypeMonthly || bh.HorizonType == budget.HorizonTypeAnnual {
+			typeBadge = "badge-neutral"
+		} else if bh.HorizonType == budget.HorizonTypeCalendarDayOfMonth {
+			typeBadge = "badge-accent"
+		}
+		item := horizonOptionViewData{
+			ID:           bh.ID,
+			Name:         hName,
+			Days:         wDays,
+			IsSelected:   bh.ID == userDefaultHorizon,
+			TypeBadge:    typeBadge,
+			IsDefault:    bh.ID == userDefaultHorizon,
+			IsSystem:     bh.IsSystem,
+			IsHidden:     bh.IsHidden,
+			CanDelete:    !bh.IsSystem,
+			OptionLabel:  optLabel,
+			ToolbarLabel: tLabel,
+		}
+		horizonsViewData = append(horizonsViewData, item)
+		if !bh.IsHidden {
+			visibleHorizonsViewData = append(visibleHorizonsViewData, item)
+		}
+	}
 
 	htmlContent, err := templates.RenderString("workspace/settings", settingsPageViewData{
 		Locale:                  userLocale,
@@ -190,12 +290,120 @@ func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
 		SidebarHTML:             template.HTML(sidebarHTML),
 		BottomDockHTML:          template.HTML(bottomDockHTML),
 		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
+		UserDefaultHorizonID:    userDefaultHorizon,
+		Horizons:                horizonsViewData,
+		VisibleHorizons:         visibleHorizonsViewData,
 	})
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed rendering budget settings")
 	}
 
 	return c.HTML(http.StatusOK, htmlContent)
+}
+
+// SetUserDefaultHorizonHandler updates current user's default horizon preference.
+func (h *WorkspaceHandler) SetUserDefaultHorizonHandler(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+
+	horizonID := strings.TrimSpace(c.FormValue("default_horizon_id"))
+	if horizonID == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "default_horizon_id is required")
+	}
+
+	if err := budget.SetUserDefaultHorizon(c.Request().Context(), tenantDB, userID, horizonID); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/settings", budgetID))
+}
+
+// CreateHorizonHandler adds a new rolling or calendar horizon (OWNER required).
+func (h *WorkspaceHandler) CreateHorizonHandler(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	role := c.Get(ContextRoleKey).(string)
+	if role != "OWNER" {
+		return echo.NewHTTPError(http.StatusForbidden, "Only budget OWNER can create time horizons")
+	}
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+
+	hType := budget.HorizonType(strings.TrimSpace(c.FormValue("horizon_type")))
+	daysVal, _ := strconv.Atoi(strings.TrimSpace(c.FormValue("days_value")))
+
+	_, err := budget.CreateCustomHorizon(c.Request().Context(), tenantDB, budget.CreateCustomHorizonInput{
+		HorizonType: hType,
+		DaysValue:   daysVal,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/settings", budgetID))
+}
+
+// ToggleHorizonHiddenHandler hides or shows a time horizon (OWNER required).
+func (h *WorkspaceHandler) ToggleHorizonHiddenHandler(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	role := c.Get(ContextRoleKey).(string)
+	if role != "OWNER" {
+		return echo.NewHTTPError(http.StatusForbidden, "Only budget OWNER can modify time horizons")
+	}
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+
+	horizonID := strings.TrimSpace(c.FormValue("horizon_id"))
+	action := strings.TrimSpace(c.FormValue("action")) // "hide" or "show"
+	fallbackID := strings.TrimSpace(c.FormValue("fallback_horizon_id"))
+
+	hide := action == "hide"
+	err := budget.SetHorizonHidden(c.Request().Context(), tenantDB, budget.UpdateHorizonVisibilityInput{
+		HorizonID:        horizonID,
+		Hide:             hide,
+		FallbackTargetID: fallbackID,
+	})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/settings", budgetID))
+}
+
+// DeleteHorizonHandler deletes a custom time horizon (OWNER required).
+func (h *WorkspaceHandler) DeleteHorizonHandler(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	role := c.Get(ContextRoleKey).(string)
+	if role != "OWNER" {
+		return echo.NewHTTPError(http.StatusForbidden, "Only budget OWNER can delete time horizons")
+	}
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+
+	horizonID := strings.TrimSpace(c.FormValue("horizon_id"))
+	fallbackID := strings.TrimSpace(c.FormValue("fallback_horizon_id"))
+
+	err := budget.DeleteCustomHorizon(c.Request().Context(), tenantDB, horizonID, fallbackID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/settings", budgetID))
+}
+
+// CheckHorizonAffectedUsers returns the list of users who have horizonID set as default.
+func (h *WorkspaceHandler) CheckHorizonAffectedUsers(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	horizonID := strings.TrimSpace(c.QueryParam("horizon_id"))
+
+	users, err := budget.FindUsersWithDefaultHorizon(c.Request().Context(), tenantDB, h.mainDB, budgetID, horizonID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{
+		"horizon_id": horizonID,
+		"count":      len(users),
+		"users":      users,
+	})
 }
 
 // UpdateBudget updates the budget name and settings in main.db (requires OWNER).
@@ -352,6 +560,7 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 	name := c.FormValue("name")
 	curr := c.FormValue("default_currency")
 	tz := c.FormValue("timezone")
+	defHorizon := c.FormValue("default_horizon")
 
 	if name == "" || curr == "" {
 		logger.Warn(ctx, "Budget creation failed validation: name and currency required", "user_id", userID)
@@ -359,6 +568,9 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 	}
 	if tz == "" {
 		tz = "UTC"
+	}
+	if defHorizon == "" {
+		defHorizon = "monthly"
 	}
 
 	budgetID := domain.NewUUIDv7()
@@ -370,6 +582,7 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 			OwnerUserID:     userID,
 			DefaultCurrency: curr,
 			Timezone:        tz,
+			DefaultHorizon:  defHorizon,
 		})
 		if err != nil {
 			logger.Error(ctx, "Failed creating budget via service", "error", err.Error())
@@ -452,11 +665,12 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 	}
 
 	// Provision tenant DB
-	_, err = h.tenantMgr.GetTenantDB(budgetID, true)
+	tDB, err := h.tenantMgr.GetTenantDB(budgetID, true)
 	if err != nil {
 		logger.Error(ctx, "Failed initializing tenant database for budget", "budget_id", budgetID, "error", err.Error())
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to initialize tenant database")
 	}
+	_ = budget.SetUserDefaultHorizon(c.Request().Context(), tDB, userID, defHorizon)
 
 	logger.Info(ctx, "New budget provisioned successfully", "budget_id", budgetID, "name", name, "currency", curr, "timezone", tz, "owner_id", userID)
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
@@ -586,6 +800,7 @@ type budgetPageViewData struct {
 	HorizonDisplay               string
 	IsHorizonMonthly             bool
 	WindowDays                   int
+	AvailableHorizons            []horizonOptionViewData
 	FilterParam                  string
 	IsFilterAll                  bool
 	FlashMsg                     string
@@ -624,6 +839,46 @@ type budgetPageViewData struct {
 	BucketsJSON                  template.JS
 }
 
+func (h *WorkspaceHandler) budgetRedirectURL(budgetID string, c echo.Context, flashCode string, anchorBucketID string) string {
+	horizon := c.QueryParam("horizon")
+	if horizon == "" {
+		horizon = c.FormValue("horizon")
+	}
+	filter := c.QueryParam("filter")
+	if filter == "" {
+		filter = c.FormValue("filter")
+	}
+
+	userID, _ := c.Get(ContextUserIDKey).(string)
+	tenantDB, _ := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userDefaultHorizon := "monthly"
+	if tenantDB != nil && userID != "" {
+		if defH, err := budget.GetUserDefaultHorizon(c.Request().Context(), tenantDB, userID); err == nil && defH != "" {
+			userDefaultHorizon = defH
+		}
+	}
+
+	q := url.Values{}
+	if horizon != "" && horizon != userDefaultHorizon {
+		q.Set("horizon", horizon)
+	}
+	if filter != "" && filter != "all" {
+		q.Set("filter", filter)
+	}
+	if flashCode != "" {
+		q.Set("flash", flashCode)
+	}
+
+	res := fmt.Sprintf("/budgets/%s/budget", budgetID)
+	if encoded := q.Encode(); encoded != "" {
+		res += "?" + encoded
+	}
+	if anchorBucketID != "" {
+		res += "#bucket-" + anchorBucketID
+	}
+	return res
+}
+
 func budgetRedirectURL(budgetID string, c echo.Context, flashCode string, anchorBucketID string) string {
 	horizon := c.QueryParam("horizon")
 	if horizon == "" {
@@ -634,8 +889,17 @@ func budgetRedirectURL(budgetID string, c echo.Context, flashCode string, anchor
 		filter = c.FormValue("filter")
 	}
 
+	userID, _ := c.Get(ContextUserIDKey).(string)
+	tenantDB, _ := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userDefaultHorizon := "monthly"
+	if tenantDB != nil && userID != "" {
+		if defH, err := budget.GetUserDefaultHorizon(c.Request().Context(), tenantDB, userID); err == nil && defH != "" {
+			userDefaultHorizon = defH
+		}
+	}
+
 	q := url.Values{}
-	if horizon != "" && horizon != "monthly" {
+	if horizon != "" && horizon != userDefaultHorizon {
 		q.Set("horizon", horizon)
 	}
 	if filter != "" && filter != "all" {
@@ -717,10 +981,6 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	h.mainDB.QueryRowContext(c.Request().Context(), `SELECT name, default_currency, timezone FROM budgets WHERE id = ?`, budgetID).
 		Scan(&budgetName, &defaultCurr, &tz)
 
-	horizonParam := c.QueryParam("horizon")
-	if horizonParam == "" {
-		horizonParam = "monthly"
-	}
 	loc := time.UTC
 	if tz != "" {
 		if l, err := time.LoadLocation(tz); err == nil {
@@ -728,8 +988,38 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		}
 	}
 	nowInTz := time.Now().In(loc)
+
+	// Fetch visible horizons for toolbar
+	visibleHorizons, _ := budget.ListBudgetHorizons(c.Request().Context(), tenantDB, true)
+	userDefaultHorizon, _ := budget.GetUserDefaultHorizon(c.Request().Context(), tenantDB, userID)
+
+	horizonParam := c.QueryParam("horizon")
+	if horizonParam == "" {
+		horizonParam = userDefaultHorizon
+		if horizonParam == "" {
+			horizonParam = "monthly"
+		}
+	}
+
 	var windowDays int
 	horizonParam, windowDays = budget.CalculateHorizonDays(horizonParam, nowInTz, loc)
+
+	var availableHorizonsViewData []horizonOptionViewData
+	for _, bh := range visibleHorizons {
+		hName, tLabel, optLabel := formatHorizonLabels(bh, userLocale, nowInTz, loc)
+		_, wDays, _ := budget.ParseHorizonIdentifier(bh.ID, nowInTz, loc)
+		availableHorizonsViewData = append(availableHorizonsViewData, horizonOptionViewData{
+			ID:           bh.ID,
+			Name:         hName,
+			Days:         wDays,
+			IsSelected:   bh.ID == horizonParam,
+			IsDefault:    bh.ID == userDefaultHorizon,
+			IsSystem:     bh.IsSystem,
+			IsHidden:     bh.IsHidden,
+			OptionLabel:  optLabel,
+			ToolbarLabel: tLabel,
+		})
+	}
 
 	filterParam := c.QueryParam("filter")
 	if filterParam == "" {
@@ -1430,24 +1720,18 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		availCurrencies = []string{defaultCurr}
 	}
 
-	horizonTitle := "Monthly"
-	horizonDisplay := "Monthly"
-	switch horizonParam {
-	case "30d":
-		horizonTitle = "30d"
-		horizonDisplay = "30d"
-	case "90d":
-		horizonTitle = "90d"
-		horizonDisplay = "90d"
-	case "annual":
-		horizonTitle = "Annual"
-		horizonDisplay = "Annual"
-	case "365d":
-		horizonTitle = "365d"
-		horizonDisplay = "365d"
-	default:
-		horizonTitle = "Monthly"
-		horizonDisplay = "Monthly"
+	horizonTitle := horizonParam
+	horizonDisplay := horizonParam
+	for _, avh := range availableHorizonsViewData {
+		if avh.ID == horizonParam {
+			horizonTitle = avh.ToolbarLabel
+			horizonDisplay = avh.ToolbarLabel
+			break
+		}
+	}
+	if horizonDisplay == "" {
+		horizonTitle = horizonParam
+		horizonDisplay = horizonParam
 	}
 
 	rtaColor := "text-success"
@@ -1512,6 +1796,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		HorizonDisplay:             horizonDisplay,
 		IsHorizonMonthly:           horizonParam == "monthly",
 		WindowDays:                 windowDays,
+		AvailableHorizons:          availableHorizonsViewData,
 		FilterParam:                filterParam,
 		IsFilterAll:                filterParam == "all" || filterParam == "",
 		FlashMsg:                   flashMsg,

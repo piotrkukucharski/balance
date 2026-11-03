@@ -3,7 +3,6 @@ package budget
 import (
 	"math"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -95,25 +94,13 @@ func DaysRemainingInCurrentYear(now time.Time, loc *time.Location) int {
 }
 
 // CalculateHorizonDays parses a horizon identifier and calculates the effective requirement window in days.
-// Supported horizons: "monthly", "30d", "90d", "annual", "365d". Default is "monthly".
+// Supported horizons: "monthly", "30d", "90d", "annual", "365d", any "<N>d" (1..3650), or "day-<D>" / "day:<D>" (1..28). Default is "monthly".
 func CalculateHorizonDays(horizon string, now time.Time, loc *time.Location) (cleanHorizon string, windowDays int) {
 	if loc == nil {
 		loc = time.UTC
 	}
-	switch strings.ToLower(strings.TrimSpace(horizon)) {
-	case "90d":
-		return "90d", 90
-	case "30d":
-		return "30d", 30
-	case "365d":
-		return "365d", 365
-	case "annual":
-		return "annual", DaysRemainingInCurrentYear(now, loc)
-	case "monthly":
-		return "monthly", DaysRemainingInCurrentMonth(now, loc)
-	default:
-		return "monthly", DaysRemainingInCurrentMonth(now, loc)
-	}
+	cleanID, wDays, _ := ParseHorizonIdentifier(horizon, now, loc)
+	return cleanID, wDays
 }
 
 // ComputeTargetRequirement computes the target requirement in minor units for windowDays assuming UTC.

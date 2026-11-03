@@ -202,6 +202,7 @@ type CreateBudgetInput struct {
 	OwnerUserID     string
 	DefaultCurrency string
 	Timezone        string
+	DefaultHorizon  string
 	FirstActionAt   *time.Time
 	CorrelationID   string
 }
@@ -297,10 +298,17 @@ func (s *AppService) CreateBudget(ctx context.Context, input CreateBudgetInput) 
 	}
 
 	// Provision tenant DB
-	_, err = s.tenantMgr.GetTenantDB(budgetID, true)
+	tenantDB, err := s.tenantMgr.GetTenantDB(budgetID, true)
 	if err != nil {
 		return "", fmt.Errorf("initialize tenant db: %w", err)
 	}
+
+	// Set owner's default horizon preference if provided
+	horizonToSet := strings.TrimSpace(input.DefaultHorizon)
+	if horizonToSet == "" {
+		horizonToSet = "monthly"
+	}
+	_ = budget.SetUserDefaultHorizon(ctx, tenantDB, input.OwnerUserID, horizonToSet)
 
 	return budgetID, nil
 }
@@ -822,6 +830,10 @@ func (s *AppService) CloneBudget(ctx context.Context, input CloneBudgetInput) (s
 				return "", fmt.Errorf("prune table %s: %w", tbl, err)
 			}
 		}
+	}
+
+	if !input.IncludeMembers {
+		_ = budget.CleanUnusedMemberPreferences(ctx, clonedDB, []string{input.RequestingUserID})
 	}
 
 	if err := pruneTx.Commit(); err != nil {

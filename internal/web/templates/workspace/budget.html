@@ -120,18 +120,14 @@
                 <span class="hidden xs:inline sm:inline">Horizon:</span>
             </label>
             <select id="mobile_horizon_select" aria-label="Select Horizon" class="select select-bordered select-sm sm:hidden font-semibold text-xs min-h-8 h-8 w-auto pr-7" onchange="if(this.value) window.location.href=this.value">
-                <option value="/budgets/{{.BudgetID}}/budget?horizon=monthly&filter={{.FilterParam}}"{{if .IsHorizonMonthly}} selected{{end}}>Monthly ({{.WindowDays}}d)</option>
-                <option value="/budgets/{{.BudgetID}}/budget?horizon=30d&filter={{.FilterParam}}"{{if eq .HorizonParam "30d"}} selected{{end}}>30d</option>
-                <option value="/budgets/{{.BudgetID}}/budget?horizon=90d&filter={{.FilterParam}}"{{if eq .HorizonParam "90d"}} selected{{end}}>90d</option>
-                <option value="/budgets/{{.BudgetID}}/budget?horizon=annual&filter={{.FilterParam}}"{{if eq .HorizonParam "annual"}} selected{{end}}>Annual</option>
-                <option value="/budgets/{{.BudgetID}}/budget?horizon=365d&filter={{.FilterParam}}"{{if eq .HorizonParam "365d"}} selected{{end}}>365d</option>
+                {{- range .AvailableHorizons}}
+                <option value="/budgets/{{$.BudgetID}}/budget?horizon={{.ID}}&filter={{$.FilterParam}}"{{if eq .ID $.HorizonParam}} selected{{end}}>{{.ToolbarLabel}} ({{.Days}}d)</option>
+                {{- end}}
             </select>
             <div class="hidden sm:inline-flex join">
-                <a href="/budgets/{{.BudgetID}}/budget?horizon=monthly&filter={{.FilterParam}}" class="btn btn-xs join-item {{if .IsHorizonMonthly}}btn-primary{{else}}btn-ghost{{end}}">Monthly</a>
-                <a href="/budgets/{{.BudgetID}}/budget?horizon=30d&filter={{.FilterParam}}" class="btn btn-xs join-item {{if eq .HorizonParam "30d"}}btn-primary{{else}}btn-ghost{{end}}">30d</a>
-                <a href="/budgets/{{.BudgetID}}/budget?horizon=90d&filter={{.FilterParam}}" class="btn btn-xs join-item {{if eq .HorizonParam "90d"}}btn-primary{{else}}btn-ghost{{end}}">90d</a>
-                <a href="/budgets/{{.BudgetID}}/budget?horizon=annual&filter={{.FilterParam}}" class="btn btn-xs join-item {{if eq .HorizonParam "annual"}}btn-primary{{else}}btn-ghost{{end}}">Annual</a>
-                <a href="/budgets/{{.BudgetID}}/budget?horizon=365d&filter={{.FilterParam}}" class="btn btn-xs join-item {{if eq .HorizonParam "365d"}}btn-primary{{else}}btn-ghost{{end}}">365d</a>
+                {{- range .AvailableHorizons}}
+                <a href="/budgets/{{$.BudgetID}}/budget?horizon={{.ID}}&filter={{$.FilterParam}}" class="btn btn-xs join-item {{if eq .ID $.HorizonParam}}btn-primary{{else}}btn-ghost{{end}}">{{.ToolbarLabel}}</a>
+                {{- end}}
             </div>
             <span class="text-[11px] text-base-content/50 font-medium hidden md:inline">({{.WindowDays}} days requirement window)</span>
         </div>
