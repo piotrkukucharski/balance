@@ -148,6 +148,11 @@ tasks:
     cmds:
       - agy --dangerously-skip-permissions
 
+  harlequin:
+    desc: "Open Harlequin SQLite IDE with main.db and all tenant databases in budgets/*.db"
+    cmds:
+      - for f in {{.DATA_DIR}}/budgets/*.db; do [ -e "$f" ] && echo "ATTACH DATABASE '$f' AS budget_$(basename "$f" .db | tr - _);"; done > /tmp/harlequin_init.sql && harlequin -a sqlite -i /tmp/harlequin_init.sql {{.DATA_DIR}}/main.db {{.CLI_ARGS}}
+
   # Fixtures management tasks
   fixtures:create-user:
     desc: "Create a user account (e.g. task fixtures:create-user -- --login=... --password=... --user-id=... --first-action-at=...)"
