@@ -9,26 +9,54 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const scalarDocsHTML = `<!doctype html>
+const swaggerDocsHTML = `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Balance Personal Finance REST API — Interactive Documentation</title>
+    <title>Balance Personal Finance REST API — Swagger UI</title>
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css" />
     <style>
+      html {
+        box-sizing: border-box;
+        overflow: -moz-scrollbars-vertical;
+        overflow-y: scroll;
+      }
+      *, *:before, *:after {
+        box-sizing: inherit;
+      }
       body {
         margin: 0;
-        padding: 0;
+        background: #fafafa;
+      }
+      .swagger-ui .topbar {
+        display: none;
       }
     </style>
   </head>
   <body>
-    <script
-      id="api-reference"
-      data-url="/api/openapi.json"
-      data-configuration='{"theme":"kepler","darkMode":true,"layout":"modern","defaultHttpClient":{"targetKey":"shell","clientKey":"curl"},"authentication":{"preferredSecurityScheme":"bearerAuth"}}'></script>
-    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+    <div id="swagger-ui"></div>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js" charset="UTF-8"></script>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-standalone-preset.js" charset="UTF-8"></script>
+    <script>
+      window.onload = function() {
+        window.ui = SwaggerUIBundle({
+          url: "/api/openapi.json",
+          dom_id: "#swagger-ui",
+          deepLinking: true,
+          presets: [
+            SwaggerUIBundle.presets.apis,
+            SwaggerUIStandalonePreset
+          ],
+          plugins: [
+            SwaggerUIBundle.plugins.DownloadUrl
+          ],
+          layout: "StandaloneLayout",
+          persistAuthorization: true
+        });
+      };
+    </script>
   </body>
 </html>`
 
@@ -50,9 +78,9 @@ func GetSpecJSON() ([]byte, error) {
 	return rawSpec()
 }
 
-// ServeAPIDocs serves the interactive Scalar API Reference UI at /api/docs.
+// ServeAPIDocs serves the interactive Swagger UI at /api/docs.
 func ServeAPIDocs(c echo.Context) error {
-	return c.HTML(http.StatusOK, scalarDocsHTML)
+	return c.HTML(http.StatusOK, swaggerDocsHTML)
 }
 
 // ServeOpenAPIYAML serves the raw OpenAPI 3.1 YAML contract at /api/openapi.yaml.

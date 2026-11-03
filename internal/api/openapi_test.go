@@ -22,8 +22,8 @@ func TestOpenAPIDocsAndSpecEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK on /api/docs, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "@scalar/api-reference") {
-		t.Errorf("expected Scalar script in /api/docs body")
+	if !strings.Contains(rec.Body.String(), "swagger-ui") {
+		t.Errorf("expected swagger-ui in /api/docs body")
 	}
 	if !strings.Contains(rec.Body.String(), "/api/openapi.json") {
 		t.Errorf("expected /api/openapi.json reference in /api/docs body")

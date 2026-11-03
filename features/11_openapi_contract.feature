@@ -12,7 +12,7 @@ Feature: OpenAPI 3.1 REST API Specification and Interfaces
     Given the Balance application database is initialized
     When I send a GET request to "/api/docs"
     Then the REST response status code should be 200
-    And the REST response body should contain "@scalar/api-reference"
+    And the REST response body should contain "swagger-ui"
     And the REST response body should contain "/api/openapi.json"
     When I send a GET request to "/api/openapi.yaml"
     Then the REST response status code should be 200
