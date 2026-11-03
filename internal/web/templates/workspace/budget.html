@@ -250,6 +250,15 @@
                                         <button type="button" class="btn btn-ghost btn-xs p-1 h-6 min-h-0 text-base-content/60 hover:text-primary" onclick="openRenameGroupModal('{{.EscapedGroupName}}')" title="Rename Category">
                                             ✏️
                                         </button>
+                                        {{- if eq .TotalBucketsCount 0}}
+                                        <form method="POST" action="/budgets/{{$.BudgetID}}/groups/delete" class="inline" onsubmit="return confirm('{{t $.Locale "budget-group-delete-confirm" "name" .GroupName}}');">
+                                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
+                                            <input type="hidden" name="group_name" value="{{.GroupName}}" />
+                                            <input type="hidden" name="horizon" value="{{$.HorizonParam}}" />
+                                            <input type="hidden" name="filter" value="{{$.FilterParam}}" />
+                                            <button type="submit" class="btn btn-ghost btn-xs p-1 h-6 min-h-0 text-error/80 hover:text-error hover:bg-error/10" title="{{t $.Locale "budget-group-delete-btn"}}">🗑️</button>
+                                        </form>
+                                        {{- end}}
                                         <form method="POST" action="/budgets/{{$.BudgetID}}/groups/move?dir=up" class="inline">
                                             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
                                             <input type="hidden" name="group_name" value="{{.GroupName}}" />
@@ -430,6 +439,15 @@
                 <div class="flex items-center gap-1 shrink-0">
                     <button type="button" class="btn btn-ghost btn-xs min-h-7 px-1.5 text-base-content/60 hover:text-primary touch-manipulation" onclick="openNewBucketModal('{{.EscapedGroupName}}')" title="Add Bucket to Category">＋</button>
                     <button type="button" class="btn btn-ghost btn-xs min-h-7 px-1.5 text-base-content/60 hover:text-primary touch-manipulation" onclick="openRenameGroupModal('{{.EscapedGroupName}}')" title="Rename Category">✏️</button>
+                    {{- if eq .TotalBucketsCount 0}}
+                    <form method="POST" action="/budgets/{{$.BudgetID}}/groups/delete" class="inline" onsubmit="return confirm('{{t $.Locale "budget-group-delete-confirm" "name" .GroupName}}');">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
+                        <input type="hidden" name="group_name" value="{{.GroupName}}" />
+                        <input type="hidden" name="horizon" value="{{$.HorizonParam}}" />
+                        <input type="hidden" name="filter" value="{{$.FilterParam}}" />
+                        <button type="submit" class="btn btn-ghost btn-xs min-h-7 px-1.5 text-error/80 hover:text-error hover:bg-error/10 touch-manipulation" title="{{t $.Locale "budget-group-delete-btn"}}">🗑️</button>
+                    </form>
+                    {{- end}}
                     <form method="POST" action="/budgets/{{$.BudgetID}}/groups/move?dir=up" class="inline">
                         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}" />
                         <input type="hidden" name="group_name" value="{{.GroupName}}" />

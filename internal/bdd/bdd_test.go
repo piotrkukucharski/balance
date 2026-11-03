@@ -5112,6 +5112,80 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	ctx.Step(`^category group "([^"]*)" should have delete action$`, func(groupName string) error {
+		body := tc.lastResponse.Body.String()
+		delAction := fmt.Sprintf(`/groups/delete`)
+		if !strings.Contains(body, delAction) || !strings.Contains(body, fmt.Sprintf(`value="%s"`, groupName)) {
+			return fmt.Errorf("expected delete action for category group %q", groupName)
+		}
+		return nil
+	})
+
+	ctx.Step(`^category group "([^"]*)" should not have delete action$`, func(groupName string) error {
+		body := tc.lastResponse.Body.String()
+		delAction := `/groups/delete`
+		lines := strings.Split(body, "\n")
+		for i, line := range lines {
+			if strings.Contains(line, delAction) {
+				for j := i; j < i+8 && j < len(lines); j++ {
+					if strings.Contains(lines[j], fmt.Sprintf(`value="%s"`, groupName)) {
+						return fmt.Errorf("expected category group %q to NOT have delete action, but found it", groupName)
+					}
+				}
+			}
+		}
+		return nil
+	})
+
+	ctx.Step(`^I request to delete category group "([^"]*)"$`, func(groupName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		form := url.Values{}
+		form.Set("group_name", groupName)
+
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/groups/delete", tc.activeBudgetID), strings.NewReader(form.Encode()))
+		req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+		rec := httptest.NewRecorder()
+		c := tc.echoEngine.NewContext(req, rec)
+		c.SetParamNames("budgetId")
+		c.SetParamValues(tc.activeBudgetID)
+		c.Set(handlers.ContextUserIDKey, tc.activeUserID)
+		c.Set(handlers.ContextRoleKey, "OWNER")
+		c.Set("correlationID", domain.NewUUIDv7())
+		c.Set(handlers.ContextBudgetDBKey, bDB)
+
+		handlerErr := tc.workspaceHandler.DeleteGroup(c)
+		if handlerErr != nil {
+			if he, ok := handlerErr.(*echo.HTTPError); ok {
+				rec.WriteHeader(he.Code)
+				rec.WriteString(fmt.Sprintf("%v", he.Message))
+			} else {
+				rec.WriteHeader(http.StatusInternalServerError)
+				rec.WriteString(handlerErr.Error())
+			}
+		}
+		tc.lastResponse = rec
+		return nil
+	})
+
+	ctx.Step(`^category group "([^"]*)" should not exist in bucket groups$`, func(groupName string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var count int
+		err = bDB.QueryRow(`SELECT count(*) FROM bucket_groups WHERE name = ?`, groupName).Scan(&count)
+		if err != nil {
+			return err
+		}
+		if count != 0 {
+			return fmt.Errorf("expected category group %q to not exist, but found count=%d", groupName, count)
+		}
+		return nil
+	})
+
 	ctx.Step(`^the OpenAPI specification is loaded$`, func() error {
 		swagger, err := openapi.GetSwagger()
 		if err != nil {

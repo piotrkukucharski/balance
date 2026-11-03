@@ -159,3 +159,88 @@ func TestBucketGroupsReorderingAndRenaming(t *testing.T) {
 	_ = b1
 	_ = b3
 }
+
+func TestDeleteBucketGroup(t *testing.T) {
+	ctx := context.Background()
+	tenantDB, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("failed opening in-memory db: %v", err)
+	}
+	defer tenantDB.Close()
+
+	initMigration, err := db.MigrationsFS.ReadFile("migrations/tenant/00001_init_tenant.sql")
+	if err != nil {
+		t.Fatalf("failed reading init migration: %v", err)
+	}
+	if _, err := tenantDB.Exec(string(initMigration)); err != nil {
+		t.Fatalf("failed executing init migration: %v", err)
+	}
+
+	groupsMigration, err := db.MigrationsFS.ReadFile("migrations/tenant/00005_bucket_groups.sql")
+	if err != nil {
+		t.Fatalf("failed reading groups migration: %v", err)
+	}
+	if _, err := tenantDB.Exec(string(groupsMigration)); err != nil {
+		t.Fatalf("failed executing groups migration: %v", err)
+	}
+
+	// 1. Create a bucket in "Living" group
+	bID, err := CreateBucket(ctx, tenantDB, CreateBucketInput{
+		GroupName:     "Living",
+		Name:          "Rent",
+		AgentID:       "user-1",
+		CorrelationID: "c-1",
+	})
+	if err != nil {
+		t.Fatalf("failed creating bucket: %v", err)
+	}
+
+	// 2. Add an empty group "Savings" directly to bucket_groups
+	if err := EnsureBucketGroupsSync(ctx, tenantDB); err != nil {
+		t.Fatalf("failed syncing bucket groups: %v", err)
+	}
+	_, err = tenantDB.ExecContext(ctx, `INSERT INTO bucket_groups (id, name, sort_order, created_at, updated_at) VALUES ('grp-savings', 'Savings', 10, 1000, 1000)`)
+	if err != nil {
+		t.Fatalf("failed inserting empty group: %v", err)
+	}
+
+	// 3. Attempting to delete non-empty group "Living" should fail
+	err = DeleteBucketGroup(ctx, tenantDB, "Living")
+	if err == nil {
+		t.Fatalf("expected error deleting non-empty group Living, got nil")
+	}
+
+	// 4. Attempting to delete empty group "Savings" should succeed
+	err = DeleteBucketGroup(ctx, tenantDB, "Savings")
+	if err != nil {
+		t.Fatalf("failed deleting empty group Savings: %v", err)
+	}
+
+	// Verify "Savings" is no longer in bucket_groups
+	groups, err := ListBucketGroups(ctx, tenantDB)
+	if err != nil {
+		t.Fatalf("failed listing bucket groups: %v", err)
+	}
+	for _, g := range groups {
+		if g.Name == "Savings" {
+			t.Fatalf("expected Savings to be deleted from bucket_groups, but found it")
+		}
+	}
+
+	// 5. Attempting to delete non-existent group should return error
+	err = DeleteBucketGroup(ctx, tenantDB, "NonExistent")
+	if err == nil {
+		t.Fatalf("expected error deleting non-existent group, got nil")
+	}
+
+	// 6. If bucket in "Living" is archived, "Living" should now be deletable
+	err = ArchiveBucket(ctx, tenantDB, bID, "user-1", "c-archive")
+	if err != nil {
+		t.Fatalf("failed archiving bucket: %v", err)
+	}
+	err = DeleteBucketGroup(ctx, tenantDB, "Living")
+	if err != nil {
+		t.Fatalf("expected deleting group Living with only archived buckets to succeed, got: %v", err)
+	}
+}
+

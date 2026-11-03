@@ -120,6 +120,8 @@ budget-search-placeholder = Search envelopes...
 budget-new-bucket-btn = New Bucket
 budget-accounts-summary = Accounts Summary
 budget-no-accounts = No accounts connected yet.
+budget-group-delete-btn = Delete Category
+budget-group-delete-confirm = Are you sure you want to delete category '{ $name }'?
 
 # Budget Settings View
 settings-title = Budget Settings

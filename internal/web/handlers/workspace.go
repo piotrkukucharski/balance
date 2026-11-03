@@ -756,6 +756,7 @@ type bucketGroupViewData struct {
 	EscapedGroupName        string
 	GroupID                 string
 	Buckets                 []bucketViewData
+	TotalBucketsCount       int
 	TotalAvailableMinor     int64
 	TotalAvailableFormatted string
 	TotalRequiredMinor      int64
@@ -1591,6 +1592,16 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		groupEntries[idx].Buckets = append(groupEntries[idx].Buckets, b)
 	}
 
+	// Count active buckets per group across all buckets (unfiltered)
+	groupActiveBucketsCount := make(map[string]int)
+	for _, b := range allBuckets {
+		gName := b.GroupName
+		if gName == "" {
+			gName = "Needs"
+		}
+		groupActiveBucketsCount[gName]++
+	}
+
 	var bucketGroups []bucketGroupViewData
 	for _, ge := range groupEntries {
 		// When filtering (e.g. attention, overspent, buffer), skip groups with 0 matching buckets
@@ -1598,10 +1609,11 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 			continue
 		}
 		bg := bucketGroupViewData{
-			GroupName:        ge.GroupName,
-			EscapedGroupName: strings.ReplaceAll(ge.GroupName, "'", "\\'"),
-			GroupID:          safeDOMID(ge.GroupName),
-			Buckets:          ge.Buckets,
+			GroupName:         ge.GroupName,
+			EscapedGroupName:  strings.ReplaceAll(ge.GroupName, "'", "\\'"),
+			GroupID:           safeDOMID(ge.GroupName),
+			Buckets:           ge.Buckets,
+			TotalBucketsCount: groupActiveBucketsCount[ge.GroupName],
 		}
 		for _, b := range ge.Buckets {
 			bg.TotalAvailableMinor += b.BalanceMinor
@@ -1912,6 +1924,21 @@ func (h *WorkspaceHandler) MoveGroup(c echo.Context) error {
 
 	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "updated", ""))
 }
+
+// DeleteGroup handles deleting an empty bucket category group.
+func (h *WorkspaceHandler) DeleteGroup(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+
+	groupName := strings.TrimSpace(c.FormValue("group_name"))
+
+	if err := budget.DeleteBucketGroup(c.Request().Context(), tenantDB, groupName); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, budgetRedirectURL(budgetID, c, "deleted", ""))
+}
+
 
 // UpdateBucket handles updating bucket name or group.
 func (h *WorkspaceHandler) UpdateBucket(c echo.Context) error {

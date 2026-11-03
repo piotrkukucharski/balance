@@ -2607,6 +2607,80 @@ func TestGroupRenamingAndMovingEndpoints(t *testing.T) {
 	if !strings.Contains(emptyBody, `id="mobile-group-Savings"`) {
 		t.Errorf("expected empty category group header to render on mobile")
 	}
+
+	// Verify delete button is displayed for empty category "Savings" but NOT for non-empty "Needs"
+	if !strings.Contains(emptyBody, `action="/budgets/`+budgetID+`/groups/delete"`) {
+		t.Errorf("expected delete category form for empty category in BudgetView html")
+	}
+	if strings.Contains(emptyBody, `name="group_name" value="Needs"`) && strings.Contains(emptyBody, `action="/budgets/`+budgetID+`/groups/delete"`) {
+		// Verify Needs does not have a delete action
+		deleteAction := `/budgets/` + budgetID + `/groups/delete`
+		// Check that the form action is not associated with Needs
+		var needsHasDelete bool
+		lines := strings.Split(emptyBody, "\n")
+		for i, line := range lines {
+			if strings.Contains(line, deleteAction) {
+				for j := i; j < i+8 && j < len(lines); j++ {
+					if strings.Contains(lines[j], `value="Needs"`) {
+						needsHasDelete = true
+						break
+					}
+				}
+			}
+		}
+		if needsHasDelete {
+			t.Errorf("expected non-empty category 'Needs' to NOT have delete category button")
+		}
+	}
+
+	// 5. Test DeleteGroup handler: attempting to delete non-empty "Needs" should fail with 400
+	delNeedsForm := url.Values{}
+	delNeedsForm.Set("group_name", "Needs")
+	delNeedsReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/groups/delete", strings.NewReader(delNeedsForm.Encode()))
+	delNeedsReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	delNeedsRec := httptest.NewRecorder()
+	delNeedsCtx := e.NewContext(delNeedsReq, delNeedsRec)
+	delNeedsCtx.SetParamNames("budgetId")
+	delNeedsCtx.SetParamValues(budgetID)
+	delNeedsCtx.Set(ContextBudgetDBKey, tenantDB)
+	delNeedsCtx.Set(ContextUserIDKey, userID)
+	delNeedsCtx.Set(ContextRoleKey, "OWNER")
+
+	err = workspaceHandler.DeleteGroup(delNeedsCtx)
+	if err == nil {
+		t.Fatalf("expected error deleting non-empty group Needs, got nil")
+	}
+	httpErr, ok := err.(*echo.HTTPError)
+	if !ok || httpErr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request deleting non-empty group, got %v", err)
+	}
+
+	// 6. Test DeleteGroup handler: deleting empty "Savings" should succeed and redirect
+	delSavingsForm := url.Values{}
+	delSavingsForm.Set("group_name", "Savings")
+	delSavingsReq := httptest.NewRequest(http.MethodPost, "/budgets/"+budgetID+"/groups/delete", strings.NewReader(delSavingsForm.Encode()))
+	delSavingsReq.Header.Set(echo.HeaderContentType, echo.MIMEApplicationForm)
+	delSavingsRec := httptest.NewRecorder()
+	delSavingsCtx := e.NewContext(delSavingsReq, delSavingsRec)
+	delSavingsCtx.SetParamNames("budgetId")
+	delSavingsCtx.SetParamValues(budgetID)
+	delSavingsCtx.Set(ContextBudgetDBKey, tenantDB)
+	delSavingsCtx.Set(ContextUserIDKey, userID)
+	delSavingsCtx.Set(ContextRoleKey, "OWNER")
+
+	if err := workspaceHandler.DeleteGroup(delSavingsCtx); err != nil {
+		t.Fatalf("DeleteGroup for empty group failed: %v", err)
+	}
+	if delSavingsRec.Code != http.StatusSeeOther {
+		t.Errorf("expected redirect 303 after deleting category group, got %d", delSavingsRec.Code)
+	}
+
+	// Verify Savings was removed from database
+	var countSavings int
+	_ = tenantDB.QueryRow(`SELECT count(*) FROM bucket_groups WHERE name = 'Savings'`).Scan(&countSavings)
+	if countSavings != 0 {
+		t.Errorf("expected Savings to be deleted from bucket_groups, count=%d", countSavings)
+	}
 }
 
 func TestMobileResponsiveBudgetViewAndErgonomics(t *testing.T) {

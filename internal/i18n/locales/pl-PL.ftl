@@ -120,6 +120,8 @@ budget-search-placeholder = Szukaj kopert...
 budget-new-bucket-btn = Nowa Koperta
 budget-accounts-summary = Podsumowanie Kont
 budget-no-accounts = Brak połączonych kont.
+budget-group-delete-btn = Usuń kategorię
+budget-group-delete-confirm = Czy na pewno chcesz usunąć kategorię '{ $name }'?
 
 # Budget Settings View
 settings-title = Ustawienia Budżetu

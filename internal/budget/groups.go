@@ -280,3 +280,47 @@ func MoveBucketGroup(ctx context.Context, tenantDB *sql.DB, groupName, direction
 
 	return ReorderBucketGroups(ctx, tenantDB, orderedNames)
 }
+
+// DeleteBucketGroup deletes an empty bucket category group.
+// It returns an error if the category group does not exist, or if it contains non-archived buckets.
+func DeleteBucketGroup(ctx context.Context, tenantDB *sql.DB, groupName string) error {
+	groupName = strings.TrimSpace(groupName)
+	if groupName == "" {
+		return errors.New("group name cannot be empty")
+	}
+
+	tx, err := tenantDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// 1. Check if group exists in bucket_groups
+	var groupID string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM bucket_groups WHERE name = ?`, groupName).Scan(&groupID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("category group not found")
+		}
+		return fmt.Errorf("failed querying bucket_group: %w", err)
+	}
+
+	// 2. Check if there are active (non-archived) buckets belonging to this group
+	var activeBucketsCount int
+	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM buckets_projection WHERE group_name = ? AND is_archived = 0`, groupName).Scan(&activeBucketsCount)
+	if err != nil {
+		return fmt.Errorf("failed checking active buckets for group: %w", err)
+	}
+	if activeBucketsCount > 0 {
+		return errors.New("cannot delete category group containing active buckets; delete or move envelopes first")
+	}
+
+	// 3. Delete from bucket_groups
+	_, err = tx.ExecContext(ctx, `DELETE FROM bucket_groups WHERE id = ?`, groupID)
+	if err != nil {
+		return fmt.Errorf("failed deleting bucket_group: %w", err)
+	}
+
+	return tx.Commit()
+}
+

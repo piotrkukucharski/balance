@@ -245,6 +245,7 @@ func (tc *e2eScenarioContext) setup() error {
 	tenantEditor.POST("/parties/:partyId/rules/:ruleId/delete", partiesHandler.DeletePartyRule)
 	tenantEditor.POST("/groups/rename", workspaceHandler.RenameGroup)
 	tenantEditor.POST("/groups/move", workspaceHandler.MoveGroup)
+	tenantEditor.POST("/groups/delete", workspaceHandler.DeleteGroup)
 	tenantEditor.POST("/buckets", workspaceHandler.CreateBucket)
 	tenantEditor.POST("/buckets/:id/update", workspaceHandler.UpdateBucket)
 	tenantEditor.POST("/buckets/:id/move-group", workspaceHandler.MoveBucketGroup)

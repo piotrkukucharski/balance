@@ -268,6 +268,21 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     And category group "Savings" should display empty state "No buckets in this category yet." with add bucket button
     And the mobile category group "Savings" should be visible with add bucket button
 
+  Scenario: Deleting empty category group and preventing deletion of non-empty category
+    Given an open budget "Family Home"
+    When I create a bucket "Rent" in group "Living"
+    And category group "Vacation" exists in bucket groups
+    And I request the budget view "/budgets/:budgetId/budget"
+    Then the response status should be 200 OK
+    And category group "Vacation" should have delete action
+    And category group "Living" should not have delete action
+    When I request to delete category group "Living"
+    Then the response status should be 400 Bad Request
+    When I request to delete category group "Vacation"
+    Then the response status should be 303 See Other
+    And category group "Vacation" should not exist in bucket groups
+
+
 
 
 
