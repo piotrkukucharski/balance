@@ -56,16 +56,8 @@ func setupTestAPIServer(t *testing.T) (*echo.Echo, *sql.DB, *db.TenantDBManager,
 	server.SetFormulaAIProvider(ai.NewMockFormulaAIProvider())
 
 	e := echo.New()
-	apiGroup := e.Group("/api/v1", func(next echo.HandlerFunc) echo.HandlerFunc {
-		authMiddleware := handlers.SessionOrBearerAuthMiddleware(mainDB)
-		return func(c echo.Context) error {
-			path := c.Request().URL.Path
-			if path == "/api/v1/auth/login" || path == "/api/v1/auth/register" {
-				return next(c)
-			}
-			return authMiddleware(next)(c)
-		}
-	})
+	openapi.RegisterDocsRoutes(e)
+	apiGroup := e.Group("/api/v1", openapi.WrapAPIAuthMiddleware(handlers.SessionOrBearerAuthMiddleware(mainDB)))
 	openapi.RegisterHandlersWithBaseURL(apiGroup, server, "")
 
 	return e, mainDB, tenantMgr, appService, tempDir

@@ -1,10 +1,60 @@
 package openapi_test
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	openapi "github.com/balance/balance/internal/api"
+	"github.com/labstack/echo/v4"
 )
+
+func TestOpenAPIDocsAndSpecEndpoints(t *testing.T) {
+	e := echo.New()
+	openapi.RegisterDocsRoutes(e)
+
+	// 1. GET /api/docs
+	req := httptest.NewRequest(http.MethodGet, "/api/docs", nil)
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on /api/docs, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "@scalar/api-reference") {
+		t.Errorf("expected Scalar script in /api/docs body")
+	}
+	if !strings.Contains(rec.Body.String(), "/api/openapi.json") {
+		t.Errorf("expected /api/openapi.json reference in /api/docs body")
+	}
+
+	// 2. GET /api/openapi.yaml
+	req = httptest.NewRequest(http.MethodGet, "/api/openapi.yaml", nil)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on /api/openapi.yaml, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "openapi: 3.1.0") {
+		t.Errorf("expected openapi: 3.1.0 in /api/openapi.yaml")
+	}
+
+	// 3. GET /api/openapi.json
+	req = httptest.NewRequest(http.MethodGet, "/api/openapi.json", nil)
+	rec = httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on /api/openapi.json, got %d", rec.Code)
+	}
+	var specJSON map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &specJSON); err != nil {
+		t.Fatalf("failed unmarshaling /api/openapi.json: %v", err)
+	}
+	if specJSON["openapi"] != "3.1.0" {
+		t.Errorf("expected openapi 3.1.0 in JSON spec, got %v", specJSON["openapi"])
+	}
+}
 
 func TestOpenAPISpecEmbedded(t *testing.T) {
 	swagger, err := openapi.GetSwagger()

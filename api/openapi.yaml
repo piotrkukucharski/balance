@@ -337,7 +337,6 @@ paths:
     post:
       summary: Accept a budget invitation
       operationId: acceptInvitation
-      security: []
       parameters:
         - name: token
           in: path
@@ -353,8 +352,12 @@ paths:
                 $ref: '#/components/schemas/AcceptInvitationResponse'
         '400':
           $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
 
   /integrations/providers:
     get:

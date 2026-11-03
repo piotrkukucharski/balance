@@ -12,6 +12,7 @@ import (
 
 	"github.com/balance/balance/internal/auth"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/i18n"
 	"github.com/balance/balance/internal/logger"
 	"github.com/balance/balance/internal/web/templates"
 	"github.com/labstack/echo/v4"
@@ -106,10 +107,14 @@ func (h *TokensHandler) TokensView(c echo.Context) error {
 	}
 
 	nowMicro := time.Now().UTC().UnixMicro()
+	dFormat, tFormat := GetUserDateTimePreferences(c)
+	userLocale := GetUserLocale(c)
+	userNumberFormat := GetUserNumberFormat(c)
+	neverLabel := i18n.T(userLocale, "tokens-never")
 
 	var tokenRows []tokenViewRow
 	for _, t := range tokens {
-		expiresStr := "Never"
+		expiresStr := neverLabel
 		isExpired := false
 		if t.ExpiresAt > 0 {
 			expiresStr = RenderTimeTagMicro(t.ExpiresAt, true, c)
@@ -118,7 +123,7 @@ func (h *TokensHandler) TokensView(c echo.Context) error {
 			}
 		}
 
-		lastUsedStr := "Never"
+		lastUsedStr := neverLabel
 		if t.LastUsedAt != nil && *t.LastUsedAt > 0 {
 			lastUsedStr = RenderTimeTagMicro(*t.LastUsedAt, true, c)
 		}
@@ -140,10 +145,6 @@ func (h *TokensHandler) TokensView(c echo.Context) error {
 			ExpiresHTML:  template.HTML(expiresStr),
 		})
 	}
-
-	dFormat, tFormat := GetUserDateTimePreferences(c)
-	userLocale := GetUserLocale(c)
-	userNumberFormat := GetUserNumberFormat(c)
 
 	data := tokensViewData{
 		Locale:                  userLocale,

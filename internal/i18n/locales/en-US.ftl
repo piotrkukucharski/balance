@@ -277,11 +277,37 @@ members-col-since = Member Since
 # Tokens View
 tokens-title = Personal Access Tokens (PAT)
 tokens-desc = Manage API tokens (bal_pat_...) for programmatic REST API access (OpenAPI 3.1).
+tokens-docs-btn = 📖 Interactive API Docs (/api/docs)
 tokens-generate-title = Generate New Token
 tokens-label-desc = Token Description / Name
+tokens-placeholder-desc = e.g. CLI Sync, CI/CD Script, Mobile Client
 tokens-label-expiration = Expiration
+tokens-exp-30d = 30 days
+tokens-exp-90d = 90 days
+tokens-exp-1y = 1 year
+tokens-exp-never = Never (No expiration)
 tokens-generate-btn = Generate Token
 tokens-active-title = Active and Past Tokens
+tokens-col-name = Token Name
+tokens-col-status = Status
+tokens-col-last-used = Last Used
+tokens-col-expires = Expires
+tokens-col-actions = Actions
+tokens-status-revoked = Revoked
+tokens-status-expired = Expired
+tokens-status-active = Active
+tokens-never = Never
+tokens-revoke-btn = Revoke
+tokens-revoke-confirm = Are you sure you want to revoke this token? Any script or service using it will stop working immediately.
+tokens-empty = No API tokens generated yet.
+tokens-usage-title = How to use your Personal Access Token
+tokens-usage-desc = Authenticate requests by passing the token in the Authorization header. PAT requests are exempt from CSRF checks:
+tokens-modal-title = Personal Access Token Generated!
+tokens-modal-desc = Here is your new token for { $name }. Make sure to copy it now — for security reasons, it will not be shown again.
+tokens-copy-btn = Copy
+tokens-copied-btn = Copied!
+tokens-modal-warning = Anyone with this token can access your account through the REST API without entering your password or CSRF token.
+tokens-modal-close-btn = I have safely stored this token
 
 # Transactions View
 tx-ledger-title = Transactions Ledger

@@ -280,17 +280,9 @@ func (tc *e2eScenarioContext) setup() error {
 	tenantOwner.POST("/debug/integrations/ai/audit", debugHandler.AuditAIAgentAction)
 	tenantOwner.POST("/debug/integrations/gocardless/audit", debugHandler.AuditGoCardlessAction)
 
+	openapi.RegisterDocsRoutes(e)
 	apiServer := openapi.NewServer(mainDB, tenantMgr, appService)
-	apiGroup := e.Group("/api/v1", func(next echo.HandlerFunc) echo.HandlerFunc {
-		authMiddleware := handlers.SessionOrBearerAuthMiddleware(mainDB)
-		return func(c echo.Context) error {
-			path := c.Request().URL.Path
-			if path == "/api/v1/auth/login" || path == "/api/v1/auth/register" {
-				return next(c)
-			}
-			return authMiddleware(next)(c)
-		}
-	})
+	apiGroup := e.Group("/api/v1", openapi.WrapAPIAuthMiddleware(handlers.SessionOrBearerAuthMiddleware(mainDB)))
 	openapi.RegisterHandlersWithBaseURL(apiGroup, apiServer, "")
 
 	tc.echoEngine = e

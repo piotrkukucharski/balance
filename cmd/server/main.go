@@ -258,19 +258,10 @@ func main() {
 	tenantOwner.POST("/debug/integrations/ai/audit", debugHandler.AuditAIAgentAction)
 	tenantOwner.POST("/debug/integrations/gocardless/audit", debugHandler.AuditGoCardlessAction)
 
-	// REST API v1 (OpenAPI 3.1)
+	// REST API v1 (OpenAPI 3.1) & Interactive Documentation (/api/docs)
+	openapi.RegisterDocsRoutes(e)
 	apiServer := openapi.NewServer(mainDB, tenantMgr, appService)
-	apiGroup := e.Group("/api/v1", func(next echo.HandlerFunc) echo.HandlerFunc {
-		authMiddleware := handlers.SessionOrBearerAuthMiddleware(mainDB)
-		return func(c echo.Context) error {
-			path := c.Request().URL.Path
-			// Skip authentication for public auth endpoints
-			if path == "/api/v1/auth/login" || path == "/api/v1/auth/register" {
-				return next(c)
-			}
-			return authMiddleware(next)(c)
-		}
-	})
+	apiGroup := e.Group("/api/v1", openapi.WrapAPIAuthMiddleware(handlers.SessionOrBearerAuthMiddleware(mainDB)))
 	openapi.RegisterHandlersWithBaseURL(apiGroup, apiServer, "")
 
 

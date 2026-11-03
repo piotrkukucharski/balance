@@ -277,11 +277,37 @@ members-col-since = Członek od
 # Tokens View
 tokens-title = Osobiste Tokeny Dostępu (PAT)
 tokens-desc = Zarządzaj tokenami API (bal_pat_...) do programistycznego dostępu przez REST API (OpenAPI 3.1).
+tokens-docs-btn = 📖 Dokumentacja API (/api/docs)
 tokens-generate-title = Wygeneruj nowy token
 tokens-label-desc = Opis / Nazwa tokena
+tokens-placeholder-desc = np. Synchronizacja CLI, Skrypt CI/CD, Klient mobilny
 tokens-label-expiration = Ważność
+tokens-exp-30d = 30 dni
+tokens-exp-90d = 90 dni
+tokens-exp-1y = 1 rok
+tokens-exp-never = Bezterminowo (brak wygasania)
 tokens-generate-btn = Wygeneruj token
 tokens-active-title = Aktywne i historyczne tokeny
+tokens-col-name = Nazwa tokena
+tokens-col-status = Status
+tokens-col-last-used = Ostatnie użycie
+tokens-col-expires = Wygasa
+tokens-col-actions = Akcje
+tokens-status-revoked = Unieważniony
+tokens-status-expired = Wygasły
+tokens-status-active = Aktywny
+tokens-never = Nigdy
+tokens-revoke-btn = Unieważnij
+tokens-revoke-confirm = Czy na pewno chcesz unieważnić ten token? Każdy skrypt lub usługa korzystająca z niego przestanie działać natychmiast.
+tokens-empty = Nie wygenerowano jeszcze żadnych tokenów API.
+tokens-usage-title = Jak korzystać z Osobistego Tokena Dostępu
+tokens-usage-desc = Uwierzytelniaj żądania przekazując token w nagłówku Authorization. Żądania z tokenem PAT nie wymagają tokena CSRF:
+tokens-modal-title = Wygenerowano Osobisty Token Dostępu!
+tokens-modal-desc = Oto Twój nowy token dla { $name }. Skopiuj go teraz — ze względów bezpieczeństwa nie zostanie wyświetlony ponownie.
+tokens-copy-btn = Kopiuj
+tokens-copied-btn = Skopiowano!
+tokens-modal-warning = Każda osoba posiadająca ten token może uzyskać dostęp do Twojego konta przez REST API bez podawania hasła ani tokena CSRF.
+tokens-modal-close-btn = Bezpiecznie zapisałem ten token
 
 # Transactions View
 tx-ledger-title = Rejestr Transakcji

@@ -152,16 +152,8 @@ func (tc *bddTestContext) setup() error {
 	apiServer.SetFormulaAIProvider(ai.NewMockFormulaAIProvider())
 	tc.fxService = fx.NewService(mainDB, &bddMockECBClient{quotes: defaultECBQuotes}, &bddMockNBPClient{quotes: defaultNBPQuotes})
 
-	apiGroup := tc.echoEngine.Group("/api/v1", func(next echo.HandlerFunc) echo.HandlerFunc {
-		authMiddleware := handlers.SessionOrBearerAuthMiddleware(mainDB)
-		return func(c echo.Context) error {
-			path := c.Request().URL.Path
-			if path == "/api/v1/auth/login" || path == "/api/v1/auth/register" {
-				return next(c)
-			}
-			return authMiddleware(next)(c)
-		}
-	})
+	openapi.RegisterDocsRoutes(tc.echoEngine)
+	apiGroup := tc.echoEngine.Group("/api/v1", openapi.WrapAPIAuthMiddleware(handlers.SessionOrBearerAuthMiddleware(mainDB)))
 	openapi.RegisterHandlersWithBaseURL(apiGroup, apiServer, "")
 
 	return nil
@@ -5883,6 +5875,36 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	var lastCreatedTokenID string
+	var lastInviteToken string
+
+	ctx.Step(`^I send a GET request to "([^"]*)"$`, func(path string) error {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		tc.lastResponse = httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
+		return nil
+	})
+
+	ctx.Step(`^the REST response body should contain "([^"]*)"$`, func(expected string) error {
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, expected) {
+			return fmt.Errorf("expected response body to contain %q, got: %s", expected, body)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the REST response JSON should have field "([^"]*)" equal to "([^"]*)"$`, func(field, expected string) error {
+		var m map[string]interface{}
+		if err := json.Unmarshal(tc.lastResponse.Body.Bytes(), &m); err != nil {
+			return fmt.Errorf("failed parsing JSON response: %w", err)
+		}
+		val, ok := m[field]
+		if !ok || fmt.Sprint(val) != expected {
+			return fmt.Errorf("expected JSON field %q to equal %q, got %v", field, expected, val)
+		}
+		return nil
+	})
+
 	ctx.Step(`^I create a personal access token via REST API$`, func() error {
 		var csrf string
 		if tc.sessionCookie != nil {
@@ -5908,7 +5930,96 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		var resp openapi.CreateTokenResponse
 		if err := json.Unmarshal(tc.lastResponse.Body.Bytes(), &resp); err == nil {
 			tc.activeBearer = resp.Token
+			lastCreatedTokenID = resp.Id.String()
 		}
+		return nil
+	})
+
+	ctx.Step(`^the created personal access token should start with "([^"]*)"$`, func(prefix string) error {
+		if !strings.HasPrefix(tc.activeBearer, prefix) {
+			return fmt.Errorf("expected PAT to start with %q, got %q", prefix, tc.activeBearer)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I list personal access tokens via REST API using the Bearer token$`, func() error {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/tokens", nil)
+		req.Header.Set("Authorization", "Bearer "+tc.activeBearer)
+		tc.lastResponse = httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
+		return nil
+	})
+
+	ctx.Step(`^the token list should contain "([^"]*)"$`, func(expectedName string) error {
+		var tokens []openapi.ApiTokenItem
+		if err := json.Unmarshal(tc.lastResponse.Body.Bytes(), &tokens); err != nil {
+			return fmt.Errorf("failed parsing token list: %w", err)
+		}
+		for _, tok := range tokens {
+			if tok.Name == expectedName {
+				return nil
+			}
+		}
+		return fmt.Errorf("expected token list to contain %q, got %+v", expectedName, tokens)
+	})
+
+	ctx.Step(`^I revoke the personal access token via REST API using the Bearer token$`, func() error {
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/auth/tokens/"+lastCreatedTokenID, nil)
+		req.Header.Set("Authorization", "Bearer "+tc.activeBearer)
+		tc.lastResponse = httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
+		return nil
+	})
+
+	ctx.Step(`^I list budgets via REST API using the Bearer token$`, func() error {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/budgets", nil)
+		req.Header.Set("Authorization", "Bearer "+tc.activeBearer)
+		tc.lastResponse = httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
+		return nil
+	})
+
+	ctx.Step(`^the REST error response should have code "([^"]*)"$`, func(expectedCode string) error {
+		var errResp openapi.ErrorResponse
+		if err := json.Unmarshal(tc.lastResponse.Body.Bytes(), &errResp); err != nil {
+			return fmt.Errorf("failed parsing ErrorResponse JSON (%s): %w", tc.lastResponse.Body.String(), err)
+		}
+		if errResp.Error == "" {
+			return fmt.Errorf("expected non-empty error field in ErrorResponse, got %+v", errResp)
+		}
+		if errResp.Code == nil || *errResp.Code != expectedCode {
+			return fmt.Errorf("expected ErrorResponse code %q, got %v (body: %s)", expectedCode, errResp.Code, tc.lastResponse.Body.String())
+		}
+		return nil
+	})
+
+	ctx.Step(`^I submit a REST POST to "([^"]*)" with session cookie but without CSRF token$`, func(path string) error {
+		body, _ := json.Marshal(map[string]interface{}{
+			"name":             "No CSRF Budget",
+			"default_currency": "PLN",
+			"timezone":         "UTC",
+		})
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if tc.sessionCookie != nil {
+			req.AddCookie(tc.sessionCookie)
+		}
+		tc.lastResponse = httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
+		return nil
+	})
+
+	ctx.Step(`^I create a budget "([^"]*)" using the Bearer token without CSRF header$`, func(budgetName string) error {
+		body, _ := json.Marshal(map[string]interface{}{
+			"name":             budgetName,
+			"default_currency": "PLN",
+			"timezone":         "UTC",
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/budgets", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+tc.activeBearer)
+		tc.lastResponse = httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
 		return nil
 	})
 
@@ -5921,6 +6032,75 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/budgets", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+tc.activeBearer)
+		tc.lastResponse = httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
+
+		var resp openapi.BudgetSummary
+		if err := json.Unmarshal(tc.lastResponse.Body.Bytes(), &resp); err == nil && resp.Id.String() != "" {
+			tc.activeBudgetID = resp.Id.String()
+		}
+		return nil
+	})
+
+	ctx.Step(`^I invite "([^"]*)" with role "([^"]*)" to the budget via REST API$`, func(email, role string) error {
+		body, _ := json.Marshal(map[string]interface{}{
+			"email": email,
+			"role":  role,
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/budgets/"+tc.activeBudgetID+"/invitations", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+tc.activeBearer)
+		tc.lastResponse = httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
+
+		var resp openapi.InvitationResponse
+		if err := json.Unmarshal(tc.lastResponse.Body.Bytes(), &resp); err == nil {
+			lastInviteToken = resp.InviteToken
+		}
+		return nil
+	})
+
+	ctx.Step(`^I accept the budget invitation via REST API using the session cookie and CSRF token$`, func() error {
+		var csrf string
+		if tc.sessionCookie != nil {
+			hash := auth.HashToken(tc.sessionCookie.Value)
+			tc.mainDB.QueryRowContext(context.Background(), `SELECT csrf_token FROM sessions WHERE token_hash = ?`, hash).Scan(&csrf)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/invitations/"+lastInviteToken+"/accept", nil)
+		if tc.sessionCookie != nil {
+			req.AddCookie(tc.sessionCookie)
+		}
+		if csrf != "" {
+			req.Header.Set("X-CSRF-Token", csrf)
+		}
+		tc.lastResponse = httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
+		return nil
+	})
+
+	ctx.Step(`^I submit a REST logout request to "([^"]*)" using the session cookie and CSRF token$`, func(path string) error {
+		var csrf string
+		if tc.sessionCookie != nil {
+			hash := auth.HashToken(tc.sessionCookie.Value)
+			tc.mainDB.QueryRowContext(context.Background(), `SELECT csrf_token FROM sessions WHERE token_hash = ?`, hash).Scan(&csrf)
+		}
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		if tc.sessionCookie != nil {
+			req.AddCookie(tc.sessionCookie)
+		}
+		if csrf != "" {
+			req.Header.Set("X-CSRF-Token", csrf)
+		}
+		tc.lastResponse = httptest.NewRecorder()
+		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
+		return nil
+	})
+
+	ctx.Step(`^I send a GET request to "([^"]*)" with the logged-out session cookie$`, func(path string) error {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		if tc.sessionCookie != nil {
+			req.AddCookie(tc.sessionCookie)
+		}
 		tc.lastResponse = httptest.NewRecorder()
 		tc.echoEngine.ServeHTTP(tc.lastResponse, req)
 		return nil

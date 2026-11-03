@@ -3022,6 +3022,10 @@ func (w *ServerInterfaceWrapper) AcceptInvitation(ctx echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Invalid format for parameter token: %s", err))
 	}
 
+	ctx.Set(BearerAuthScopes, []string{})
+
+	ctx.Set(CookieAuthScopes, []string{})
+
 	// Invoke the callback with all the unmarshaled arguments
 	err = w.Handler.AcceptInvitation(ctx, token)
 	return err
@@ -3291,10 +3295,10 @@ var swaggerSpec = []string{
 	"2drPs4b206Wq4WXj9yl40SX2JZZ26CZvr6i140HjgWpY63CpUm1lrU2iA8+fVK38ySAVS5AxClhCEsWI",
 	"dbCVXkpLHnTd4LpglD1xVXZreDc5H0wvLoc3N57vXU3Of/d8WQrXpuIfyrheXWJJaT9oTeD6rC2pnQ3Z",
 	"s0dwbX9ulHp5RNbLXTE0D8IKwLfTS/3ELXc6EPQLIhlT5plwT7+p31VBbZS08ONAfS+SuPZiSD3nNjLu",
-	"82Fze1eW0DNbrcbMQ59PdrsmoTBlWGy8139+LpNdr6TIzV0QVBM45Yjx01Vr5oPzlDFExC038uJASJfj",
-	"tyFafpdnsapAvocKSg1zUajXCdLSRB0lCuuoOVQQjsbNo5gqOsliigXWsfao0k4D5aBobb988+4QZIhJ",
-	"uSi3j1SDQkq/YJT/IrcUYutMftWiPswkg+sRWL8CiEQJxUR4vpey2HvtncIEn65fed8/f///AwA607hh",
-	"aAMBAA==",
+	"82Fze1eW0DNbrcbM4z2fbH/Bkr16aDHnlMxjHFqVGI2rIvt3wTKahVKOGD9dteZWOE8ZQ0TcciORDkRW",
+	"OX4bKeV3edqrGud7qNHUMEiFep0gLU3UUQSxjppDhflo3DyKMaSTLKYcYR1rjypPNVAOiqqmKEwZFhsl",
+	"8e4QZIhJyeu9/vOzVLRCSr9glP/yWXZg60xC1uJKzCSD6xFYvwKIRAnFRHi+l7LYe+2dwgSfrl953z9/",
+	"//8DAPkPbMHKAwEA",
 }
 
 // GetSwagger returns the content of the embedded swagger specification file

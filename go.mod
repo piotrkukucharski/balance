@@ -5,6 +5,7 @@ go 1.27.2
 require (
 	github.com/cucumber/godog v0.16.0
 	github.com/getkin/kin-openapi v0.127.0
+	github.com/go-co-op/gocron/v2 v2.23.0
 	github.com/go-rod/rod v0.116.2
 	github.com/google/uuid v1.6.0
 	github.com/labstack/echo/v4 v4.16.0
@@ -15,13 +16,13 @@ require (
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.60.0
 	golang.org/x/text v0.43.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/cucumber/gherkin/go/v42 v42.0.0 // indirect
 	github.com/cucumber/messages/go/v34 v34.2.0 // indirect
-	github.com/go-co-op/gocron/v2 v2.23.0 // indirect
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect
 	github.com/go-openapi/swag v0.23.0 // indirect
 	github.com/hashicorp/go-immutable-radix v1.3.1 // indirect
@@ -47,5 +48,4 @@ require (
 	github.com/ysmood/leakless v0.9.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

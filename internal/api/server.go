@@ -160,13 +160,25 @@ func (s *Server) RegisterUser(ctx echo.Context) error {
 		return sendError(ctx, http.StatusInternalServerError, "Registration failed", "INTERNAL_ERROR", nil)
 	}
 
+	var locale, dateFormat, timeFormat, numberFormat string
+	var createdAt int64
+	_ = s.mainDB.QueryRowContext(ctx.Request().Context(), `
+		SELECT locale, date_format, time_format, number_format, created_at FROM users WHERE id = ?`, userID).Scan(
+		&locale, &dateFormat, &timeFormat, &numberFormat, &createdAt)
+	if createdAt == 0 {
+		createdAt = time.Now().UTC().UnixMicro()
+	}
+
 	userUUID, _ := uuid.Parse(userID)
-	now := time.Now().UTC().UnixMicro()
 	return ctx.JSON(http.StatusCreated, UserResponse{
-		Id:          userUUID,
-		Email:       req.Email,
-		DisplayName: req.DisplayName,
-		CreatedAt:   now,
+		Id:           userUUID,
+		Email:        req.Email,
+		DisplayName:  req.DisplayName,
+		Locale:       locale,
+		DateFormat:   dateFormat,
+		TimeFormat:   timeFormat,
+		NumberFormat: numberFormat,
+		CreatedAt:    createdAt,
 	})
 }
 
@@ -178,9 +190,11 @@ func (s *Server) LoginUser(ctx echo.Context) error {
 	}
 
 	emailStr := string(req.Email)
-	var userID, pwdHash, displayName string
+	var userID, pwdHash, displayName, locale, dateFormat, timeFormat, numberFormat string
+	var createdAt int64
 	err := s.mainDB.QueryRowContext(ctx.Request().Context(), `
-		SELECT id, password_hash, display_name FROM users WHERE email = ?`, emailStr).Scan(&userID, &pwdHash, &displayName)
+		SELECT id, password_hash, display_name, locale, date_format, time_format, number_format, created_at FROM users WHERE email = ?`, emailStr).Scan(
+		&userID, &pwdHash, &displayName, &locale, &dateFormat, &timeFormat, &numberFormat, &createdAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return sendError(ctx, http.StatusUnauthorized, "Invalid credentials", "UNAUTHORIZED", nil)
@@ -226,10 +240,14 @@ func (s *Server) LoginUser(ctx echo.Context) error {
 	userUUID, _ := uuid.Parse(userID)
 	return ctx.JSON(http.StatusOK, LoginResponse{
 		User: UserResponse{
-			Id:          userUUID,
-			Email:       req.Email,
-			DisplayName: displayName,
-			CreatedAt:   now,
+			Id:           userUUID,
+			Email:        req.Email,
+			DisplayName:  displayName,
+			Locale:       locale,
+			DateFormat:   dateFormat,
+			TimeFormat:   timeFormat,
+			NumberFormat: numberFormat,
+			CreatedAt:    createdAt,
 		},
 	})
 }
@@ -239,7 +257,7 @@ func (s *Server) LogoutUser(ctx echo.Context) error {
 	cookie, err := ctx.Cookie("balance_session")
 	if err == nil && cookie != nil && cookie.Value != "" {
 		hash := auth.HashToken(cookie.Value)
-		s.mainDB.ExecContext(ctx.Request().Context(), `DELETE FROM sessions WHERE session_token_hash = ?`, hash)
+		s.mainDB.ExecContext(ctx.Request().Context(), `DELETE FROM sessions WHERE token_hash = ?`, hash)
 	}
 
 	cleared := new(http.Cookie)
@@ -742,7 +760,6 @@ func (s *Server) AcceptInvitation(ctx echo.Context, token string) error {
 		return sendError(ctx, http.StatusBadRequest, "Invitation expired", "INVITATION_EXPIRED", nil)
 	}
 
-	memberID := domain.NewUUIDv7()
 	tx, err := s.mainDB.BeginTx(ctx.Request().Context(), nil)
 	if err != nil {
 		return sendError(ctx, http.StatusInternalServerError, "DB error", "INTERNAL_ERROR", nil)
@@ -750,10 +767,10 @@ func (s *Server) AcceptInvitation(ctx echo.Context, token string) error {
 	defer tx.Rollback()
 
 	_, err = tx.ExecContext(ctx.Request().Context(), `
-		INSERT INTO budget_members (id, budget_id, user_id, role, created_at)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO budget_members (budget_id, user_id, role, joined_at)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT(budget_id, user_id) DO UPDATE SET role = excluded.role`,
-		memberID, budgetID, userID, role, now,
+		budgetID, userID, role, now,
 	)
 	if err != nil {
 		return sendError(ctx, http.StatusInternalServerError, "Failed joining budget", "INTERNAL_ERROR", nil)
