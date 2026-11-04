@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/clock"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/fx"

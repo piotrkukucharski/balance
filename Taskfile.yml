@@ -88,6 +88,16 @@ tasks:
       - go run ./scripts/worktree.go update-branch {{.CLI_ARGS}}
 
   # Test tasks
+  check:
+    desc: "Fast verification before commit (vet, build cmd/server & cmd/fixtures, catalog keys, unit tests)"
+    cmds:
+      - go vet ./...
+      - go test -run TestValidateCatalogKeys ./internal/i18n/...
+      - go build -o /dev/null ./cmd/server
+      - go build -o /dev/null ./cmd/fixtures
+      - task: test:unit
+      - echo "Pre-commit check passed successfully!"
+
   test:all:
     desc: "Run all unit and integration tests"
     cmds:

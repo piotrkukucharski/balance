@@ -604,6 +604,4 @@ Return JSON strictly matching the BudgetStructure schema.`
 		"duration_ms", durationMs,
 	)
 	return &out, nil
-
-	return &out, nil
 }
