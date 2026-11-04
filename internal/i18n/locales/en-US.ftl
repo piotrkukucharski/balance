@@ -135,6 +135,14 @@ settings-save-btn = Save Settings
 settings-role-notice = You are viewing budget settings with { $role } permissions. Only the OWNER can update budget properties.
 
 # Time Horizons Card
+settings-first-day-card = Week Configuration
+settings-first-day-desc = Configure the starting day of the week for recurring targets and calendar views.
+settings-first-day-label = First Day of Week
+settings-first-day-opt-monday = Monday
+settings-first-day-opt-sunday = Sunday
+settings-first-day-hint = Weekly target schedules and relative day numbers will adapt to this choice.
+settings-first-day-save-btn = Save Week Start
+
 settings-horizons-card = Time Horizons
 settings-horizons-desc = Configure rolling and calendar requirement windows. Each member can pick their default view.
 settings-horizons-user-default = Your Default Horizon

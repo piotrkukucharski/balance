@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/balance/balance/internal/budget"
+	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/fx"
 	"github.com/balance/balance/internal/logger"
 	"github.com/go-co-op/gocron/v2"
@@ -34,9 +36,11 @@ func ParseMode(val string) Mode {
 
 // Config holds configuration for the internal scheduler.
 type Config struct {
-	Mode         Mode
-	FXSyncPeriod time.Duration
-	MainDB       *sql.DB
+	Mode               Mode
+	FXSyncPeriod       time.Duration
+	TargetAdvancePeriod time.Duration
+	MainDB             *sql.DB
+	TenantMgr          *db.TenantDBManager
 }
 
 // Scheduler wraps gocron.Scheduler and manages background recurring jobs.
@@ -51,6 +55,9 @@ type Scheduler struct {
 func New(cfg Config) (*Scheduler, error) {
 	if cfg.FXSyncPeriod <= 0 {
 		cfg.FXSyncPeriod = 12 * time.Hour
+	}
+	if cfg.TargetAdvancePeriod <= 0 {
+		cfg.TargetAdvancePeriod = 1 * time.Hour
 	}
 
 	return &Scheduler{
@@ -108,11 +115,36 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		}
 	}
 
+	// Register worker:advance-targets
+	if s.cfg.MainDB != nil && s.cfg.TenantMgr != nil {
+		advanceTask := func() {
+			jobCtx := logger.WithComponent(context.Background(), "worker:advance-targets")
+			logger.Info(jobCtx, "Internal scheduler executing worker:advance-targets")
+			chk, adv, err := budget.AdvanceAllBudgetsOverdueTargets(jobCtx, s.cfg.MainDB, s.cfg.TenantMgr)
+			if err != nil {
+				logger.Error(jobCtx, "Internal scheduler worker:advance-targets failed", "error", err.Error())
+				return
+			}
+			logger.Info(jobCtx, "Internal scheduler worker:advance-targets completed", "checked", chk, "advanced", adv)
+		}
+
+		_, err = s.scheduler.NewJob(
+			gocron.DurationJob(s.cfg.TargetAdvancePeriod),
+			gocron.NewTask(advanceTask),
+			gocron.WithSingletonMode(gocron.LimitModeReschedule),
+			gocron.WithStartAt(gocron.WithStartImmediately()),
+		)
+		if err != nil {
+			return fmt.Errorf("failed registering worker:advance-targets job: %w", err)
+		}
+	}
+
 	s.scheduler.Start()
 	s.started = true
 	logger.Info(ctx, "Internal scheduler started successfully",
 		"mode", s.cfg.Mode,
 		"fx_sync_period", s.cfg.FXSyncPeriod.String(),
+		"target_advance_period", s.cfg.TargetAdvancePeriod.String(),
 	)
 	return nil
 }

@@ -3,7 +3,70 @@ const csrfTokenVal = window.csrfTokenVal || '';
 const currentCurrency = window.currentCurrency || 'PLN';
 const currentHorizon = window.currentHorizon || 'monthly';
 const currentFilter = window.currentFilter || 'all';
+const userFirstDayOfWeek = window.userFirstDayOfWeek || 'MONDAY';
 const bucketsData = window.bucketsData || [];
+
+function populateScheduleSelects(selectedDow, selectedDom, selectedMoy) {
+    const dowSelect = document.getElementById('target_dow_select');
+    if (dowSelect) {
+        dowSelect.innerHTML = '';
+        // ISO days: 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat, 7=Sun
+        const dayNames = {
+            1: 'Monday',
+            2: 'Tuesday',
+            3: 'Wednesday',
+            4: 'Thursday',
+            5: 'Friday',
+            6: 'Saturday',
+            7: 'Sunday'
+        };
+        // Order based on userFirstDayOfWeek
+        // If SUNDAY: 7=Sun, 1=Mon, 2=Tue... with relative numbering 1..7
+        const isoOrder = userFirstDayOfWeek === 'SUNDAY' ? [7, 1, 2, 3, 4, 5, 6] : [1, 2, 3, 4, 5, 6, 7];
+        isoOrder.forEach((isoDay, index) => {
+            const relNum = index + 1;
+            const opt = document.createElement('option');
+            opt.value = isoDay;
+            opt.innerText = `${relNum} - ${dayNames[isoDay]}`;
+            if (selectedDow && parseInt(selectedDow) === isoDay) {
+                opt.selected = true;
+            } else if (!selectedDow && index === 0) {
+                opt.selected = true;
+            }
+            dowSelect.appendChild(opt);
+        });
+    }
+
+    const domSelect = document.getElementById('target_dom_select');
+    if (domSelect) {
+        domSelect.innerHTML = '';
+        const defDom = selectedDom ? parseInt(selectedDom) : 1;
+        for (let d = 1; d <= 31; d++) {
+            const opt = document.createElement('option');
+            opt.value = d;
+            opt.innerText = d;
+            if (d === defDom) opt.selected = true;
+            domSelect.appendChild(opt);
+        }
+    }
+
+    const moySelect = document.getElementById('target_moy_select');
+    if (moySelect) {
+        moySelect.innerHTML = '';
+        const monthNames = [
+            'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December'
+        ];
+        const defMoy = selectedMoy ? parseInt(selectedMoy) : 1;
+        for (let m = 1; m <= 12; m++) {
+            const opt = document.createElement('option');
+            opt.value = m;
+            opt.innerText = `${m} - ${monthNames[m - 1]}`;
+            if (m === defMoy) opt.selected = true;
+            moySelect.appendChild(opt);
+        }
+    }
+}
 
 window.addEventListener('DOMContentLoaded', () => {
     const toast = document.getElementById('budget-toast');
@@ -601,6 +664,7 @@ function openEditTargetModal(id) {
     }
     document.getElementById('target_lua_script').value = t.LuaScript || '';
 
+    populateScheduleSelects(t.RecurrenceDayOfWeek, t.RecurrenceDayOfMonth, t.RecurrenceMonthOfYear);
     toggleCustomDays();
     hideFormulaPreview();
     hideAIPanel();
@@ -700,6 +764,7 @@ function openNewTargetModal() {
     }
     document.getElementById('target_lua_script').value = '';
 
+    populateScheduleSelects(null, null, null);
     toggleCustomDays();
     hideFormulaPreview();
     hideAIPanel();
@@ -716,18 +781,26 @@ function toggleCustomDays() {
     const dueDateContainer = document.getElementById('target_due_date_container');
     const dueDateInput = document.getElementById('target_due_date');
     const dueDateLabel = document.getElementById('target_due_date_label');
-    if (!cadenceSelect || !customContainer) return;
+
+    const weeklyContainer = document.getElementById('target_schedule_weekly_container');
+    const monthDayContainer = document.getElementById('target_schedule_month_day_container');
+    const annualMonthContainer = document.getElementById('target_schedule_annual_month_container');
+    const domLabel = document.getElementById('target_dom_label');
+
+    if (!cadenceSelect) return;
 
     const val = cadenceSelect.value;
+    const isWeekly = val === 'WEEKLY';
+    const isMonthly = val === 'MONTHLY';
+    const isAnnual = val === 'ANNUAL';
+    const isOneOff = val === 'ONE_OFF';
     const isCustomDays = val === 'CUSTOM_DAYS';
     const isCustomMonths = val === 'CUSTOM_MONTHS';
     const isCustomYears = val === 'CUSTOM_YEARS';
-    const isCustom = isCustomDays || isCustomMonths || isCustomYears;
-    const isOneOff = val === 'ONE_OFF';
-    const isWeeklyMonthlyAnnual = val === 'WEEKLY' || val === 'MONTHLY' || val === 'ANNUAL';
 
-    if (isCustom) {
-        customContainer.classList.remove('hidden');
+    // Interval container visibility
+    if (isCustomDays || isCustomMonths || isCustomYears) {
+        if (customContainer) customContainer.classList.remove('hidden');
         if (isCustomDays) {
             if (rLabel) rLabel.innerText = 'Recurrence Interval (Days)';
             if (rInput && (!rInput.value || parseInt(rInput.value) < 1)) rInput.value = '90';
@@ -739,11 +812,44 @@ function toggleCustomDays() {
             if (rInput && (!rInput.value || parseInt(rInput.value) < 1)) rInput.value = '1';
         }
     } else {
-        customContainer.classList.add('hidden');
+        if (customContainer) customContainer.classList.add('hidden');
     }
 
+    // Weekly container
+    if (weeklyContainer) {
+        if (isWeekly) weeklyContainer.classList.remove('hidden');
+        else weeklyContainer.classList.add('hidden');
+    }
+
+    // Month day container (MONTHLY, ANNUAL, CUSTOM_MONTHS, CUSTOM_YEARS)
+    if (monthDayContainer) {
+        if (isMonthly || isAnnual || isCustomMonths || isCustomYears) {
+            monthDayContainer.classList.remove('hidden');
+            if (domLabel) {
+                if (isMonthly) domLabel.innerText = 'Day of Month (1-31) *';
+                else domLabel.innerText = 'Day of Month (1-31) *';
+            }
+        } else {
+            monthDayContainer.classList.add('hidden');
+        }
+    }
+
+    // Annual month container (ANNUAL, CUSTOM_MONTHS, CUSTOM_YEARS)
+    if (annualMonthContainer) {
+        if (isAnnual || isCustomMonths || isCustomYears) {
+            annualMonthContainer.classList.remove('hidden');
+        } else {
+            annualMonthContainer.classList.add('hidden');
+        }
+    }
+
+    // Due Date Picker (for ONE_OFF and CUSTOM_DAYS)
     if (dueDateContainer && dueDateInput) {
-        if (isCustomMonths || isCustomYears) {
+        if (isOneOff) {
+            dueDateContainer.classList.remove('hidden');
+            dueDateInput.required = false;
+            if (dueDateLabel) dueDateLabel.innerText = 'Target Due Date (Optional)';
+        } else if (isCustomDays) {
             dueDateContainer.classList.remove('hidden');
             dueDateInput.required = true;
             if (dueDateLabel) dueDateLabel.innerHTML = 'Anchor Due Date <span class="text-error">*</span>';
@@ -751,14 +857,6 @@ function toggleCustomDays() {
                 const d = new Date();
                 dueDateInput.value = d.toISOString().split('T')[0];
             }
-        } else if (isOneOff) {
-            dueDateContainer.classList.remove('hidden');
-            dueDateInput.required = false;
-            if (dueDateLabel) dueDateLabel.innerText = 'Target Due Date (Optional)';
-        } else if (isWeeklyMonthlyAnnual) {
-            dueDateContainer.classList.remove('hidden');
-            dueDateInput.required = false;
-            if (dueDateLabel) dueDateLabel.innerText = 'Anchor Due Date (Optional)';
         } else {
             dueDateContainer.classList.add('hidden');
             dueDateInput.required = false;

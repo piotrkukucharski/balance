@@ -1029,7 +1029,27 @@
                     <input type="number" id="target_recurrence_days" name="recurrence_interval" min="1" max="36500" placeholder="e.g. 90 for quarterly, 180 for semi-annual" class="input input-bordered w-full input-md focus:input-primary font-mono" />
                 </div>
 
-                <!-- Due Date / Anchor Date Input -->
+                <!-- Recurrence Schedule Selectors -->
+                <div id="target_schedule_weekly_container" class="hidden form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs font-semibold">Day of Week <span class="text-error">*</span></span></label>
+                    <select id="target_dow_select" name="recurrence_day_of_week" class="select select-bordered w-full select-md focus:select-primary">
+                    </select>
+                </div>
+
+                <div id="target_schedule_month_day_container" class="hidden form-control">
+                    <label class="label pb-1"><span id="target_dom_label" class="label-text font-medium text-xs font-semibold">Day of Month (1-31) <span class="text-error">*</span></span></label>
+                    <select id="target_dom_select" name="recurrence_day_of_month" class="select select-bordered w-full select-md focus:select-primary font-mono">
+                    </select>
+                    <span id="target_dom_hint" class="text-[10px] text-base-content/50 mt-1">If month has fewer days (e.g. Feb 28/29), target falls on the last day of the month.</span>
+                </div>
+
+                <div id="target_schedule_annual_month_container" class="hidden form-control">
+                    <label class="label pb-1"><span class="label-text font-medium text-xs font-semibold">Month of Year (1-12) <span class="text-error">*</span></span></label>
+                    <select id="target_moy_select" name="recurrence_month_of_year" class="select select-bordered w-full select-md focus:select-primary">
+                    </select>
+                </div>
+
+                <!-- Due Date / Anchor Date Input (For ONE_OFF and CUSTOM_DAYS) -->
                 <div id="target_due_date_container" class="hidden form-control">
                     <label class="label pb-1"><span id="target_due_date_label" class="label-text font-medium text-xs font-semibold">Anchor Due Date</span></label>
                     <input type="date" id="target_due_date" name="due_date" class="input input-bordered w-full input-md focus:input-primary font-mono" />
@@ -1110,6 +1130,7 @@
     window.currentCurrency = '{{.DefaultCurr}}';
     window.currentHorizon = '{{.HorizonParam}}';
     window.currentFilter = '{{.FilterParam}}';
+    window.userFirstDayOfWeek = '{{.UserFirstDayOfWeek}}';
     window.bucketsData = {{.BucketsJSON}};
 </script>
 <script src="{{staticPath "workspace/budget.js"}}"></script>

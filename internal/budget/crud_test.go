@@ -22,14 +22,9 @@ func setupTestTenantDB(t *testing.T) *sql.DB {
 		t.Fatalf("failed applying pragmas: %v", err)
 	}
 
-	// Apply tenant migration
-	migrationContent, err := db.MigrationsFS.ReadFile("migrations/tenant/00001_init_tenant.sql")
-	if err != nil {
-		t.Fatalf("failed reading tenant migration: %v", err)
-	}
-
-	if _, err := sqliteDB.Exec(string(migrationContent)); err != nil {
-		t.Fatalf("failed executing migration: %v", err)
+	// Apply all tenant migrations
+	if err := db.ApplyMigrations(sqliteDB, "migrations/tenant"); err != nil {
+		t.Fatalf("failed applying tenant migrations: %v", err)
 	}
 
 	return sqliteDB

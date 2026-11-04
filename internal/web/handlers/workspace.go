@@ -86,6 +86,7 @@ type settingsPageViewData struct {
 	BottomDockHTML          template.HTML
 	DateTimeFormatterScript template.HTML
 	UserDefaultHorizonID    string
+	UserFirstDayOfWeek      string
 	Horizons                []horizonOptionViewData
 	VisibleHorizons         []horizonOptionViewData
 }
@@ -242,6 +243,7 @@ func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
 
 	// Fetch user default horizon and all horizons
 	userDefaultHorizon, _ := budget.GetUserDefaultHorizon(c.Request().Context(), tenantDB, userID)
+	userFirstDayOfWeek, _ := budget.GetUserFirstDayOfWeek(c.Request().Context(), tenantDB, userID)
 	allHorizons, _ := budget.ListBudgetHorizons(c.Request().Context(), tenantDB, false)
 
 	var horizonsViewData []horizonOptionViewData
@@ -291,6 +293,7 @@ func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
 		BottomDockHTML:          template.HTML(bottomDockHTML),
 		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),
 		UserDefaultHorizonID:    userDefaultHorizon,
+		UserFirstDayOfWeek:      userFirstDayOfWeek,
 		Horizons:                horizonsViewData,
 		VisibleHorizons:         visibleHorizonsViewData,
 	})
@@ -299,6 +302,24 @@ func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
 	}
 
 	return c.HTML(http.StatusOK, htmlContent)
+}
+
+// SetUserFirstDayOfWeekHandler updates current user's preferred first day of week preference.
+func (h *WorkspaceHandler) SetUserFirstDayOfWeekHandler(c echo.Context) error {
+	budgetID := c.Param("budgetId")
+	tenantDB := c.Get(ContextBudgetDBKey).(*sql.DB)
+	userID := c.Get(ContextUserIDKey).(string)
+
+	day := strings.TrimSpace(c.FormValue("first_day_of_week"))
+	if day == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "first_day_of_week is required")
+	}
+
+	if err := budget.SetUserFirstDayOfWeek(c.Request().Context(), tenantDB, userID, day); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/settings", budgetID))
 }
 
 // SetUserDefaultHorizonHandler updates current user's default horizon preference.
@@ -730,10 +751,13 @@ type targetViewData struct {
 	LastFormulaError    *string `json:"LastFormulaError"`
 	UsesRuntime         int     `json:"UsesRuntime"`
 	Currency            string  `json:"Currency"`
-	RecurrenceCadence   string  `json:"RecurrenceCadence"`
-	RecurrenceInterval  int     `json:"RecurrenceInterval"`
-	RecurrenceDays      int     `json:"RecurrenceDays"`
-	CadenceDisplay      string  `json:"-"`
+	RecurrenceCadence     string  `json:"RecurrenceCadence"`
+	RecurrenceInterval    int     `json:"RecurrenceInterval"`
+	RecurrenceDays        int     `json:"RecurrenceDays"`
+	RecurrenceDayOfWeek   *int    `json:"RecurrenceDayOfWeek"`
+	RecurrenceDayOfMonth  *int    `json:"RecurrenceDayOfMonth"`
+	RecurrenceMonthOfYear *int    `json:"RecurrenceMonthOfYear"`
+	CadenceDisplay        string  `json:"-"`
 	DueDate             int64   `json:"DueDate"`
 	DueText             string  `json:"-"`
 	GoalText            string  `json:"-"`
@@ -837,6 +861,7 @@ type budgetPageViewData struct {
 	HasOtherBudgets              bool
 	OtherBudgets                 []otherBudgetOptionViewData
 	AvailableCurrencies          []string
+	UserFirstDayOfWeek           string
 	BucketsJSON                  template.JS
 }
 
@@ -1108,11 +1133,14 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	}
 
 	// 3. Fetch all active targets
+	userFirstDayOfWeek, _ := budget.GetUserFirstDayOfWeek(c.Request().Context(), tenantDB, userID)
 	snap, _ := budget.BuildBudgetSnapshot(c.Request().Context(), tenantDB, defaultCurr, windowDays, tz)
 
 	targetRows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT id, bucket_id, name, target_type, priority, sort_order, amount_minor, currency,
-		       recurrence_cadence, recurrence_interval, due_date, non_spending_strategy,
+		       recurrence_cadence, recurrence_interval,
+		       recurrence_day_of_week, recurrence_day_of_month, recurrence_month_of_year,
+		       due_date, non_spending_strategy,
 		       ceiling_amount_minor, current_funded_minor, amount_mode, lua_script, last_formula_error, uses_runtime
 		FROM targets_projection
 		WHERE is_archived = 0
@@ -1125,11 +1153,15 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 			var nameNull sql.NullString
 			var dueDate sql.NullInt64
 			var rInterval sql.NullInt64
+			var rDow sql.NullInt64
+			var rDom sql.NullInt64
+			var rMoy sql.NullInt64
 			var ceiling sql.NullInt64
 			var luaScriptNull sql.NullString
 			var lastErrNull sql.NullString
 			targetRows.Scan(&t.ID, &t.BucketID, &nameNull, &t.TargetType, &t.Priority, &t.SortOrder,
 				&t.AmountMinor, &t.Currency, &t.RecurrenceCadence, &rInterval,
+				&rDow, &rDom, &rMoy,
 				&dueDate, &t.NonSpendingStrategy, &ceiling, &t.CurrentFundedMinor,
 				&t.AmountMode, &luaScriptNull, &lastErrNull, &t.UsesRuntime)
 			if nameNull.Valid {
@@ -1138,6 +1170,18 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 			if rInterval.Valid {
 				t.RecurrenceInterval = int(rInterval.Int64)
 				t.RecurrenceDays = t.RecurrenceInterval
+			}
+			if rDow.Valid {
+				v := int(rDow.Int64)
+				t.RecurrenceDayOfWeek = &v
+			}
+			if rDom.Valid {
+				v := int(rDom.Int64)
+				t.RecurrenceDayOfMonth = &v
+			}
+			if rMoy.Valid {
+				v := int(rMoy.Int64)
+				t.RecurrenceMonthOfYear = &v
 			}
 			if dueDate.Valid {
 				t.DueDate = dueDate.Int64
@@ -1183,19 +1227,22 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 			}
 
 			tDef := &budget.TargetDefinition{
-				ID:                  t.ID,
-				BucketID:            t.BucketID,
-				Name:                t.Name,
-				Priority:            t.Priority,
-				SortOrder:           t.SortOrder,
-				AmountMinor:         t.AmountMinor,
-				Currency:            t.Currency,
-				RecurrenceCadence:   t.RecurrenceCadence,
-				RecurrenceInterval:  t.RecurrenceInterval,
-				DueDate:             t.DueDate,
-				NonSpendingStrategy: t.NonSpendingStrategy,
-				CeilingAmountMinor:  t.CeilingAmountMinor,
-				CurrentFundedMinor:  t.CurrentFundedMinor,
+				ID:                    t.ID,
+				BucketID:              t.BucketID,
+				Name:                  t.Name,
+				Priority:              t.Priority,
+				SortOrder:             t.SortOrder,
+				AmountMinor:           t.AmountMinor,
+				Currency:              t.Currency,
+				RecurrenceCadence:     t.RecurrenceCadence,
+				RecurrenceInterval:    t.RecurrenceInterval,
+				RecurrenceDayOfWeek:   t.RecurrenceDayOfWeek,
+				RecurrenceDayOfMonth:  t.RecurrenceDayOfMonth,
+				RecurrenceMonthOfYear: t.RecurrenceMonthOfYear,
+				DueDate:               t.DueDate,
+				NonSpendingStrategy:   t.NonSpendingStrategy,
+				CeilingAmountMinor:    t.CeilingAmountMinor,
+				CurrentFundedMinor:    t.CurrentFundedMinor,
 			}
 			t.RequiredMinor = budget.ComputeTargetRequirementInLoc(tDef, windowDays, nowInTz, loc)
 			if t.RequiredMinor > 0 {
@@ -1844,6 +1891,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		HasOtherBudgets:            hasOtherBudgets,
 		OtherBudgets:               otherBudgets,
 		AvailableCurrencies:        availCurrencies,
+		UserFirstDayOfWeek:         userFirstDayOfWeek,
 		BucketsJSON:                template.JS(rawBucketsJSON),
 	}
 
@@ -2312,6 +2360,52 @@ func (h *WorkspaceHandler) CreateTarget(c echo.Context) error {
 			dueDate = &u
 		}
 	}
+	var rDow *int
+	if dowStr := strings.TrimSpace(c.FormValue("recurrence_day_of_week")); dowStr != "" {
+		if v, err := strconv.Atoi(dowStr); err == nil && v >= 1 && v <= 7 {
+			rDow = &v
+		}
+	}
+	var rDom *int
+	if domStr := strings.TrimSpace(c.FormValue("recurrence_day_of_month")); domStr != "" {
+		if v, err := strconv.Atoi(domStr); err == nil && v >= 1 && v <= 31 {
+			rDom = &v
+		}
+	}
+	var rMoy *int
+	if moyStr := strings.TrimSpace(c.FormValue("recurrence_month_of_year")); moyStr != "" {
+		if v, err := strconv.Atoi(moyStr); err == nil && v >= 1 && v <= 12 {
+			rMoy = &v
+		}
+	}
+
+	// Compute next due date using RecurrenceSchedule if cadence is recurring and has schedule inputs
+	loc := time.UTC
+	if bTz, _ := h.tenantMgr.GetBudgetTimezone(c.Request().Context(), budgetID); bTz != "" {
+		if l, err := time.LoadLocation(bTz); err == nil {
+			loc = l
+		}
+	}
+	nowInTz := time.Now().In(loc)
+
+	sched := budget.RecurrenceSchedule{
+		Cadence:     cadence,
+		Interval:    rInterval,
+		DayOfWeek:   rDow,
+		DayOfMonth:  rDom,
+		MonthOfYear: rMoy,
+	}
+	if dueDate != nil {
+		tVal := time.UnixMicro(*dueDate).In(loc)
+		sched.AnchorDate = &tVal
+	}
+	if cadence != budget.CadenceOneOff && (rDow != nil || rDom != nil || dueDate != nil) {
+		if nextDate, ok := sched.NextDueDate(nowInTz, loc); ok && !nextDate.IsZero() {
+			u := nextDate.UnixMicro()
+			dueDate = &u
+		}
+	}
+
 	strategy := c.FormValue("non_spending_strategy")
 	if strategy == "" {
 		strategy = budget.StrategyRollOver
@@ -2343,21 +2437,24 @@ func (h *WorkspaceHandler) CreateTarget(c echo.Context) error {
 	}
 
 	_, err = budget.CreateTarget(c.Request().Context(), tenantDB, budget.CreateTargetInput{
-		BucketID:            bucketID,
-		Name:                name,
-		TargetType:          tType,
-		Priority:            priority,
-		AmountMode:          amountMode,
-		AmountMinor:         amtMinor,
-		LuaScript:           luaScript,
-		Currency:            currency,
-		RecurrenceCadence:   cadence,
-		RecurrenceInterval:  rInterval,
-		DueDate:             dueDate,
-		NonSpendingStrategy: strategy,
-		CeilingAmountMinor:  ceilingMinor,
-		AgentID:             userID,
-		CorrelationID:       corrID,
+		BucketID:              bucketID,
+		Name:                  name,
+		TargetType:            tType,
+		Priority:              priority,
+		AmountMode:            amountMode,
+		AmountMinor:           amtMinor,
+		LuaScript:             luaScript,
+		Currency:              currency,
+		RecurrenceCadence:     cadence,
+		RecurrenceInterval:    rInterval,
+		RecurrenceDayOfWeek:   rDow,
+		RecurrenceDayOfMonth:  rDom,
+		RecurrenceMonthOfYear: rMoy,
+		DueDate:               dueDate,
+		NonSpendingStrategy:   strategy,
+		CeilingAmountMinor:    ceilingMinor,
+		AgentID:               userID,
+		CorrelationID:         corrID,
 	})
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
@@ -2415,6 +2512,52 @@ func (h *WorkspaceHandler) UpdateTarget(c echo.Context) error {
 			dueDate = &u
 		}
 	}
+	var rDow *int
+	if dowStr := strings.TrimSpace(c.FormValue("recurrence_day_of_week")); dowStr != "" {
+		if v, err := strconv.Atoi(dowStr); err == nil && v >= 1 && v <= 7 {
+			rDow = &v
+		}
+	}
+	var rDom *int
+	if domStr := strings.TrimSpace(c.FormValue("recurrence_day_of_month")); domStr != "" {
+		if v, err := strconv.Atoi(domStr); err == nil && v >= 1 && v <= 31 {
+			rDom = &v
+		}
+	}
+	var rMoy *int
+	if moyStr := strings.TrimSpace(c.FormValue("recurrence_month_of_year")); moyStr != "" {
+		if v, err := strconv.Atoi(moyStr); err == nil && v >= 1 && v <= 12 {
+			rMoy = &v
+		}
+	}
+
+	// Compute next due date using RecurrenceSchedule if cadence is recurring and has schedule inputs
+	loc := time.UTC
+	if bTz, _ := h.tenantMgr.GetBudgetTimezone(c.Request().Context(), budgetID); bTz != "" {
+		if l, err := time.LoadLocation(bTz); err == nil {
+			loc = l
+		}
+	}
+	nowInTz := time.Now().In(loc)
+
+	sched := budget.RecurrenceSchedule{
+		Cadence:     cadence,
+		Interval:    rInterval,
+		DayOfWeek:   rDow,
+		DayOfMonth:  rDom,
+		MonthOfYear: rMoy,
+	}
+	if dueDate != nil {
+		tVal := time.UnixMicro(*dueDate).In(loc)
+		sched.AnchorDate = &tVal
+	}
+	if cadence != budget.CadenceOneOff && (rDow != nil || rDom != nil || dueDate != nil) {
+		if nextDate, ok := sched.NextDueDate(nowInTz, loc); ok && !nextDate.IsZero() {
+			u := nextDate.UnixMicro()
+			dueDate = &u
+		}
+	}
+
 	strategy := c.FormValue("non_spending_strategy")
 	if strategy == "" {
 		strategy = budget.StrategyRollOver
@@ -2446,20 +2589,23 @@ func (h *WorkspaceHandler) UpdateTarget(c echo.Context) error {
 	}
 
 	err := budget.UpdateTarget(c.Request().Context(), tenantDB, budget.UpdateTargetInput{
-		ID:                  targetID,
-		Name:                name,
-		TargetType:          tType,
-		Priority:            priority,
-		AmountMode:          amountMode,
-		AmountMinor:         amtMinor,
-		LuaScript:           luaScript,
-		RecurrenceCadence:   cadence,
-		RecurrenceInterval:  rInterval,
-		DueDate:             dueDate,
-		NonSpendingStrategy: strategy,
-		CeilingAmountMinor:  ceilingMinor,
-		AgentID:             userID,
-		CorrelationID:       corrID,
+		ID:                    targetID,
+		Name:                  name,
+		TargetType:            tType,
+		Priority:              priority,
+		AmountMode:            amountMode,
+		AmountMinor:           amtMinor,
+		LuaScript:             luaScript,
+		RecurrenceCadence:     cadence,
+		RecurrenceInterval:    rInterval,
+		RecurrenceDayOfWeek:   rDow,
+		RecurrenceDayOfMonth:  rDom,
+		RecurrenceMonthOfYear: rMoy,
+		DueDate:               dueDate,
+		NonSpendingStrategy:   strategy,
+		CeilingAmountMinor:    ceilingMinor,
+		AgentID:               userID,
+		CorrelationID:         corrID,
 	})
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())

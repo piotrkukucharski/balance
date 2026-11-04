@@ -32,6 +32,15 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && (os.Args[1] == "worker:advance-targets" || os.Args[1] == "advance-targets") {
+		ctx := logger.WithComponent(context.Background(), "worker:advance-targets")
+		if err := budget.RunAdvanceTargetsCLI(ctx, os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Worker error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	ctx := context.Background()
 	ctx = logger.WithComponent(ctx, "infra:server")
 
@@ -159,6 +168,7 @@ func main() {
 	tenantViewer.GET("/automations/:id/version/:ver/load", automationsHandler.LoadVersion)
 	tenantViewer.GET("/settings", workspaceHandler.SettingsView)
 	tenantViewer.POST("/settings/default-horizon", workspaceHandler.SetUserDefaultHorizonHandler)
+	tenantViewer.POST("/settings/first-day-of-week", workspaceHandler.SetUserFirstDayOfWeekHandler)
 	tenantViewer.GET("/settings/horizons/affected-users", workspaceHandler.CheckHorizonAffectedUsers)
 	tenantViewer.GET("/settings/members", membersHandler.MembersView)
 	tenantViewer.GET("/settings/tokens", tokensHandler.TokensView)
@@ -274,8 +284,9 @@ func main() {
 
 	schedulerMode := scheduler.ParseMode(os.Getenv("SCHEDULER_MODE"))
 	sched, err := scheduler.New(scheduler.Config{
-		Mode:   schedulerMode,
-		MainDB: mainDB,
+		Mode:      schedulerMode,
+		MainDB:    mainDB,
+		TenantMgr: tenantMgr,
 	})
 	if err != nil {
 		logger.Error(ctx, "Failed initializing scheduler", "error", err.Error())

@@ -83,6 +83,39 @@
             </div>
         </div>
 
+        <!-- Week Configuration Card -->
+        <div class="card card-border bg-base-100 border-base-300 shadow-md">
+            <div class="card-body p-6">
+                <div class="flex items-center justify-between mb-2">
+                    <div>
+                        <h2 class="card-title text-base font-bold flex items-center gap-2">
+                            <span>📅</span>
+                            <span>{{t .Locale "settings-first-day-card"}}</span>
+                        </h2>
+                        <p class="text-xs text-base-content/60 mt-1">{{t .Locale "settings-first-day-desc"}}</p>
+                    </div>
+                </div>
+                <div class="bg-base-200/50 p-4 rounded-xl border border-base-300">
+                    <form method="POST" action="/budgets/{{.BudgetID}}/settings/first-day-of-week" class="flex flex-col sm:flex-row sm:items-end gap-3">
+                        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
+                        <div class="form-control flex-1">
+                            <label class="label pb-1">
+                                <span class="label-text font-bold text-xs">{{t .Locale "settings-first-day-label"}}</span>
+                            </label>
+                            <select name="first_day_of_week" class="select select-bordered w-full select-sm focus:select-primary text-xs font-semibold">
+                                <option value="MONDAY" {{if eq .UserFirstDayOfWeek "MONDAY"}}selected{{end}}>{{t .Locale "settings-first-day-opt-monday"}}</option>
+                                <option value="SUNDAY" {{if eq .UserFirstDayOfWeek "SUNDAY"}}selected{{end}}>{{t .Locale "settings-first-day-opt-sunday"}}</option>
+                            </select>
+                            <span class="text-[11px] text-base-content/50 mt-1">{{t .Locale "settings-first-day-hint"}}</span>
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-sm font-semibold shadow-xs shrink-0">
+                            {{t .Locale "settings-first-day-save-btn"}}
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
         <!-- Time Horizons Management Card -->
         <div class="card card-border bg-base-100 border-base-300 shadow-md">
             <div class="card-body p-6">

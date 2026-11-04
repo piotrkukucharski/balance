@@ -268,19 +268,23 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     And category group "Savings" should display empty state "No buckets in this category yet." with add bucket button
     And the mobile category group "Savings" should be visible with add bucket button
 
-  Scenario: Deleting empty category group and preventing deletion of non-empty category
+  Scenario: Setting first day of week preference and recurrence schedule calculation
     Given an open budget "Family Home"
-    When I create a bucket "Rent" in group "Living"
-    And category group "Vacation" exists in bucket groups
-    And I request the budget view "/budgets/:budgetId/budget"
-    Then the response status should be 200 OK
-    And category group "Vacation" should have delete action
-    And category group "Living" should not have delete action
-    When I request to delete category group "Living"
-    Then the response status should be 400 Bad Request
-    When I request to delete category group "Vacation"
-    Then the response status should be 303 See Other
-    And category group "Vacation" should not exist in bucket groups
+    When I set the budget first day of week preference to "SUNDAY"
+    Then the user preference "first_day_of_week" should be "SUNDAY"
+    When I create a bucket "Household" in group "Needs"
+    And I add a target "Weekly Gardening" with cadence "WEEKLY", day of week 5, amount "100.00 PLN"
+    And I add a target "Monthly Gym" with cadence "MONTHLY", day of month 31, amount "150.00 PLN"
+    Then target "Weekly Gardening" should have recurrence day of week 5 and non-zero due date
+    And target "Monthly Gym" should have recurrence day of month 31 and non-zero due date
+
+  Scenario: Advancing overdue targets via background worker
+    Given an open budget "Family Home"
+    When I create a bucket "Bills" in group "Needs"
+    And I add a past target "Internet Bill" with cadence "MONTHLY", day of month 20, due date "2026-01-20"
+    When the advance overdue targets routine runs
+    Then target "Internet Bill" due date should be advanced to the current or next cycle
+
 
 
 

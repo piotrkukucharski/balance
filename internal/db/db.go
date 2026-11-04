@@ -580,6 +580,17 @@ func ensureTenantSchemaCompat(ctx context.Context, db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_budget_preferences_user ON budget_preferences(user_id);
 	`)
 
+	// Ensure targets_projection has recurrence schedule columns
+	var hasRecurrenceDow int
+	_ = db.QueryRowContext(ctx, "SELECT count(*) FROM pragma_table_info('targets_projection') WHERE name = 'recurrence_day_of_week'").Scan(&hasRecurrenceDow)
+	if hasRecurrenceDow == 0 {
+		_, _ = db.ExecContext(ctx, `
+			ALTER TABLE targets_projection ADD COLUMN recurrence_day_of_week INTEGER CHECK(recurrence_day_of_week IS NULL OR (recurrence_day_of_week >= 1 AND recurrence_day_of_week <= 7));
+			ALTER TABLE targets_projection ADD COLUMN recurrence_day_of_month INTEGER CHECK(recurrence_day_of_month IS NULL OR (recurrence_day_of_month >= 1 AND recurrence_day_of_month <= 31));
+			ALTER TABLE targets_projection ADD COLUMN recurrence_month_of_year INTEGER CHECK(recurrence_month_of_year IS NULL OR (recurrence_month_of_year >= 1 AND recurrence_month_of_year <= 12));
+		`)
+	}
+
 	return nil
 }
 

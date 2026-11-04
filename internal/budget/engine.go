@@ -37,6 +37,9 @@ type TargetDefinition struct {
 	Currency            string
 	RecurrenceCadence   string
 	RecurrenceInterval  int   // >= 1 for CUSTOM_DAYS, CUSTOM_MONTHS, CUSTOM_YEARS
+	RecurrenceDayOfWeek *int  // ISO 1..7 for WEEKLY
+	RecurrenceDayOfMonth *int // 1..31 for MONTHLY, ANNUAL, CUSTOM_MONTHS, CUSTOM_YEARS
+	RecurrenceMonthOfYear *int // 1..12 for ANNUAL, CUSTOM_MONTHS, CUSTOM_YEARS
 	DueDate             int64 // UTC microsecond timestamp
 	NonSpendingStrategy string
 	CeilingAmountMinor  *int64
@@ -204,15 +207,40 @@ func computeCalendarRecurring(t *TargetDefinition, windowDays int, now time.Time
 	nowInLoc := now.In(loc)
 	windowEnd := nowInLoc.AddDate(0, 0, windowDays)
 
+	targetDay := 0
+	if t.RecurrenceDayOfMonth != nil && *t.RecurrenceDayOfMonth > 0 {
+		targetDay = *t.RecurrenceDayOfMonth
+	} else if t.DueDate > 0 {
+		targetDay = anchor.Day()
+	}
+
+	stepNext := func(d time.Time) time.Time {
+		base := d.AddDate(yearsStep, monthsStep, 0)
+		if targetDay > 0 {
+			cDay := ClampDayOfMonth(base.Year(), int(base.Month()), targetDay)
+			return time.Date(base.Year(), base.Month(), cDay, base.Hour(), base.Minute(), base.Second(), base.Nanosecond(), loc)
+		}
+		return base
+	}
+
+	stepPrev := func(d time.Time) time.Time {
+		base := d.AddDate(-yearsStep, -monthsStep, 0)
+		if targetDay > 0 {
+			cDay := ClampDayOfMonth(base.Year(), int(base.Month()), targetDay)
+			return time.Date(base.Year(), base.Month(), cDay, base.Hour(), base.Minute(), base.Second(), base.Nanosecond(), loc)
+		}
+		return base
+	}
+
 	// Step forward or backward to align with now
 	curr := anchor
 	if curr.Before(nowInLoc) {
 		for curr.Before(nowInLoc) {
-			curr = curr.AddDate(yearsStep, monthsStep, 0)
+			curr = stepNext(curr)
 		}
 	} else {
 		for {
-			prev := curr.AddDate(-yearsStep, -monthsStep, 0)
+			prev := stepPrev(curr)
 			if !prev.After(nowInLoc) {
 				break
 			}
@@ -227,7 +255,7 @@ func computeCalendarRecurring(t *TargetDefinition, windowDays int, now time.Time
 	for !iter.After(windowEnd) {
 		occurrences++
 		lastOccurrence = iter
-		iter = iter.AddDate(yearsStep, monthsStep, 0)
+		iter = stepNext(iter)
 	}
 
 	var baseRequired int64

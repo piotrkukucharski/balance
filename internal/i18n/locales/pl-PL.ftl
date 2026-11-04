@@ -135,6 +135,14 @@ settings-save-btn = Zapisz ustawienia
 settings-role-notice = Przeglądasz ustawienia budżetu z uprawnieniami { $role }. Tylko WŁAŚCICIEL (OWNER) może modyfikować parametry budżetu.
 
 # Time Horizons Card
+settings-first-day-card = Konfiguracja Tygodnia
+settings-first-day-desc = Skonfiguruj preferowany dzień początku tygodnia dla celów cyklicznych i widoków kalendarza.
+settings-first-day-label = Pierwszy dzień tygodnia
+settings-first-day-opt-monday = Poniedziałek
+settings-first-day-opt-sunday = Niedziela
+settings-first-day-hint = Harmonogramy celów tygodniowych oraz relatywna numeracja dni dostosują się do tego wyboru.
+settings-first-day-save-btn = Zapisz początek tygodnia
+
 settings-horizons-card = Horyzonty Czasowe
 settings-horizons-desc = Konfiguruj kroczące i kalendarzowe okna kalkulacji. Każdy członek może wybrać swój domyślny widok.
 settings-horizons-user-default = Twój Domyślny Horyzont

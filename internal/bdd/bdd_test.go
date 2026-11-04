@@ -3723,6 +3723,188 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	ctx.Step(`^I set the budget first day of week preference to "([^"]*)"$`, func(firstDay string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		return budget.SetUserFirstDayOfWeek(context.Background(), bDB, tc.activeUserID, firstDay)
+	})
+
+	ctx.Step(`^the user preference "([^"]*)" should be "([^"]*)"$`, func(key, expectedVal string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var val string
+		err = bDB.QueryRow(`SELECT value FROM budget_preferences WHERE user_id = ? AND key = ?`, tc.activeUserID, key).Scan(&val)
+		if err != nil {
+			return fmt.Errorf("preference %s not found: %w", key, err)
+		}
+		if val != expectedVal {
+			return fmt.Errorf("expected preference %s to be %s, got %s", key, expectedVal, val)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I add a target "([^"]*)" with cadence "([^"]*)", day of week (\d+), amount "([^"]*)"$`, func(name, cadence string, dow int, amt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		sched := budget.RecurrenceSchedule{
+			Cadence:   cadence,
+			DayOfWeek: &dow,
+		}
+		nextDate, _ := sched.NextDueDate(time.Now().UTC(), time.UTC)
+		dueMic := nextDate.UnixMicro()
+
+		tID, err := budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:            activeBucketID,
+			Name:                name,
+			TargetType:          "EXPENSE",
+			Priority:            2,
+			AmountMinor:         parseAmountStr(amt),
+			Currency:            "PLN",
+			RecurrenceCadence:   cadence,
+			RecurrenceDayOfWeek: &dow,
+			DueDate:             &dueMic,
+			AgentID:             tc.activeUserID,
+			CorrelationID:       domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		activeTargetID = tID
+		return nil
+	})
+
+	ctx.Step(`^I add a target "([^"]*)" with cadence "([^"]*)", day of month (\d+), amount "([^"]*)"$`, func(name, cadence string, dom int, amt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		sched := budget.RecurrenceSchedule{
+			Cadence:    cadence,
+			DayOfMonth: &dom,
+		}
+		nextDate, _ := sched.NextDueDate(time.Now().UTC(), time.UTC)
+		dueMic := nextDate.UnixMicro()
+
+		tID, err := budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:             activeBucketID,
+			Name:                 name,
+			TargetType:           "EXPENSE",
+			Priority:             2,
+			AmountMinor:          parseAmountStr(amt),
+			Currency:             "PLN",
+			RecurrenceCadence:    cadence,
+			RecurrenceDayOfMonth: &dom,
+			DueDate:              &dueMic,
+			AgentID:              tc.activeUserID,
+			CorrelationID:        domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		activeTargetID = tID
+		return nil
+	})
+
+	ctx.Step(`^target "([^"]*)" should have recurrence day of week (\d+) and non-zero due date$`, func(name string, expectedDow int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var dow sql.NullInt64
+		var dueMic int64
+		err = bDB.QueryRow(`SELECT recurrence_day_of_week, due_date FROM targets_projection WHERE name = ? AND is_archived = 0`, name).Scan(&dow, &dueMic)
+		if err != nil {
+			return fmt.Errorf("target %s not found: %w", name, err)
+		}
+		if !dow.Valid || int(dow.Int64) != expectedDow {
+			return fmt.Errorf("expected recurrence_day_of_week %d, got %v", expectedDow, dow)
+		}
+		if dueMic <= 0 {
+			return fmt.Errorf("expected non-zero due date, got %d", dueMic)
+		}
+		return nil
+	})
+
+	ctx.Step(`^target "([^"]*)" should have recurrence day of month (\d+) and non-zero due date$`, func(name string, expectedDom int) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var dom sql.NullInt64
+		var dueMic int64
+		err = bDB.QueryRow(`SELECT recurrence_day_of_month, due_date FROM targets_projection WHERE name = ? AND is_archived = 0`, name).Scan(&dom, &dueMic)
+		if err != nil {
+			return fmt.Errorf("target %s not found: %w", name, err)
+		}
+		if !dom.Valid || int(dom.Int64) != expectedDom {
+			return fmt.Errorf("expected recurrence_day_of_month %d, got %v", expectedDom, dom)
+		}
+		if dueMic <= 0 {
+			return fmt.Errorf("expected non-zero due date, got %d", dueMic)
+		}
+		return nil
+	})
+
+	ctx.Step(`^I add a past target "([^"]*)" with cadence "([^"]*)", day of month (\d+), due date "([^"]*)"$`, func(name, cadence string, dom int, dueStr string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		tVal, err := time.Parse("2006-01-02", dueStr)
+		if err != nil {
+			return err
+		}
+		dueMic := tVal.UTC().UnixMicro()
+
+		tID, err := budget.CreateTarget(context.Background(), bDB, budget.CreateTargetInput{
+			BucketID:             activeBucketID,
+			Name:                 name,
+			TargetType:           "EXPENSE",
+			Priority:             2,
+			AmountMinor:          10000,
+			Currency:             "PLN",
+			RecurrenceCadence:    cadence,
+			RecurrenceDayOfMonth: &dom,
+			DueDate:              &dueMic,
+			AgentID:              tc.activeUserID,
+			CorrelationID:        domain.NewUUIDv7(),
+		})
+		if err != nil {
+			return err
+		}
+		activeTargetID = tID
+		return nil
+	})
+
+	ctx.Step(`^the advance overdue targets routine runs$`, func() error {
+		_, _, err := budget.AdvanceAllBudgetsOverdueTargets(context.Background(), tc.mainDB, tc.tenantMgr)
+		return err
+	})
+
+	ctx.Step(`^target "([^"]*)" due date should be advanced to the current or next cycle$`, func(name string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var dueMic int64
+		err = bDB.QueryRow(`SELECT due_date FROM targets_projection WHERE name = ? AND is_archived = 0`, name).Scan(&dueMic)
+		if err != nil {
+			return fmt.Errorf("target %s not found: %w", name, err)
+		}
+		nowMidnight := time.Now().UTC().Truncate(24 * time.Hour)
+		dueTime := time.UnixMicro(dueMic).UTC()
+		if dueTime.Before(nowMidnight) {
+			return fmt.Errorf("expected due date >= %v, got %v", nowMidnight, dueTime)
+		}
+		return nil
+	})
+
 	ctx.Step(`^target "([^"]*)" in projections should have recurrence days (\d+)$`, func(name string, expectedDays int) error {
 		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
 		if err != nil {

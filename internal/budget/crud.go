@@ -47,41 +47,47 @@ type UpdateBucketInput struct {
 
 // CreateTargetInput payload
 type CreateTargetInput struct {
-	BucketID            string
-	Name                string
-	TargetType          string // 'EXPENSE', 'SAVINGS', 'DEBT_PAYMENT'
-	Priority            int    // >= 1 (1=Optional, 2=Recommended, 3=Mandatory)
-	SortOrder           int
-	AmountMode          string // 'FIXED', 'LUA_FORMULA'
-	AmountMinor         int64
-	LuaScript           *string
-	Currency            string
-	RecurrenceCadence   string // 'ONE_OFF', 'WEEKLY', 'MONTHLY', 'ANNUAL', 'CUSTOM_DAYS', 'CUSTOM_MONTHS', 'CUSTOM_YEARS'
-	RecurrenceInterval  int
-	DueDate             *int64
-	NonSpendingStrategy string // 'ROLL_OVER', 'RETURN_TO_POOL', 'ARREARS_CUMULATIVE', 'CAP_AND_HOLD', 'PRORATE_FUTURE'
-	CeilingAmountMinor  *int64
-	AgentID             string
-	CorrelationID       string
+	BucketID              string
+	Name                  string
+	TargetType            string // 'EXPENSE', 'SAVINGS', 'DEBT_PAYMENT'
+	Priority              int    // >= 1 (1=Optional, 2=Recommended, 3=Mandatory)
+	SortOrder             int
+	AmountMode            string // 'FIXED', 'LUA_FORMULA'
+	AmountMinor           int64
+	LuaScript             *string
+	Currency              string
+	RecurrenceCadence     string // 'ONE_OFF', 'WEEKLY', 'MONTHLY', 'ANNUAL', 'CUSTOM_DAYS', 'CUSTOM_MONTHS', 'CUSTOM_YEARS'
+	RecurrenceInterval    int
+	RecurrenceDayOfWeek   *int
+	RecurrenceDayOfMonth  *int
+	RecurrenceMonthOfYear *int
+	DueDate               *int64
+	NonSpendingStrategy   string // 'ROLL_OVER', 'RETURN_TO_POOL', 'ARREARS_CUMULATIVE', 'CAP_AND_HOLD', 'PRORATE_FUTURE'
+	CeilingAmountMinor    *int64
+	AgentID               string
+	CorrelationID         string
 }
 
 // UpdateTargetInput payload
 type UpdateTargetInput struct {
-	ID                  string
-	Name                string
-	TargetType          string
-	Priority            int
-	SortOrder           int
-	AmountMode          string // 'FIXED', 'LUA_FORMULA'
-	AmountMinor         int64
-	LuaScript           *string
-	RecurrenceCadence   string
-	RecurrenceInterval  int
-	DueDate             *int64
-	NonSpendingStrategy string
-	CeilingAmountMinor  *int64
-	AgentID             string
-	CorrelationID       string
+	ID                    string
+	Name                  string
+	TargetType            string
+	Priority              int
+	SortOrder             int
+	AmountMode            string // 'FIXED', 'LUA_FORMULA'
+	AmountMinor           int64
+	LuaScript             *string
+	RecurrenceCadence     string
+	RecurrenceInterval    int
+	RecurrenceDayOfWeek   *int
+	RecurrenceDayOfMonth  *int
+	RecurrenceMonthOfYear *int
+	DueDate               *int64
+	NonSpendingStrategy   string
+	CeilingAmountMinor    *int64
+	AgentID               string
+	CorrelationID         string
 }
 
 // AssignFundsInput payload for assigning funds from Ready to Assign to a bucket/target
@@ -463,22 +469,25 @@ func CreateTargetTx(ctx context.Context, tx *sql.Tx, input CreateTargetInput) (s
 	}
 
 	payload, err := json.Marshal(map[string]any{
-		"target_id":             targetID,
-		"bucket_id":             input.BucketID,
-		"name":                  nameVal,
-		"target_type":           input.TargetType,
-		"priority":              input.Priority,
-		"sort_order":            input.SortOrder,
-		"amount_mode":           input.AmountMode,
-		"amount_minor":          input.AmountMinor,
-		"lua_script":            input.LuaScript,
-		"currency":              input.Currency,
-		"recurrence_cadence":    input.RecurrenceCadence,
-		"recurrence_interval":   rInterval,
-		"due_date":              input.DueDate,
-		"non_spending_strategy": input.NonSpendingStrategy,
-		"ceiling_amount_minor":  input.CeilingAmountMinor,
-		"uses_runtime":          usesRuntime,
+		"target_id":                 targetID,
+		"bucket_id":                 input.BucketID,
+		"name":                      nameVal,
+		"target_type":               input.TargetType,
+		"priority":                  input.Priority,
+		"sort_order":                input.SortOrder,
+		"amount_mode":               input.AmountMode,
+		"amount_minor":              input.AmountMinor,
+		"lua_script":                input.LuaScript,
+		"currency":                  input.Currency,
+		"recurrence_cadence":        input.RecurrenceCadence,
+		"recurrence_interval":       rInterval,
+		"recurrence_day_of_week":    input.RecurrenceDayOfWeek,
+		"recurrence_day_of_month":   input.RecurrenceDayOfMonth,
+		"recurrence_month_of_year":  input.RecurrenceMonthOfYear,
+		"due_date":                  input.DueDate,
+		"non_spending_strategy":     input.NonSpendingStrategy,
+		"ceiling_amount_minor":      input.CeilingAmountMinor,
+		"uses_runtime":              usesRuntime,
 	})
 	if err != nil {
 		return "", err
@@ -496,13 +505,16 @@ func CreateTargetTx(ctx context.Context, tx *sql.Tx, input CreateTargetInput) (s
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO targets_projection (
 			id, bucket_id, name, target_type, priority, sort_order, amount_mode, amount_minor,
-			lua_script, currency, recurrence_cadence, recurrence_interval, due_date, non_spending_strategy,
+			lua_script, currency, recurrence_cadence, recurrence_interval,
+			recurrence_day_of_week, recurrence_day_of_month, recurrence_month_of_year,
+			due_date, non_spending_strategy,
 			ceiling_amount_minor, current_funded_minor, is_archived, version, updated_at,
 			last_evaluated_at, uses_runtime
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?, NULL, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?, NULL, ?)`,
 		targetID, input.BucketID, nameVal, input.TargetType, input.Priority, input.SortOrder,
 		input.AmountMode, input.AmountMinor, input.LuaScript, input.Currency, input.RecurrenceCadence,
-		rInterval, input.DueDate, input.NonSpendingStrategy, input.CeilingAmountMinor, now, usesRuntime,
+		rInterval, input.RecurrenceDayOfWeek, input.RecurrenceDayOfMonth, input.RecurrenceMonthOfYear,
+		input.DueDate, input.NonSpendingStrategy, input.CeilingAmountMinor, now, usesRuntime,
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed inserting targets_projection: %w", err)
@@ -609,20 +621,23 @@ func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput
 	}
 
 	payload, err := json.Marshal(map[string]any{
-		"target_id":             input.ID,
-		"name":                  nameVal,
-		"target_type":           input.TargetType,
-		"priority":              input.Priority,
-		"sort_order":            input.SortOrder,
-		"amount_mode":           input.AmountMode,
-		"amount_minor":          input.AmountMinor,
-		"lua_script":            input.LuaScript,
-		"recurrence_cadence":    input.RecurrenceCadence,
-		"recurrence_interval":   rInterval,
-		"due_date":              input.DueDate,
-		"non_spending_strategy": input.NonSpendingStrategy,
-		"ceiling_amount_minor":  input.CeilingAmountMinor,
-		"uses_runtime":          usesRuntime,
+		"target_id":                 input.ID,
+		"name":                      nameVal,
+		"target_type":               input.TargetType,
+		"priority":                  input.Priority,
+		"sort_order":                input.SortOrder,
+		"amount_mode":               input.AmountMode,
+		"amount_minor":              input.AmountMinor,
+		"lua_script":                input.LuaScript,
+		"recurrence_cadence":        input.RecurrenceCadence,
+		"recurrence_interval":       rInterval,
+		"recurrence_day_of_week":    input.RecurrenceDayOfWeek,
+		"recurrence_day_of_month":   input.RecurrenceDayOfMonth,
+		"recurrence_month_of_year":  input.RecurrenceMonthOfYear,
+		"due_date":                  input.DueDate,
+		"non_spending_strategy":     input.NonSpendingStrategy,
+		"ceiling_amount_minor":      input.CeilingAmountMinor,
+		"uses_runtime":              usesRuntime,
 	})
 	if err != nil {
 		return err
@@ -640,11 +655,15 @@ func UpdateTarget(ctx context.Context, tenantDB *sql.DB, input UpdateTargetInput
 	_, err = tx.ExecContext(ctx, `
 		UPDATE targets_projection
 		SET name = ?, target_type = ?, priority = ?, sort_order = ?, amount_mode = ?, amount_minor = ?,
-		    lua_script = ?, recurrence_cadence = ?, recurrence_interval = ?, due_date = ?, non_spending_strategy = ?,
+		    lua_script = ?, recurrence_cadence = ?, recurrence_interval = ?,
+		    recurrence_day_of_week = ?, recurrence_day_of_month = ?, recurrence_month_of_year = ?,
+		    due_date = ?, non_spending_strategy = ?,
 		    ceiling_amount_minor = ?, version = ?, updated_at = ?, uses_runtime = ?
 		WHERE id = ?`,
 		nameVal, input.TargetType, input.Priority, input.SortOrder, input.AmountMode, input.AmountMinor,
-		input.LuaScript, input.RecurrenceCadence, rInterval, input.DueDate, input.NonSpendingStrategy,
+		input.LuaScript, input.RecurrenceCadence, rInterval,
+		input.RecurrenceDayOfWeek, input.RecurrenceDayOfMonth, input.RecurrenceMonthOfYear,
+		input.DueDate, input.NonSpendingStrategy,
 		input.CeilingAmountMinor, newVersion, now, usesRuntime, input.ID,
 	)
 	if err != nil {
