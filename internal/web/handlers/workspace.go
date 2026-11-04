@@ -861,6 +861,7 @@ type budgetPageViewData struct {
 	HasOtherBudgets              bool
 	OtherBudgets                 []otherBudgetOptionViewData
 	AvailableCurrencies          []string
+	AccountCurrencies            []string
 	UserFirstDayOfWeek           string
 	BucketsJSON                  template.JS
 }
@@ -1779,6 +1780,11 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		availCurrencies = []string{defaultCurr}
 	}
 
+	accountCurrencies, err := budget.GetAccountCurrencies(c.Request().Context(), tenantDB, defaultCurr)
+	if err != nil {
+		accountCurrencies = []string{defaultCurr}
+	}
+
 	horizonTitle := horizonParam
 	horizonDisplay := horizonParam
 	for _, avh := range availableHorizonsViewData {
@@ -1891,6 +1897,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		HasOtherBudgets:            hasOtherBudgets,
 		OtherBudgets:               otherBudgets,
 		AvailableCurrencies:        availCurrencies,
+		AccountCurrencies:          accountCurrencies,
 		UserFirstDayOfWeek:         userFirstDayOfWeek,
 		BucketsJSON:                template.JS(rawBucketsJSON),
 	}

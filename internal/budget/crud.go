@@ -1477,3 +1477,43 @@ func GetAvailableCurrencies(ctx context.Context, tenantDB *sql.DB, defaultCurren
 	sort.Strings(currencies)
 	return currencies, nil
 }
+
+// GetAccountCurrencies returns a unique sorted list of currencies used by active accounts in accounts_current.
+// If no active accounts exist or have a currency, it falls back to the defaultCurrency (or "PLN").
+func GetAccountCurrencies(ctx context.Context, tenantDB *sql.DB, defaultCurrency string) ([]string, error) {
+	currMap := make(map[string]bool)
+
+	if tenantDB != nil {
+		rows, err := tenantDB.QueryContext(ctx, `
+			SELECT DISTINCT UPPER(TRIM(primary_currency))
+			FROM accounts_current
+			WHERE is_closed = 0 AND primary_currency IS NOT NULL AND TRIM(primary_currency) != ''
+		`)
+		if err != nil {
+			return nil, fmt.Errorf("failed querying account currencies: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var c string
+			if err := rows.Scan(&c); err == nil && c != "" {
+				currMap[c] = true
+			}
+		}
+	}
+
+	if len(currMap) == 0 {
+		def := strings.ToUpper(strings.TrimSpace(defaultCurrency))
+		if def == "" {
+			def = "PLN"
+		}
+		return []string{def}, nil
+	}
+
+	currencies := make([]string, 0, len(currMap))
+	for c := range currMap {
+		currencies = append(currencies, c)
+	}
+	sort.Strings(currencies)
+	return currencies, nil
+}

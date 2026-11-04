@@ -784,23 +784,26 @@
         <div class="modal-box card-border border-base-300 w-full max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
             <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
             <div class="flex justify-between items-center mb-4">
-                <h3 class="font-extrabold text-xl tracking-tight">Assign Funds to Envelope</h3>
+                <h3 class="font-extrabold text-xl tracking-tight">Assign Funds to Buckets</h3>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
             </div>
             <form id="assign_funds_form" method="POST" action="" class="flex flex-col gap-4">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}" />
                 <input type="hidden" name="horizon" value="{{.HorizonParam}}" />
                 <input type="hidden" name="filter" value="{{.FilterParam}}" />
-                <input type="hidden" id="assign_currency" name="currency" value="{{.DefaultCurr}}" />
                 <div class="text-xs text-base-content/70">
                     Assign funds directly from Ready to Assign into <span id="assign_bucket_name" class="font-bold text-primary"></span>.
                     (Enter negative amount to return funds back to pool).
                 </div>
                 <div class="form-control">
-                    <label class="label pb-1"><span class="label-text font-medium text-xs">Amount</span></label>
+                    <label class="label pb-1"><span class="label-text font-medium text-xs">Amount & Currency</span></label>
                     <div class="join w-full">
                         <input type="number" step="0.01" inputmode="decimal" id="assign_amount_input" name="amount" required autofocus placeholder="100.00" class="input input-bordered join-item w-full input-md focus:input-primary font-mono" />
-                        <span id="assign_currency_label" class="btn join-item btn-neutral no-animation">{{.DefaultCurr}}</span>
+                        <select id="assign_currency" name="currency" class="select select-bordered join-item select-md focus:select-primary font-semibold">
+                            {{- range .AccountCurrencies}}
+                            <option value="{{.}}"{{if eq . $.DefaultCurr}} selected{{end}}>{{.}}</option>
+                            {{- end}}
+                        </select>
                     </div>
                 </div>
                 <div class="modal-action mt-6 gap-2">

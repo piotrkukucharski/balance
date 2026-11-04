@@ -2824,6 +2824,144 @@ func TestMobileResponsiveBudgetViewAndErgonomics(t *testing.T) {
 	if !strings.Contains(body, `inputmode="decimal"`) {
 		t.Errorf("expected decimal inputmode on amount fields for mobile on-screen keyboards")
 	}
+
+	// 6. Assign Funds Modal Title & Account Currencies Select
+	if !strings.Contains(body, `Assign Funds to Buckets`) {
+		t.Errorf("expected modal title 'Assign Funds to Buckets' in HTML")
+	}
+	if !strings.Contains(body, `<select id="assign_currency" name="currency"`) {
+		t.Errorf("expected select#assign_currency in Assign Funds Modal")
+	}
+}
+
+func TestAssignFundsModalCurrencyFiltering(t *testing.T) {
+	tempDir := t.TempDir()
+	mainPath := filepath.Join(tempDir, "main.db")
+	mainDB, err := db.OpenDB(mainPath)
+	if err != nil {
+		t.Fatalf("failed opening main DB: %v", err)
+	}
+	defer mainDB.Close()
+
+	if err := db.ApplyMigrations(mainDB, "migrations/main"); err != nil {
+		t.Fatalf("failed migrating main DB: %v", err)
+	}
+
+	budgetsDir := filepath.Join(tempDir, "budgets")
+	tenantMgr, err := db.NewTenantDBManager(budgetsDir, mainDB, 10)
+	if err != nil {
+		t.Fatalf("failed creating tenant manager: %v", err)
+	}
+	defer tenantMgr.CloseAll()
+
+	reportsHandler := NewReportsHandler(mainDB, tenantMgr)
+	workspaceHandler := NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
+
+	userID := domain.NewUUIDv7()
+	now := time.Now().UTC().UnixMicro()
+	_, err = mainDB.Exec(`
+		INSERT INTO users (id, email, password_hash, display_name, created_at, updated_at)
+		VALUES (?, 'assign_curr@example.com', 'hash', 'Currency Tester', ?, ?)`, userID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	budgetID := domain.NewUUIDv7()
+	_, err = mainDB.Exec(`
+		INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at)
+		VALUES (?, 'Currency Budget', 'EUR', 'Europe/Paris', ?, ?, ?)`, budgetID, userID, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tenantDB, err := tenantMgr.GetTenantDB(budgetID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/budget", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	c.SetParamNames("budgetId")
+	c.SetParamValues(budgetID)
+	c.Set(ContextBudgetDBKey, tenantDB)
+	c.Set(ContextUserIDKey, userID)
+	c.Set(ContextRoleKey, "OWNER")
+	c.Set("csrfToken", "test-token")
+
+	// 1. Without accounts: fallback to budget's default currency (EUR)
+	if err := workspaceHandler.BudgetView(c); err != nil {
+		t.Fatalf("BudgetView failed: %v", err)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `Assign Funds to Buckets`) {
+		t.Fatalf("expected modal title 'Assign Funds to Buckets'")
+	}
+	if !strings.Contains(body, `<option value="EUR" selected>EUR</option>`) {
+		t.Fatalf("expected EUR option selected in assign_currency select, got:\n%s", body)
+	}
+
+	// 2. Add active accounts with USD and CHF
+	partyID := domain.NewUUIDv7()
+	_, err = tenantDB.Exec(`
+		INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+		VALUES (?, 1, 'Self', 'INDIVIDUAL', 1, ?, ?)`, partyID, userID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	acctUSD := domain.NewUUIDv7()
+	_, err = tenantDB.Exec(`
+		INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+		VALUES (?, 1, ?, 'USD Checking', 'CHECKING', 'USD', 0, ?, ?)`, acctUSD, partyID, userID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	acctCHF := domain.NewUUIDv7()
+	_, err = tenantDB.Exec(`
+		INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+		VALUES (?, 1, ?, 'CHF Savings', 'SAVINGS', 'CHF', 0, ?, ?)`, acctCHF, partyID, userID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add closed account with JPY (should NOT appear in active accounts currencies)
+	acctJPY := domain.NewUUIDv7()
+	_, err = tenantDB.Exec(`
+		INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+		VALUES (?, 1, ?, 'Closed JPY', 'CHECKING', 'JPY', 1, ?, ?)`, acctJPY, partyID, userID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec2 := httptest.NewRecorder()
+	c2 := e.NewContext(req, rec2)
+	c2.SetParamNames("budgetId")
+	c2.SetParamValues(budgetID)
+	c2.Set(ContextBudgetDBKey, tenantDB)
+	c2.Set(ContextUserIDKey, userID)
+	c2.Set(ContextRoleKey, "OWNER")
+	c2.Set("csrfToken", "test-token")
+
+	if err := workspaceHandler.BudgetView(c2); err != nil {
+		t.Fatalf("BudgetView failed: %v", err)
+	}
+	body2 := rec2.Body.String()
+	// Verify select options in assign_funds_modal
+	assignSelectIdx := strings.Index(body2, `id="assign_currency"`)
+	if assignSelectIdx == -1 {
+		t.Fatalf("expected id=assign_currency select in HTML")
+	}
+	assignModalSection := body2[assignSelectIdx : assignSelectIdx+strings.Index(body2[assignSelectIdx:], `</select>`)]
+	if !strings.Contains(assignModalSection, `<option value="CHF">CHF</option>`) ||
+		!strings.Contains(assignModalSection, `<option value="USD">USD</option>`) {
+		t.Fatalf("expected CHF and USD in assign_currency select, got:\n%s", assignModalSection)
+	}
+	if strings.Contains(assignModalSection, `value="JPY"`) {
+		t.Fatalf("did not expect closed account currency JPY in assign_currency select, got:\n%s", assignModalSection)
+	}
 }
 
 

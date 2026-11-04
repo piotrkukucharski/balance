@@ -67,6 +67,17 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     Then the bucket "Groceries" balance should be "2,000.00 PLN"
     And the Ready to Assign banner should display "3,000.00 PLN"
 
+  Scenario: Assign funds modal filters currency to active accounts and displays Buckets header
+    Given an open budget "Multi-Currency Workspace" with "3,000.00 EUR" in checking account
+    And an account named "Dollar Savings" of type "SAVINGS" with currency "USD" and favicon emoji "💵"
+    And an existing bucket "Travel" with funded balance "0.00 EUR"
+    When I request the budget view "/budgets/:budgetId/budget"
+    Then the assign funds modal should display title "Assign Funds to Buckets"
+    And the assign funds modal currency selector should contain currencies "EUR, USD"
+    And the assign funds modal currency selector should not contain currency "PLN"
+    When I assign "500.00 USD" from ready to assign to bucket "Travel"
+    Then the bucket "Travel" balance in "USD" should be "500.00 USD"
+
   Scenario: Priority Waterfall Auto-Assigning available pool
     Given an open budget "Family Home" with "2,200.00 PLN" in checking account
     And a bucket "Fixed Expenses" with the following targets in the active 30-day window:

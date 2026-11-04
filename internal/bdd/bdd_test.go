@@ -4743,9 +4743,14 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		if err != nil {
 			return err
 		}
+		amt, curr, err := parseAmountWithCurrency(checkingStr)
+		if err != nil {
+			amt = parseAmountStr(checkingStr)
+			curr = "PLN"
+		}
 		_, err = tc.mainDB.Exec(`
 			INSERT INTO budgets (id, name, default_currency, timezone, created_by_agent_id, created_at, updated_at)
-			VALUES (?, ?, 'PLN', 'Europe/Warsaw', 'user_1', ?, ?)`, budgetID, budgetName, now, now)
+			VALUES (?, ?, ?, 'Europe/Warsaw', 'user_1', ?, ?)`, budgetID, budgetName, curr, now, now)
 		if err != nil {
 			return err
 		}
@@ -4774,15 +4779,14 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		acctID := domain.NewUUIDv7()
 		_, err = bDB.Exec(`
 			INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
-			VALUES (?, 1, ?, 'Checking', 'CHECKING', 'PLN', 0, 'user_1', ?)`, acctID, partyID, now)
+			VALUES (?, 1, ?, 'Checking', 'CHECKING', ?, 0, 'user_1', ?)`, acctID, partyID, curr, now)
 		if err != nil {
 			return err
 		}
 
-		amt := parseAmountStr(checkingStr)
 		_, err = bDB.Exec(`
 			INSERT INTO account_currency_balances (account_id, currency, balance_minor, updated_at)
-			VALUES (?, 'PLN', ?, ?)`, acctID, amt, now)
+			VALUES (?, ?, ?, ?)`, acctID, curr, amt, now)
 		return err
 	})
 
@@ -4801,11 +4805,15 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 			return err
 		}
 		activeBucketID = bID
-		amt := parseAmountStr(balanceStr)
+		amt, curr, err := parseAmountWithCurrency(balanceStr)
+		if err != nil {
+			amt = parseAmountStr(balanceStr)
+			curr = "PLN"
+		}
 		if amt != 0 {
 			return budget.AssignFunds(context.Background(), bDB, budget.AssignFundsInput{
 				BucketID:      bID,
-				Currency:      "PLN",
+				Currency:      curr,
 				AmountMinor:   amt,
 				AgentID:       tc.activeUserID,
 				CorrelationID: domain.NewUUIDv7(),
@@ -4867,7 +4875,11 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		if err != nil {
 			return err
 		}
-		amt := parseAmountStr(amtStr)
+		amt, curr, err := parseAmountWithCurrency(amtStr)
+		if err != nil {
+			amt = parseAmountStr(amtStr)
+			curr = "PLN"
+		}
 		bID := activeBucketID
 		if bucketName != "" {
 			var resolvedID string
@@ -4877,7 +4889,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 			}
 		}
 		form := url.Values{}
-		form.Set("currency", "PLN")
+		form.Set("currency", curr)
 		form.Set("amount", fmt.Sprintf("%.2f", float64(amt)/100.0))
 
 		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/budgets/%s/buckets/%s/assign", tc.activeBudgetID, bID), strings.NewReader(form.Encode()))
@@ -4928,6 +4940,81 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		if bal != parseAmountStr(expectedAmt) {
 			return fmt.Errorf("expected bucket %s balance %d, got %d", bucketName, parseAmountStr(expectedAmt), bal)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the assign funds modal should display title "([^"]*)"$`, func(expectedTitle string) error {
+		if tc.lastResponse == nil || tc.lastResponse.Body == nil {
+			return fmt.Errorf("no response available to check modal title")
+		}
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, expectedTitle) {
+			return fmt.Errorf("expected modal title %q in response, but not found", expectedTitle)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the assign funds modal currency selector should contain currencies "([^"]*)"$`, func(currListStr string) error {
+		if tc.lastResponse == nil || tc.lastResponse.Body == nil {
+			return fmt.Errorf("no response available")
+		}
+		body := tc.lastResponse.Body.String()
+		assignSelectIdx := strings.Index(body, `id="assign_currency"`)
+		if assignSelectIdx == -1 {
+			return fmt.Errorf("assign_currency select element not found in HTML")
+		}
+		selectSub := body[assignSelectIdx : assignSelectIdx+strings.Index(body[assignSelectIdx:], `</select>`)]
+		for _, rawCurr := range strings.Split(currListStr, ",") {
+			curr := strings.TrimSpace(rawCurr)
+			expectedOpt := fmt.Sprintf(`value="%s"`, curr)
+			if !strings.Contains(selectSub, expectedOpt) {
+				return fmt.Errorf("expected currency %s in assign_currency select, got:\n%s", curr, selectSub)
+			}
+		}
+		return nil
+	})
+
+	ctx.Step(`^the assign funds modal currency selector should not contain currency "([^"]*)"$`, func(forbiddenCurr string) error {
+		if tc.lastResponse == nil || tc.lastResponse.Body == nil {
+			return fmt.Errorf("no response available")
+		}
+		body := tc.lastResponse.Body.String()
+		assignSelectIdx := strings.Index(body, `id="assign_currency"`)
+		if assignSelectIdx == -1 {
+			return fmt.Errorf("assign_currency select element not found in HTML")
+		}
+		selectSub := body[assignSelectIdx : assignSelectIdx+strings.Index(body[assignSelectIdx:], `</select>`)]
+		expectedOpt := fmt.Sprintf(`value="%s"`, forbiddenCurr)
+		if strings.Contains(selectSub, expectedOpt) {
+			return fmt.Errorf("forbidden currency %s was found in assign_currency select:\n%s", forbiddenCurr, selectSub)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the bucket "([^"]*)" balance in "([^"]*)" should be "([^"]*)"$`, func(bucketName, currency, expectedAmt string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		bID := activeBucketID
+		if bucketName != "" {
+			var resolvedID string
+			if err := bDB.QueryRow(`SELECT id FROM buckets_projection WHERE name = ? AND is_archived = 0`, bucketName).Scan(&resolvedID); err == nil && resolvedID != "" {
+				bID = resolvedID
+			}
+		}
+		var bal int64
+		err = bDB.QueryRow(`SELECT COALESCE(balance_minor, 0) FROM bucket_currency_balances WHERE bucket_id = ? AND currency = ?`, bID, currency).Scan(&bal)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		expectedMinor, _, err := parseAmountWithCurrency(expectedAmt)
+		if err != nil {
+			expectedMinor = parseAmountStr(expectedAmt)
+		}
+		if bal != expectedMinor {
+			return fmt.Errorf("expected bucket %s balance in %s to be %d, got %d", bucketName, currency, expectedMinor, bal)
 		}
 		return nil
 	})

@@ -531,6 +531,78 @@ func TestGetAvailableCurrencies(t *testing.T) {
 	}
 }
 
+func TestGetAccountCurrencies(t *testing.T) {
+	ctx := context.Background()
+	tenantDB := setupTestTenantDB(t)
+	defer tenantDB.Close()
+
+	// 1. Fallback when no accounts exist
+	currencies, err := GetAccountCurrencies(ctx, tenantDB, "EUR")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(currencies) != 1 || currencies[0] != "EUR" {
+		t.Fatalf("expected fallback [EUR], got %v", currencies)
+	}
+
+	// Fallback when default currency is empty -> PLN
+	currencies, err = GetAccountCurrencies(ctx, tenantDB, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(currencies) != 1 || currencies[0] != "PLN" {
+		t.Fatalf("expected fallback [PLN], got %v", currencies)
+	}
+
+	// 2. Add party and accounts
+	userPartyID := domain.NewUUIDv7()
+	acctID1 := domain.NewUUIDv7()
+	acctID2 := domain.NewUUIDv7()
+	closedAcctID := domain.NewUUIDv7()
+	agentID := domain.NewUUIDv7()
+	now := time.Now().UTC().UnixMicro()
+
+	_, err = tenantDB.ExecContext(ctx, `
+		INSERT INTO parties_current (id, version, name, party_type, is_user_owned, agent_id, updated_at)
+		VALUES (?, 1, 'Self', 'INDIVIDUAL', 1, ?, ?)`, userPartyID, agentID, now)
+	if err != nil {
+		t.Fatalf("failed inserting party: %v", err)
+	}
+
+	// Active account with USD
+	_, err = tenantDB.ExecContext(ctx, `
+		INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+		VALUES (?, 1, ?, 'USD Account', 'CHECKING', 'USD', 0, ?, ?)`, acctID1, userPartyID, agentID, now)
+	if err != nil {
+		t.Fatalf("failed inserting account 1: %v", err)
+	}
+
+	// Active account with EUR
+	_, err = tenantDB.ExecContext(ctx, `
+		INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+		VALUES (?, 1, ?, 'EUR Account', 'SAVINGS', 'EUR', 0, ?, ?)`, acctID2, userPartyID, agentID, now)
+	if err != nil {
+		t.Fatalf("failed inserting account 2: %v", err)
+	}
+
+	// Closed account with GBP (should NOT be included)
+	_, err = tenantDB.ExecContext(ctx, `
+		INSERT INTO accounts_current (id, version, party_id, name, account_type, primary_currency, is_closed, agent_id, updated_at)
+		VALUES (?, 1, ?, 'Closed GBP Account', 'CHECKING', 'GBP', 1, ?, ?)`, closedAcctID, userPartyID, agentID, now)
+	if err != nil {
+		t.Fatalf("failed inserting closed account: %v", err)
+	}
+
+	currencies, err = GetAccountCurrencies(ctx, tenantDB, "PLN")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Expected only active account currencies sorted: EUR, USD
+	if len(currencies) != 2 || currencies[0] != "EUR" || currencies[1] != "USD" {
+		t.Fatalf("expected [EUR, USD], got %v", currencies)
+	}
+}
+
 func TestAutoFundTargetCascade(t *testing.T) {
 	ctx := context.Background()
 	tenantDB := setupTestTenantDB(t)

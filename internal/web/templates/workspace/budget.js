@@ -501,8 +501,28 @@ function openEditBucketModal(id, name, group) {
 function openAssignModal(id, name, curr) {
     document.getElementById('assign_funds_form').action = '/budgets/' + currentBudgetID + '/buckets/' + id + '/assign';
     document.getElementById('assign_bucket_name').innerText = name;
-    document.getElementById('assign_currency').value = curr;
-    document.getElementById('assign_currency_label').innerText = curr;
+    const currSelect = document.getElementById('assign_currency');
+    if (currSelect) {
+        if (curr) {
+            // Check if option exists; if not, add it dynamically so bucket's currency is selectable
+            let exists = false;
+            for (let i = 0; i < currSelect.options.length; i++) {
+                if (currSelect.options[i].value === curr) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                const opt = document.createElement('option');
+                opt.value = curr;
+                opt.innerText = curr;
+                currSelect.appendChild(opt);
+            }
+            currSelect.value = curr;
+        }
+    }
+    const currLbl = document.getElementById('assign_currency_label');
+    if (currLbl) currLbl.innerText = curr;
     assign_funds_modal.showModal();
     const inp = document.getElementById('assign_amount_input');
     if (inp) setTimeout(() => inp.focus(), 50);
