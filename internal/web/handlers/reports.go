@@ -14,13 +14,15 @@ import (
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/report"
+	"github.com/balance/balance/internal/service"
 	"github.com/balance/balance/internal/web/templates"
 	"github.com/labstack/echo/v4"
 )
 
 type ReportsHandler struct {
-	mainDB    *sql.DB
-	tenantMgr *db.TenantDBManager
+	mainDB     *sql.DB
+	tenantMgr  *db.TenantDBManager
+	appService *service.AppService
 }
 
 func NewReportsHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *ReportsHandler {
@@ -28,6 +30,20 @@ func NewReportsHandler(mainDB *sql.DB, tenantMgr *db.TenantDBManager) *ReportsHa
 		mainDB:    mainDB,
 		tenantMgr: tenantMgr,
 	}
+}
+
+func (h *ReportsHandler) SetService(svc *service.AppService) {
+	h.appService = svc
+}
+
+func (h *ReportsHandler) now(loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+	if h.appService != nil && h.appService.Clock() != nil {
+		return h.appService.Clock().Now().In(loc)
+	}
+	return time.Now().In(loc)
 }
 
 type reportsViewData struct {

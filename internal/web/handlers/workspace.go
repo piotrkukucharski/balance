@@ -116,6 +116,16 @@ func (h *WorkspaceHandler) SetStructureAIProvider(p ai.BudgetStructureAIProvider
 	h.structureAI = p
 }
 
+func (h *WorkspaceHandler) now(loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+	if h.appService != nil && h.appService.Clock() != nil {
+		return h.appService.Clock().Now().In(loc)
+	}
+	return time.Now().In(loc)
+}
+
 // GetAvailableCurrencies returns a unique sorted list of currencies available for a budget.
 func (h *WorkspaceHandler) GetAvailableCurrencies(ctx context.Context, tenantDB *sql.DB, defaultCurrency string) ([]string, error) {
 	return budget.GetAvailableCurrencies(ctx, tenantDB, defaultCurrency)
@@ -239,7 +249,7 @@ func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
 			loc = l
 		}
 	}
-	nowInTz := time.Now().In(loc)
+	nowInTz := h.now(loc)
 
 	// Fetch user default horizon and all horizons
 	userDefaultHorizon, _ := budget.GetUserDefaultHorizon(c.Request().Context(), tenantDB, userID)
@@ -1014,7 +1024,7 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 			loc = l
 		}
 	}
-	nowInTz := time.Now().In(loc)
+	nowInTz := h.now(loc)
 
 	// Fetch visible horizons for toolbar
 	visibleHorizons, _ := budget.ListBudgetHorizons(c.Request().Context(), tenantDB, true)
@@ -2215,7 +2225,7 @@ func (h *WorkspaceHandler) AutoAssign(c echo.Context) error {
 			loc = l
 		}
 	}
-	nowInTz := time.Now().In(loc)
+	nowInTz := h.now(loc)
 	horizon := c.FormValue("horizon")
 	_, windowDays := budget.CalculateHorizonDays(horizon, nowInTz, loc)
 
@@ -2393,7 +2403,7 @@ func (h *WorkspaceHandler) CreateTarget(c echo.Context) error {
 			loc = l
 		}
 	}
-	nowInTz := time.Now().In(loc)
+	nowInTz := h.now(loc)
 
 	sched := budget.RecurrenceSchedule{
 		Cadence:     cadence,
@@ -2545,7 +2555,7 @@ func (h *WorkspaceHandler) UpdateTarget(c echo.Context) error {
 			loc = l
 		}
 	}
-	nowInTz := time.Now().In(loc)
+	nowInTz := h.now(loc)
 
 	sched := budget.RecurrenceSchedule{
 		Cadence:     cadence,
@@ -2658,7 +2668,7 @@ func (h *WorkspaceHandler) FundTarget(c echo.Context) error {
 			loc = l
 		}
 	}
-	nowInTz := time.Now().In(loc)
+	nowInTz := h.now(loc)
 	_, windowDays := budget.CalculateHorizonDays(horizon, nowInTz, loc)
 
 	res, err := budget.AutoFundTarget(c.Request().Context(), tenantDB, budget.AutoFundTargetInput{

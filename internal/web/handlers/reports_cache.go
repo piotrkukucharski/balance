@@ -29,7 +29,7 @@ func (h *ReportsHandler) getBudgetTimezone(ctx context.Context, budgetID string)
 // getBudgetTodayDate returns date string "YYYY-MM-DD" for the budget's configured timezone.
 func (h *ReportsHandler) getBudgetTodayDate(ctx context.Context, budgetID string) string {
 	loc := h.getBudgetTimezone(ctx, budgetID)
-	return time.Now().In(loc).Format("2006-01-02")
+	return h.now(loc).Format("2006-01-02")
 }
 
 // buildReportFilterKey creates a deterministic JSON key from report filter parameters.

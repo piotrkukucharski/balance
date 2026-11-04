@@ -88,6 +88,7 @@ func main() {
 	authHandler.SetService(appService)
 
 	reportsHandler := handlers.NewReportsHandler(mainDB, tenantMgr)
+	reportsHandler.SetService(appService)
 	workspaceHandler := handlers.NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
 	workspaceHandler.SetService(appService)
 

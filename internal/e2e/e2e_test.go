@@ -138,14 +138,16 @@ func (tc *e2eScenarioContext) setup() error {
 	e.Use(handlers.CorrelationIDMiddleware())
 	e.Use(handlers.StructuredRequestLoggerMiddleware())
 
-	sysClock := clock.NewSystemClock(time.UTC)
-	appService := service.NewAppService(mainDB, tenantMgr, sysClock)
+	fixedDate := time.Date(2026, time.January, 31, 12, 0, 0, 0, time.UTC)
+	testClock := clock.NewManualClock(fixedDate, time.UTC)
+	appService := service.NewAppService(mainDB, tenantMgr, testClock)
 	tc.appService = appService
 
 	authHandler := handlers.NewAuthHandler(mainDB, tenantMgr)
 	authHandler.SetService(appService)
 
 	reportsHandler := handlers.NewReportsHandler(mainDB, tenantMgr)
+	reportsHandler.SetService(appService)
 	workspaceHandler := handlers.NewWorkspaceHandler(mainDB, tenantMgr, reportsHandler)
 	workspaceHandler.SetService(appService)
 	workspaceHandler.SetStructureAIProvider(ai.NewMockBudgetStructureAIProvider())
