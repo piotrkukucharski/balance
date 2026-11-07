@@ -352,7 +352,8 @@ All monetary values returned and expected by Lua formulas are integer **minor un
 | Lua Function / Object | Signature & Return Type | Description |
 |---|---|---|
 | `money(val)` | `money(number \| string) -> int64` | Converts major currency units into integer minor units for the target's currency (e.g. `money(2000)` $\rightarrow$ `200000`, `money("19.99")` $\rightarrow$ `1999`). |
-| `target(ref)` | `target(id_or_name) -> table` | Looks up another target by UUIDv7 or by name within the same Bucket from the in-memory snapshot. Returns read-only `{ planned = int64, required = int64, funded = int64, spent = int64, priority = int }`. |
+| `target(ref)` | `target(id_or_name) -> table` | Looks up another target by UUIDv7 ID or by name within the budget from the in-memory snapshot. Returns read-only `{ id = string, name = string, planned = int64, required = int64, funded = int64, spent = int64, priority = int, anchor_due_date = int64? }`. |
+| `targetById(id)` | `targetById(target_id) -> table` | Explicitly looks up another target by exact UUIDv7 Target ID (useful for unnamed targets). Returns same table schema as `target(ref)`. |
 | `bucket.balance` | `bucket.balance(currency?) -> int64` | Returns the current Bucket's balance in minor units for the given currency (defaults to the target's currency). |
 | `fx.rate` | `fx.rate(base, target, ts?) -> number` | Returns the historical or latest exchange rate from `main.db`'s `currency_exchange_rates` cache (e.g. `fx.rate("EUR", "PLN")`). |
 | `fx.convert` | `fx.convert(amount_minor, from, to, ts?) -> int64` | Converts `amount_minor` from `from` currency to `to` currency using 128-bit safe integer micro-rate math. |

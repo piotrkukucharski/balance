@@ -14,6 +14,18 @@ Feature: Sandboxed Lua Formula Engine and AI Formula Assistant
     And the VM instruction count should be strictly within 500 instructions
     And the formula execution should not trigger any database I/O
 
+  Scenario: Evaluating formulas referencing targets by ID and targetById function
+    Given a target "Required Mortgage Installment" with required amount "900.00 PLN"
+    And an unnamed target with id "tgt-unnamed-loan" and required amount "400.00 PLN"
+    And a dependent target "Formula With ID References" with Lua formula:
+      """
+      local byId = targetById("tgt-unnamed-loan").required
+      local byTargetId = target("target-id-Required Mortgage Installment").required
+      return byId + byTargetId
+      """
+    When the Lua sandbox evaluates the target formula
+    Then the result should be 130000 minor units ("1,300.00 PLN")
+
   Scenario: Generating a Lua formula with natural language AI Assistant
     Given an authenticated user editing target "Emergency Buffer" in bucket "Savings"
     When I request AI formula generation with prompt "Save 15% of total income over the last 30 days capped at 5000 PLN"

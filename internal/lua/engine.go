@@ -197,22 +197,27 @@ func ValidateJudgeScript(script string) error {
 	return ValidateLuaScript(trimmed)
 }
 
-// ExtractTargetDependencies parses script and returns target references.
+// ExtractTargetDependencies parses script and returns target references (by name or ID via target() or targetById()).
 func ExtractTargetDependencies(script string) ([]string, error) {
 	if err := ValidateLuaScript(script); err != nil {
 		return nil, err
 	}
 	var deps []string
+	seen := make(map[string]bool)
 	matches := targetRefRegex.FindAllStringSubmatch(script, -1)
 	for _, m := range matches {
 		if len(m) > 1 {
-			deps = append(deps, m[1])
+			ref := m[1]
+			if !seen[ref] {
+				seen[ref] = true
+				deps = append(deps, ref)
+			}
 		}
 	}
 	return deps, nil
 }
 
-var targetRefRegex = regexp.MustCompile(`target\(\s*["']([^"']+)["']\s*\)`)
+var targetRefRegex = regexp.MustCompile(`(?:target|targetById)\(\s*["']([^"']+)["']\s*\)`)
 
 // EvaluateFormula executes a Lua formula inside the hardened 6-pillar sandbox.
 func EvaluateFormula(ctx context.Context, script string, snap *InMemoryBudgetSnapshot) (int64, error) {
@@ -435,13 +440,40 @@ func registerSandboxedEnvironment(L *glua.LState, snap *InMemoryBudgetSnapshot, 
 		return 1
 	}))
 
-	// target(ref)
-	L.SetGlobal("target", L.NewFunction(func(state *glua.LState) int {
-		if err := checkCall(); err != nil {
-			state.RaiseError("%s", err.Error())
-			return 0
+	// buildTargetTable constructs a Lua table representing TargetMeta
+	buildTargetTable := func(state *glua.LState, meta *TargetMeta) *glua.LTable {
+		tbl := state.NewTable()
+		state.SetField(tbl, "id", glua.LString(meta.ID))
+		state.SetField(tbl, "name", glua.LString(meta.Name))
+		state.SetField(tbl, "planned", glua.LNumber(meta.Planned))
+		state.SetField(tbl, "required", glua.LNumber(meta.Required))
+		state.SetField(tbl, "funded", glua.LNumber(meta.Funded))
+		state.SetField(tbl, "spent", glua.LNumber(meta.Spent))
+		state.SetField(tbl, "priority", glua.LNumber(meta.Priority))
+
+		if meta.AnchorDueDate != nil {
+			state.SetField(tbl, "anchor_due_date", glua.LNumber(*meta.AnchorDueDate))
+		} else {
+			mt := state.NewTable()
+			targetDesc := meta.Name
+			if targetDesc == "" {
+				targetDesc = meta.ID
+			}
+			state.SetField(mt, "__index", state.NewFunction(func(s *glua.LState) int {
+				key := s.CheckString(2)
+				if key == "anchor_due_date" {
+					s.RaiseError("anchor_due_date is not set for target %q", targetDesc)
+					return 0
+				}
+				return 0
+			}))
+			state.SetMetatable(tbl, mt)
 		}
-		ref := state.CheckString(1)
+		return tbl
+	}
+
+	// target(ref): lookup by ID or name (case-insensitive name fallback)
+	targetLookup := func(state *glua.LState, ref string) int {
 		var meta *TargetMeta
 		if snap.Targets != nil {
 			meta = snap.Targets[ref]
@@ -453,30 +485,35 @@ func registerSandboxedEnvironment(L *glua.LState, snap *InMemoryBudgetSnapshot, 
 			state.RaiseError("target %q not found in budget", ref)
 			return 0
 		}
+		state.Push(buildTargetTable(state, meta))
+		return 1
+	}
 
-		tbl := state.NewTable()
-		state.SetField(tbl, "planned", glua.LNumber(meta.Planned))
-		state.SetField(tbl, "required", glua.LNumber(meta.Required))
-		state.SetField(tbl, "funded", glua.LNumber(meta.Funded))
-		state.SetField(tbl, "spent", glua.LNumber(meta.Spent))
-		state.SetField(tbl, "priority", glua.LNumber(meta.Priority))
-
-		if meta.AnchorDueDate != nil {
-			state.SetField(tbl, "anchor_due_date", glua.LNumber(*meta.AnchorDueDate))
-		} else {
-			mt := state.NewTable()
-			targetName := meta.Name
-			state.SetField(mt, "__index", state.NewFunction(func(s *glua.LState) int {
-				key := s.CheckString(2)
-				if key == "anchor_due_date" {
-					s.RaiseError("anchor_due_date is not set for target %q", targetName)
-					return 0
-				}
-				return 0
-			}))
-			state.SetMetatable(tbl, mt)
+	L.SetGlobal("target", L.NewFunction(func(state *glua.LState) int {
+		if err := checkCall(); err != nil {
+			state.RaiseError("%s", err.Error())
+			return 0
 		}
-		state.Push(tbl)
+		ref := state.CheckString(1)
+		return targetLookup(state, ref)
+	}))
+
+	// targetById(id): explicit lookup by Target ID
+	L.SetGlobal("targetById", L.NewFunction(func(state *glua.LState) int {
+		if err := checkCall(); err != nil {
+			state.RaiseError("%s", err.Error())
+			return 0
+		}
+		id := state.CheckString(1)
+		var meta *TargetMeta
+		if snap.Targets != nil {
+			meta = snap.Targets[id]
+		}
+		if meta == nil {
+			state.RaiseError("target with id %q not found in budget", id)
+			return 0
+		}
+		state.Push(buildTargetTable(state, meta))
 		return 1
 	}))
 
@@ -1099,6 +1136,40 @@ func registerAutomationTx(
 			}
 			if found == nil {
 				state.RaiseError("target with name %q not found in budget", val)
+				return 0
+			}
+			outcome.UpdatedTx.TargetID = &found.ID
+			outcome.UpdatedTx.TargetName = found.Name
+			outcome.Modified = true
+			if found.BucketID != "" {
+				outcome.UpdatedTx.BucketID = &found.BucketID
+				if snap != nil && snap.Buckets != nil {
+					if b, ok := snap.Buckets[found.BucketID]; ok {
+						outcome.UpdatedTx.BucketName = b.Name
+					}
+				}
+			}
+			return 0
+		}))
+
+		L.SetField(txTable, "set_target_by_id", L.NewFunction(func(state *glua.LState) int {
+			if err := checkCall(); err != nil {
+				state.RaiseError("%s", err.Error())
+				return 0
+			}
+			val := strings.TrimSpace(state.OptString(1, ""))
+			if val == "" {
+				outcome.UpdatedTx.TargetID = nil
+				outcome.UpdatedTx.TargetName = ""
+				outcome.Modified = true
+				return 0
+			}
+			var found *TargetMeta
+			if snap != nil && snap.Targets != nil {
+				found = snap.Targets[val]
+			}
+			if found == nil {
+				state.RaiseError("target with id %q not found in budget", val)
 				return 0
 			}
 			outcome.UpdatedTx.TargetID = &found.ID

@@ -301,7 +301,8 @@ The script must end with return <int64_minor_units>, returning a single non-nega
 
 Available helper functions and runtime environment:
 - money(val): converts major currency units (number or string) into integer minor units (e.g. money(125) -> 12500, money("19.99") -> 1999).
-- target("name").required, .funded, .planned, .spent, .priority, .anchor_due_date: inspects another target in the budget (anchor_due_date is Unix epoch in seconds).
+- target("name_or_id").required, .funded, .planned, .spent, .priority, .anchor_due_date, .id, .name: inspects another target in the budget by name or ID (anchor_due_date is Unix epoch in seconds).
+- targetById("target_id").required, .funded, .planned, .spent, .priority, .anchor_due_date, .id, .name: explicit target lookup by ID (especially useful for unnamed targets or when referencing an exact target ID).
 - self.name, .planned, .required, .funded, .spent, .priority, .anchor_due_date: inspects the current target being evaluated (anchor_due_date is Unix epoch in seconds).
 - bucket.balance(currency?): returns current bucket balance in minor units.
 - budget.income(days, currency?): external inflows over last N days (1 <= days <= 3650).

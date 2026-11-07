@@ -620,6 +620,14 @@ function openBucketDrawer(id, name, group, bal, curr) {
                             targetTitle +
                         '</div>' +
                         '<div class="text-[11px] text-base-content/60">Priority: ' + priorityText + ' • Cadence: ' + cadenceDisplay + dueHtml + ' • Strategy: ' + t.NonSpendingStrategy + ceilingHtml + '</div>' +
+                        '<div class="flex items-center gap-1.5 text-[10px] text-base-content/50 font-mono mt-0.5">' +
+                            '<span>ID:</span>' +
+                            '<code class="bg-base-200 px-1 py-0.5 rounded text-[10px] select-all">' + escapeHtml(t.ID) + '</code>' +
+                            '<button type="button" class="btn btn-ghost btn-xs px-1 h-5 min-h-0 text-[10px] text-primary" onclick="copyTargetIdDirect(this, \'' + t.ID + '\')" title="Copy Target ID">' +
+                                '<span>📋</span>' +
+                                '<span class="copy-text">Copy</span>' +
+                            '</button>' +
+                        '</div>' +
                     '</div>' +
                     '<div class="flex items-center gap-1.5 shrink-0">' +
                         '<span class="badge ' + t.HealthBadgeClass + ' badge-sm font-semibold">' + t.HealthBadge + '</span>' +
@@ -649,6 +657,35 @@ function openBucketDrawer(id, name, group, bal, curr) {
     bucket_drawer.showModal();
 }
 
+function copyTargetModalId(btn) {
+    const valEl = document.getElementById('target_modal_id_val');
+    if (!valEl || !valEl.innerText) return;
+    const text = valEl.innerText.trim();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+            const copyText = btn.querySelector('.copy-text');
+            if (copyText) {
+                const orig = copyText.innerText;
+                copyText.innerText = 'Copied!';
+                setTimeout(() => copyText.innerText = orig, 2000);
+            }
+        });
+    }
+}
+
+function copyTargetIdDirect(btn, targetId) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(targetId).then(() => {
+            const copyText = btn.querySelector('.copy-text');
+            if (copyText) {
+                const orig = copyText.innerText;
+                copyText.innerText = 'Copied!';
+                setTimeout(() => copyText.innerText = orig, 2000);
+            }
+        });
+    }
+}
+
 function openEditTargetModal(id) {
     const b = bucketsData.find(x => x.ID === activeDrawerBucketID);
     if (!b || !b.Targets) return;
@@ -656,6 +693,13 @@ function openEditTargetModal(id) {
     if (!t) return;
 
     document.getElementById('target_modal_title').innerText = 'Edit Target';
+    const idContainer = document.getElementById('target_modal_id_container');
+    const idVal = document.getElementById('target_modal_id_val');
+    if (idContainer && idVal) {
+        idVal.innerText = t.ID;
+        idContainer.classList.remove('hidden');
+        idContainer.classList.add('flex');
+    }
     document.getElementById('target_form').action = '/budgets/' + currentBudgetID + '/targets/' + t.ID + '/update';
     document.getElementById('target_bucket_id').value = t.BucketID;
     document.getElementById('target_name').value = t.Name;
@@ -775,6 +819,13 @@ function updateMoveTargetOptions() {
 
 function openNewTargetModal() {
     document.getElementById('target_modal_title').innerText = 'Add Target';
+    const idContainer = document.getElementById('target_modal_id_container');
+    const idVal = document.getElementById('target_modal_id_val');
+    if (idContainer && idVal) {
+        idVal.innerText = '';
+        idContainer.classList.add('hidden');
+        idContainer.classList.remove('flex');
+    }
     document.getElementById('target_form').action = '/budgets/' + currentBudgetID + '/targets';
     document.getElementById('target_bucket_id').value = activeDrawerBucketID;
     document.getElementById('target_name').value = '';
@@ -1478,6 +1529,8 @@ window.openEditBucketModal = openEditBucketModal;
 window.openAssignModal = openAssignModal;
 window.openMoveModal = openMoveModal;
 window.openBucketDrawer = openBucketDrawer;
+window.copyTargetModalId = copyTargetModalId;
+window.copyTargetIdDirect = copyTargetIdDirect;
 window.openEditTargetModal = openEditTargetModal;
 window.openMoveTargetFundsModal = openMoveTargetFundsModal;
 window.updateMoveTargetOptions = updateMoveTargetOptions;

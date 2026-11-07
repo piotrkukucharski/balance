@@ -1054,7 +1054,17 @@
         <div class="modal-box card-border border-base-300 w-full max-w-xl max-h-[85dvh] overflow-y-auto overscroll-contain rounded-t-2xl sm:rounded-box p-5 sm:p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:pb-6">
             <div class="w-10 h-1 bg-base-300 rounded-full mx-auto mb-3 sm:hidden"></div>
             <div class="flex justify-between items-center mb-4">
-                <h3 id="target_modal_title" class="font-extrabold text-xl tracking-tight">Add Target</h3>
+                <div>
+                    <h3 id="target_modal_title" class="font-extrabold text-xl tracking-tight">Add Target</h3>
+                    <div id="target_modal_id_container" class="hidden items-center gap-1.5 text-xs text-base-content/60 font-mono mt-0.5">
+                        <span>ID:</span>
+                        <code id="target_modal_id_val" class="bg-base-200 px-1 py-0.5 rounded text-[11px] select-all"></code>
+                        <button type="button" id="target_modal_copy_btn" class="btn btn-ghost btn-xs px-1.5 h-6 min-h-0 text-[11px] text-primary" onclick="copyTargetModalId(this)" title="Copy Target ID">
+                            <span>📋</span>
+                            <span class="copy-text">Copy</span>
+                        </button>
+                    </div>
+                </div>
                 <form method="dialog"><button class="btn btn-ghost btn-sm btn-circle">✕</button></form>
             </div>
             <form id="target_form" method="POST" action="/budgets/{{.BudgetID}}/targets" class="flex flex-col gap-4" onsubmit="prepareTargetSubmit()">
@@ -1180,7 +1190,7 @@
                         </div>
                         <textarea id="target_lua_script" name="lua_script" rows="3" placeholder="return math.max(0, money(2000) - target('Mortgage Installment').required)" class="textarea textarea-bordered w-full font-mono text-xs focus:textarea-primary"></textarea>
                         <div class="text-[10px] text-base-content/60 mt-1">
-                            API: <code class="bg-base-200 px-1 rounded">money(val)</code>, <code class="bg-base-200 px-1 rounded">target(&quot;name&quot;).required</code>, <code class="bg-base-200 px-1 rounded">bucket.balance()</code>, <code class="bg-base-200 px-1 rounded">budget.income(days)</code>
+                            API: <code class="bg-base-200 px-1 rounded">money(val)</code>, <code class="bg-base-200 px-1 rounded">target(&quot;name&quot;).required</code>, <code class="bg-base-200 px-1 rounded">targetById(&quot;id&quot;).required</code>, <code class="bg-base-200 px-1 rounded">bucket.balance()</code>, <code class="bg-base-200 px-1 rounded">budget.income(days)</code>
                         </div>
                     </div>
 

@@ -323,7 +323,7 @@ func (g *GeminiAutomationProvider) GenerateExecutor(ctx context.Context, genCtx 
 Your task is to write ONLY a Lua script (Executor script) executed when the Judge returns true.
 Available mutators:
 - tx.set_bucket(bucket_id) or tx.set_bucket_by_name("Bucket Name")
-- tx.set_target(target_id) or tx.set_target_by_name("Target Name") (also assigns parent bucket automatically)
+- tx.set_target(target_id) or tx.set_target_by_id(target_id) or tx.set_target_by_name("Target Name") (also assigns parent bucket automatically)
 - tx.set_party(party_id) or tx.set_party_by_name("Party Name")
 - tx.set_source_account(account_id) or tx.set_source_account_by_name("Account Name")
 - tx.set_dest_account(account_id) or tx.set_dest_account_by_name("Account Name")
@@ -355,7 +355,7 @@ From the user's rule description, return a JSON object with:
   "executor_script": "valid lua executor code",
   "explanation": "concise explanation"
 }
-Available: tx.notes, tx.amount, tx.party, tx.bucket, tx.is_outflow, date.*, tx.set_bucket(id), tx.set_bucket_by_name(name), tx.set_target(id), tx.set_target_by_name(name), tx.set_party(id), tx.set_party_by_name(name), account.set_party(id), account.set_party_by_name(name), tx.set_notes, tx.split, tx.delete.
+Available: tx.notes, tx.amount, tx.party, tx.bucket, tx.is_outflow, date.*, tx.set_bucket(id), tx.set_bucket_by_name(name), tx.set_target(id), tx.set_target_by_id(id), tx.set_target_by_name(name), tx.set_party(id), tx.set_party_by_name(name), account.set_party(id), account.set_party_by_name(name), tx.set_notes, tx.split, tx.delete.
 String helper functions in text module:
 - text.contains(str, substr)
 - text.starts_with(str, prefix)

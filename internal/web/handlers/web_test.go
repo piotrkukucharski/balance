@@ -1152,6 +1152,12 @@ func TestTargetModalAndLuaFormulaAssistant(t *testing.T) {
 	if !strings.Contains(body, "target_due_date") {
 		t.Fatalf("expected target_modal to have anchor due date input")
 	}
+	if !strings.Contains(body, "target_modal_id_container") || !strings.Contains(body, "target_modal_id_val") {
+		t.Fatalf("expected target_modal to have target ID display container")
+	}
+	if !strings.Contains(jsStr, "copyTargetModalId") || !strings.Contains(jsStr, "copyTargetIdDirect") {
+		t.Fatalf("expected budget.js to have copyTargetModalId and copyTargetIdDirect functions")
+	}
 }
 
 func TestCreateAndEditTarget_CustomDays(t *testing.T) {

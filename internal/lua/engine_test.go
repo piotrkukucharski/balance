@@ -451,7 +451,18 @@ func TestTargetAnchorDueDate(t *testing.T) {
 				Required:      150000,
 				AnchorDueDate: &dueSec,
 			},
+			"t-car": {
+				ID:            "t-car",
+				Name:          "Car Loan",
+				Required:      150000,
+				AnchorDueDate: &dueSec,
+			},
 			"Flexible Target": {
+				ID:       "t-flex",
+				Name:     "Flexible Target",
+				Required: 50000,
+			},
+			"t-flex": {
 				ID:       "t-flex",
 				Name:     "Flexible Target",
 				Required: 50000,
@@ -474,5 +485,131 @@ func TestTargetAnchorDueDate(t *testing.T) {
 	_, err = EvaluateFormula(ctx, script2, snap)
 	if err == nil {
 		t.Fatalf("expected error accessing anchor_due_date on target without due date")
+	}
+
+	// 3. Target reference by ID via target(id)
+	script3 := `return target("t-car").anchor_due_date`
+	val3, err := EvaluateFormula(ctx, script3, snap)
+	if err != nil {
+		t.Fatalf("failed reading target anchor_due_date via target(id): %v", err)
+	}
+	if val3 != dueSec {
+		t.Fatalf("expected %d, got %d", dueSec, val3)
+	}
+
+	// 4. Target reference by ID via targetById(id)
+	script4 := `return targetById("t-car").required`
+	val4, err := EvaluateFormula(ctx, script4, snap)
+	if err != nil {
+		t.Fatalf("failed reading target via targetById(id): %v", err)
+	}
+	if val4 != 150000 {
+		t.Fatalf("expected 150000, got %d", val4)
+	}
+}
+
+func TestTargetByIdAndExtractDependencies(t *testing.T) {
+	ctx := context.Background()
+	snap := &InMemoryBudgetSnapshot{
+		Targets: map[string]*TargetMeta{
+			"01a1b5e8-target-1": {
+				ID:       "01a1b5e8-target-1",
+				Name:     "",
+				Required: 45000,
+				Planned:  45000,
+			},
+			"01a1b5e8-target-2": {
+				ID:       "01a1b5e8-target-2",
+				Name:     "Electricity",
+				Required: 25000,
+				Planned:  25000,
+			},
+		},
+	}
+
+	// Target without name accessed by ID via targetById()
+	script1 := `return targetById("01a1b5e8-target-1").required`
+	val1, err := EvaluateFormula(ctx, script1, snap)
+	if err != nil {
+		t.Fatalf("failed evaluating targetById for unnamed target: %v", err)
+	}
+	if val1 != 45000 {
+		t.Fatalf("expected 45000, got %d", val1)
+	}
+
+	// Target without name accessed by ID via target()
+	script2 := `return target("01a1b5e8-target-1").required`
+	val2, err := EvaluateFormula(ctx, script2, snap)
+	if err != nil {
+		t.Fatalf("failed evaluating target for unnamed target by ID: %v", err)
+	}
+	if val2 != 45000 {
+		t.Fatalf("expected 45000, got %d", val2)
+	}
+
+	// Check id and name fields on returned target table
+	scriptProps := `
+		local t = targetById("01a1b5e8-target-2")
+		if t.id == "01a1b5e8-target-2" and t.name == "Electricity" then
+			return t.required
+		end
+		return 0
+	`
+	valProps, err := EvaluateFormula(ctx, scriptProps, snap)
+	if err != nil {
+		t.Fatalf("failed evaluating target properties: %v", err)
+	}
+	if valProps != 25000 {
+		t.Fatalf("expected 25000, got %d", valProps)
+	}
+
+	// ExtractTargetDependencies supports both target() and targetById()
+	combinedScript := `
+		local a = target("01a1b5e8-target-1").required
+		local b = targetById("01a1b5e8-target-2").required
+		local c = target("Electricity").planned
+		return a + b + c
+	`
+	deps, err := ExtractTargetDependencies(combinedScript)
+	if err != nil {
+		t.Fatalf("failed extracting target dependencies: %v", err)
+	}
+	expectedDeps := []string{"01a1b5e8-target-1", "01a1b5e8-target-2", "Electricity"}
+	if len(deps) != len(expectedDeps) {
+		t.Fatalf("expected %d deps, got %d: %v", len(expectedDeps), len(deps), deps)
+	}
+	for i, exp := range expectedDeps {
+		if deps[i] != exp {
+			t.Errorf("dep %d: expected %q, got %q", i, exp, deps[i])
+		}
+	}
+
+	// Executor tx.set_target_by_id
+	notes := "Invoice payment"
+	txCtx := AutomationTxContext{
+		Notes:              &notes,
+		SourceAmountMinor:  10000,
+		DestAmountMinor:    10000,
+		IsUserOwnedSource:  true,
+		IsUserOwnedDest:    false,
+	}
+	snapWithBuckets := &InMemoryBudgetSnapshot{
+		Buckets: map[string]*BucketMeta{
+			"b-utilities": {ID: "b-utilities", Name: "Utilities"},
+		},
+		Targets: map[string]*TargetMeta{
+			"t-power": {ID: "t-power", Name: "Power Bill", BucketID: "b-utilities", Required: 10000},
+		},
+	}
+	execScript := `tx.set_target_by_id("t-power")`
+	outcome, err := EvaluateAutomationExecutor(ctx, execScript, txCtx, snapWithBuckets)
+	if err != nil {
+		t.Fatalf("executor set_target_by_id failed: %v", err)
+	}
+	if outcome.UpdatedTx.TargetID == nil || *outcome.UpdatedTx.TargetID != "t-power" {
+		t.Fatalf("expected TargetID 't-power', got %v", outcome.UpdatedTx.TargetID)
+	}
+	if outcome.UpdatedTx.BucketID == nil || *outcome.UpdatedTx.BucketID != "b-utilities" {
+		t.Fatalf("expected BucketID 'b-utilities', got %v", outcome.UpdatedTx.BucketID)
 	}
 }

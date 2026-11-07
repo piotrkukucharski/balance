@@ -676,14 +676,40 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		amt := parseAmountStr(amountStr)
 		meta := &lua.TargetMeta{
+			ID:       "target-id-" + targetName,
 			Name:     targetName,
 			Required: amt,
 			Planned:  amt,
 			Priority: 3,
 			Currency: "PLN",
 		}
+		tc.luaSnapshot.Targets[meta.ID] = meta
 		tc.luaSnapshot.Targets[targetName] = meta
 		tc.luaSnapshot.Targets[strings.ToLower(targetName)] = meta
+		return nil
+	})
+	ctx.Step(`^an unnamed target with id "([^"]*)" and required amount "([^"]*)"$`, func(targetID, amountStr string) error {
+		if tc.luaSnapshot == nil {
+			tc.luaSnapshot = &lua.InMemoryBudgetSnapshot{
+				Targets:        make(map[string]*lua.TargetMeta),
+				BucketBalances: make(map[string]int64),
+				FXRates:        make(map[string]int64),
+				InflowsPast:    make(map[string][]int64),
+				OutflowsPast:   make(map[string][]int64),
+				WindowDays:     30,
+				TargetCurrency: "PLN",
+			}
+		}
+		amt := parseAmountStr(amountStr)
+		meta := &lua.TargetMeta{
+			ID:       targetID,
+			Name:     "",
+			Required: amt,
+			Planned:  amt,
+			Priority: 2,
+			Currency: "PLN",
+		}
+		tc.luaSnapshot.Targets[targetID] = meta
 		return nil
 	})
 	ctx.Step(`^a dependent target "([^"]*)" with Lua formula:$`, func(targetName string, formula *godog.DocString) error {
