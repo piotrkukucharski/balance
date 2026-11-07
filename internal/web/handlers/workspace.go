@@ -715,6 +715,16 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
 }
 
+type bucketCurrencyItemViewData struct {
+	Currency        string `json:"Currency"`
+	BalanceMinor    int64  `json:"BalanceMinor"`
+	BalanceFormatted string `json:"BalanceFormatted"`
+	CoverDeficitMinor int64 `json:"CoverDeficitMinor"` // positive minor amount to cover
+	CoverDeficitFormatted string `json:"CoverDeficitFormatted"`
+	CanCover        bool   `json:"CanCover"`
+	RTASurplusFormatted string `json:"RTASurplusFormatted"`
+}
+
 type bucketViewData struct {
 	ID                        string           `json:"ID"`
 	GroupName                 string           `json:"GroupName"`
@@ -750,6 +760,8 @@ type bucketViewData struct {
 	DefaultExpanded           bool             `json:"DefaultExpanded"`
 	ProgressPercent           int              `json:"ProgressPercent"`
 	Targets                   []targetViewData `json:"Targets"`
+	HasOverspentDeficit       bool             `json:"HasOverspentDeficit"`
+	OverspentCurrencies       []bucketCurrencyItemViewData `json:"OverspentCurrencies"`
 }
 
 type targetViewData struct {
@@ -823,6 +835,13 @@ type rtaCurrencyBadgeViewData struct {
 	Currency        string
 	AmountFormatted string
 	BadgeColor      string
+	IsWarning       bool
+	WarningTooltip  string
+}
+
+type overspentSummaryItemViewData struct {
+	Currency        string
+	DeficitFormatted string
 }
 
 type otherBudgetOptionViewData struct {
@@ -860,9 +879,14 @@ type budgetPageViewData struct {
 	RTADescClass                 string
 	RTADesc                      string
 	DefaultRTAFormatted          string
+	DefaultRTAHasDeficitWarning  bool
+	DefaultRTAWarningTooltip     string
 	HasNonDefaultRTACurrencies   bool
 	TopRTACurrencies             []rtaCurrencyBadgeViewData
 	ExtraRTACurrencies           []rtaCurrencyBadgeViewData
+	HasOverspentAlert            bool
+	OverspentAlertCurrencies     []overspentSummaryItemViewData
+	OverspentFilterCurrencies    []string
 	TotalNeededFormatted         string
 	HasMandatoryP3Needed         bool
 	MandatoryP3NeededFormatted   string
@@ -1366,7 +1390,26 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		}
 	}
 
-	// 4. Fetch buckets and balances
+	// 4. Fetch all bucket currency balances across all currencies to detect any overspending
+	bucketBalancesMap := make(map[string]map[string]int64)
+	bbRows, err := tenantDB.QueryContext(c.Request().Context(), `
+		SELECT bucket_id, currency, balance_minor
+		FROM bucket_currency_balances`)
+	if err == nil {
+		defer bbRows.Close()
+		for bbRows.Next() {
+			var bID, curr string
+			var bMinor int64
+			if err := bbRows.Scan(&bID, &curr, &bMinor); err == nil {
+				if bucketBalancesMap[bID] == nil {
+					bucketBalancesMap[bID] = make(map[string]int64)
+				}
+				bucketBalancesMap[bID][curr] = bMinor
+			}
+		}
+	}
+
+	// 5. Fetch buckets and balances
 	rows, err := tenantDB.QueryContext(c.Request().Context(), `
 		SELECT b.id, b.group_name, b.name, COALESCE(bcb.balance_minor, 0)
 		FROM buckets_projection b
@@ -1487,6 +1530,34 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		b.TotalNeededFormatted = i18n.FormatMoneyMinor(b.TotalNeededMinor, "", userLocale, userNumberFormat)
 		b.UnassignedBufferFormatted = i18n.FormatMoneyMinor(b.UnassignedBufferMinor, "", userLocale, userNumberFormat)
 
+		// Populate overspent currencies across all balances for this bucket
+		if balances, ok := bucketBalancesMap[b.ID]; ok {
+			var overspentItems []bucketCurrencyItemViewData
+			for cCode, balMinor := range balances {
+				if balMinor < 0 {
+					deficitMinor := -balMinor
+					rtaAmt := rtaMap[cCode]
+					canCover := rtaAmt > 0
+					overspentItems = append(overspentItems, bucketCurrencyItemViewData{
+						Currency:              cCode,
+						BalanceMinor:          balMinor,
+						BalanceFormatted:      i18n.FormatMoneyMinor(balMinor, "", userLocale, userNumberFormat),
+						CoverDeficitMinor:     deficitMinor,
+						CoverDeficitFormatted: fmt.Sprintf("%.2f", float64(deficitMinor)/100.0),
+						CanCover:              canCover,
+						RTASurplusFormatted:   i18n.FormatMoneyMinor(rtaAmt, "", userLocale, userNumberFormat),
+					})
+				}
+			}
+			sort.Slice(overspentItems, func(i, j int) bool {
+				return overspentItems[i].Currency < overspentItems[j].Currency
+			})
+			if len(overspentItems) > 0 {
+				b.HasOverspentDeficit = true
+				b.OverspentCurrencies = overspentItems
+			}
+		}
+
 		if b.UnassignedBufferMinor > 0 {
 			b.BufferMobileStr = fmt.Sprintf("Buffer: +%s %s", i18n.FormatMoneyMinor(b.UnassignedBufferMinor, "", userLocale, userNumberFormat), b.Currency)
 		} else if b.UnassignedBufferMinor < 0 {
@@ -1584,16 +1655,30 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	var totalNeededAcrossAllMinor int64
 	var totalMandatoryP3NeededAcrossAllMinor int64
 
+	// Track overspending across all currencies
+	totalDeficitsPerCurrency := make(map[string]int64)
+	nonDefaultOverspentCurrenciesMap := make(map[string]bool)
+
 	for _, b := range allBuckets {
 		countAll++
-		if b.HealthStatus == "Overspent" || b.HealthStatus == "Over-allocated" || b.HealthStatus == "Underfunded" {
+		isOverspent := b.HealthStatus == "Overspent" || b.HasOverspentDeficit
+		if isOverspent || b.HealthStatus == "Over-allocated" || b.HealthStatus == "Underfunded" {
 			countAttention++
 		}
-		if b.HealthStatus == "Overspent" {
+		if isOverspent {
 			countOverspent++
 		}
 		if b.UnassignedBufferMinor > 0 {
 			countBuffer++
+		}
+
+		if b.HasOverspentDeficit {
+			for _, oc := range b.OverspentCurrencies {
+				totalDeficitsPerCurrency[oc.Currency] += oc.CoverDeficitMinor
+				if oc.Currency != defaultCurr {
+					nonDefaultOverspentCurrenciesMap[oc.Currency] = true
+				}
+			}
 		}
 
 		totalNeededAcrossAllMinor += b.TotalNeededMinor
@@ -1604,15 +1689,35 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		}
 	}
 
+	var nonDefaultOverspentCurrencies []string
+	for cCode := range nonDefaultOverspentCurrenciesMap {
+		nonDefaultOverspentCurrencies = append(nonDefaultOverspentCurrencies, cCode)
+	}
+	sort.Strings(nonDefaultOverspentCurrencies)
+
+	var overspentAlertCurrencies []overspentSummaryItemViewData
+	var allDeficitCurrenciesSorted []string
+	for cCode := range totalDeficitsPerCurrency {
+		allDeficitCurrenciesSorted = append(allDeficitCurrenciesSorted, cCode)
+	}
+	sort.Strings(allDeficitCurrenciesSorted)
+	for _, cCode := range allDeficitCurrenciesSorted {
+		overspentAlertCurrencies = append(overspentAlertCurrencies, overspentSummaryItemViewData{
+			Currency:         cCode,
+			DeficitFormatted: i18n.FormatMoneyMinor(-totalDeficitsPerCurrency[cCode], "", userLocale, userNumberFormat),
+		})
+	}
+	hasOverspentAlert := len(overspentAlertCurrencies) > 0 && filterParam != "overspent"
+
 	// Filter display buckets
 	var displayBuckets []bucketViewData
 	for _, b := range allBuckets {
 		match := true
 		switch filterParam {
 		case "attention":
-			match = (b.HealthStatus == "Overspent" || b.HealthStatus == "Over-allocated" || b.HealthStatus == "Underfunded")
+			match = (b.HealthStatus == "Overspent" || b.HasOverspentDeficit || b.HealthStatus == "Over-allocated" || b.HealthStatus == "Underfunded")
 		case "overspent":
-			match = (b.HealthStatus == "Overspent")
+			match = (b.HealthStatus == "Overspent" || b.HasOverspentDeficit)
 		case "buffer":
 			match = (b.UnassignedBufferMinor > 0)
 		default:
@@ -1831,6 +1936,15 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		rtaDesc = "Assign this to envelopes below"
 	}
 
+	// Determine warning status for default RTA if it is inflated by negative bucket balances
+	defaultRTADeficitMinor := totalDeficitsPerCurrency[defaultCurr]
+	defaultRTAHasDeficitWarning := defaultRTADeficitMinor > 0 && defaultRTA >= 0
+	defaultRTAWarningTooltip := ""
+	if defaultRTAHasDeficitWarning {
+		formattedDeficit := i18n.FormatMoneyMinor(defaultRTADeficitMinor, "", userLocale, userNumberFormat) + " " + defaultCurr
+		defaultRTAWarningTooltip = i18n.T(userLocale, "budget-overspent-rta-warning-tooltip", "deficit", formattedDeficit)
+	}
+
 	var topCurrencies, extraCurrencies []rtaCurrencyBadgeViewData
 	limit := 3
 	displayCount := len(nonDefaultCurrencies)
@@ -1840,25 +1954,45 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	for i := 0; i < displayCount; i++ {
 		item := nonDefaultCurrencies[i]
 		color := "badge-info"
+		isWarning := false
+		warningTooltip := ""
+		cDeficit := totalDeficitsPerCurrency[item.curr]
 		if item.amt < 0 {
 			color = "badge-error"
+		} else if cDeficit > 0 {
+			color = "badge-warning"
+			isWarning = true
+			formattedDeficit := i18n.FormatMoneyMinor(cDeficit, "", userLocale, userNumberFormat) + " " + item.curr
+			warningTooltip = i18n.T(userLocale, "budget-overspent-rta-warning-tooltip", "deficit", formattedDeficit)
 		}
 		topCurrencies = append(topCurrencies, rtaCurrencyBadgeViewData{
 			Currency:        item.curr,
 			AmountFormatted: i18n.FormatMoneyMinor(item.amt, "", userLocale, userNumberFormat),
 			BadgeColor:      color,
+			IsWarning:       isWarning,
+			WarningTooltip:  warningTooltip,
 		})
 	}
 	for i := limit; i < len(nonDefaultCurrencies); i++ {
 		item := nonDefaultCurrencies[i]
 		color := "badge-info"
+		isWarning := false
+		warningTooltip := ""
+		cDeficit := totalDeficitsPerCurrency[item.curr]
 		if item.amt < 0 {
 			color = "badge-error"
+		} else if cDeficit > 0 {
+			color = "badge-warning"
+			isWarning = true
+			formattedDeficit := i18n.FormatMoneyMinor(cDeficit, "", userLocale, userNumberFormat) + " " + item.curr
+			warningTooltip = i18n.T(userLocale, "budget-overspent-rta-warning-tooltip", "deficit", formattedDeficit)
 		}
 		extraCurrencies = append(extraCurrencies, rtaCurrencyBadgeViewData{
 			Currency:        item.curr,
 			AmountFormatted: i18n.FormatMoneyMinor(item.amt, "", userLocale, userNumberFormat),
 			BadgeColor:      color,
+			IsWarning:       isWarning,
+			WarningTooltip:  warningTooltip,
 		})
 	}
 
@@ -1897,9 +2031,14 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 		RTADescClass:               rtaDescClass,
 		RTADesc:                    rtaDesc,
 		DefaultRTAFormatted:        i18n.FormatMoneyMinor(defaultRTA, "", userLocale, userNumberFormat),
+		DefaultRTAHasDeficitWarning: defaultRTAHasDeficitWarning,
+		DefaultRTAWarningTooltip:    defaultRTAWarningTooltip,
 		HasNonDefaultRTACurrencies: len(nonDefaultCurrencies) > 0,
 		TopRTACurrencies:           topCurrencies,
 		ExtraRTACurrencies:         extraCurrencies,
+		HasOverspentAlert:          hasOverspentAlert,
+		OverspentAlertCurrencies:   overspentAlertCurrencies,
+		OverspentFilterCurrencies:  nonDefaultOverspentCurrencies,
 		TotalNeededFormatted:       i18n.FormatMoneyMinor(totalNeededAcrossAllMinor, "", userLocale, userNumberFormat),
 		HasMandatoryP3Needed:       totalMandatoryP3NeededAcrossAllMinor > 0,
 		MandatoryP3NeededFormatted: i18n.FormatMoneyMinor(totalMandatoryP3NeededAcrossAllMinor, "", userLocale, userNumberFormat),

@@ -66,13 +66,29 @@
                 <span class="sm:hidden text-base">💵</span>
                 <span>{{t .Locale "budget-rta-title"}}</span>
             </div>
-            <div class="stat-value {{.RTAColor}} text-2xl md:text-3xl font-black tracking-tight mt-0.5">
-                {{.DefaultRTAFormatted}} {{.DefaultCurr}}
+            <div class="stat-value {{.RTAColor}} text-2xl md:text-3xl font-black tracking-tight mt-0.5 flex items-center gap-2">
+                <span>{{.DefaultRTAFormatted}} {{.DefaultCurr}}</span>
+                {{- if .DefaultRTAHasDeficitWarning}}
+                <div class="tooltip tooltip-bottom tooltip-warning" data-tip="{{.DefaultRTAWarningTooltip}}">
+                    <span class="badge badge-warning badge-sm gap-1 font-semibold cursor-help">
+                        <span>⚠</span>
+                    </span>
+                </div>
+                {{- end}}
             </div>
             {{- if .HasNonDefaultRTACurrencies}}
             <div class="flex flex-wrap items-center gap-1.5 mt-1.5">
                 {{- range .TopRTACurrencies}}
+                {{- if .IsWarning}}
+                <div class="tooltip tooltip-bottom tooltip-warning" data-tip="{{.WarningTooltip}}">
+                    <span class="badge {{.BadgeColor}} badge-sm font-bold font-mono gap-1 cursor-help">
+                        <span>⚠</span>
+                        <span>{{.AmountFormatted}} {{.Currency}}</span>
+                    </span>
+                </div>
+                {{- else}}
                 <span class="badge {{.BadgeColor}} badge-sm font-bold font-mono">{{.AmountFormatted}} {{.Currency}}</span>
+                {{- end}}
                 {{- end}}
                 {{- if .ExtraRTACurrencies}}
                 <div class="dropdown dropdown-end dropdown-top">
@@ -82,7 +98,16 @@
                         {{- range .ExtraRTACurrencies}}
                         <div class="flex items-center justify-between px-1 py-0.5">
                             <span class="font-bold">{{.Currency}}:</span>
+                            {{- if .IsWarning}}
+                            <div class="tooltip tooltip-left tooltip-warning" data-tip="{{.WarningTooltip}}">
+                                <span class="badge {{.BadgeColor}} badge-xs font-mono font-bold gap-0.5 cursor-help">
+                                    <span>⚠</span>
+                                    <span>{{.AmountFormatted}} {{.Currency}}</span>
+                                </span>
+                            </div>
+                            {{- else}}
                             <span class="badge {{.BadgeColor}} badge-xs font-mono font-bold">{{.AmountFormatted}} {{.Currency}}</span>
+                            {{- end}}
                         </div>
                         {{- end}}
                     </div>
@@ -113,6 +138,28 @@
     </div>
 
     <!-- Controls Toolbar -->
+    {{- if .HasOverspentAlert}}
+    <div id="overspent_alert_banner" class="alert alert-error alert-soft py-2 px-3 sm:px-4 text-xs mb-4 flex flex-row items-center justify-between gap-2 shadow-xs border border-error/30">
+        <div class="flex items-center gap-2 min-w-0">
+            <span class="text-base shrink-0">⚠️</span>
+            <div class="truncate">
+                <span class="font-bold">{{t .Locale "budget-overspent-alert-title"}}</span>
+                <span class="font-mono font-semibold ml-1">
+                    {{- range $i, $item := .OverspentAlertCurrencies}}
+                    {{- if gt $i 0}}, {{end}}{{$item.DeficitFormatted}} {{$item.Currency}}
+                    {{- end}}
+                </span>
+            </div>
+        </div>
+        <div class="shrink-0 flex items-center gap-1.5">
+            <a href="/budgets/{{.BudgetID}}/budget?horizon={{.HorizonParam}}&filter=overspent" class="btn btn-error btn-xs font-semibold shadow-xs">
+                {{t .Locale "budget-overspent-alert-show-btn"}}
+            </a>
+            <button type="button" class="btn btn-ghost btn-xs btn-circle text-base-content/60" onclick="document.getElementById('overspent_alert_banner')?.remove()" aria-label="Close">✕</button>
+        </div>
+    </div>
+    {{- end}}
+
     <div class="card card-border bg-base-100 border-base-300 shadow-xs mb-4 px-3 py-2.5 sm:px-4 sm:py-3 flex flex-row flex-wrap justify-between items-center gap-2 sm:gap-3">
         <div class="flex items-center gap-2 sm:gap-2.5">
             <label for="mobile_horizon_select" class="flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-base-content/70 shrink-0">
@@ -158,7 +205,13 @@
                     <span class="truncate">{{t .Locale "budget-filter-attention"}}</span> <span class="badge badge-xs sm:badge-sm font-mono badge-warning">{{.CountAttention}}</span>
                 </a>
                 <a href="/budgets/{{.BudgetID}}/budget?horizon={{.HorizonParam}}&filter=overspent" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation {{if eq .FilterParam "overspent"}}btn-primary{{else}}btn-ghost border border-base-300{{end}}">
-                    <span>{{t .Locale "budget-filter-overspent"}}</span> <span class="badge badge-xs sm:badge-sm font-mono badge-error">{{.CountOverspent}}</span>
+                    <span>{{t .Locale "budget-filter-overspent"}}</span>
+                    <span class="inline-flex items-center gap-1">
+                        <span class="badge badge-xs sm:badge-sm font-mono badge-error">{{.CountOverspent}}</span>
+                        {{- range .OverspentFilterCurrencies}}
+                        <span class="badge badge-xs font-mono font-bold badge-outline border-error text-error tracking-tight px-1 py-0" title="Overspent in {{.}}">! {{.}}</span>
+                        {{- end}}
+                    </span>
                 </a>
                 <a href="/budgets/{{.BudgetID}}/budget?horizon={{.HorizonParam}}&filter=buffer" class="btn btn-sm join-item justify-between sm:justify-center touch-manipulation {{if eq .FilterParam "buffer"}}btn-primary{{else}}btn-ghost border border-base-300{{end}}">
                     <span>{{t .Locale "budget-filter-buffer"}}</span> <span class="badge badge-xs sm:badge-sm font-mono badge-info">{{.CountBuffer}}</span>
@@ -354,7 +407,31 @@
                                 </div>
                             </td>
                             <td class="font-mono text-right font-bold text-sm">
-                                <span class="{{$b.AvailColor}}">{{$b.BalanceFormatted}}</span> <span class="text-xs font-normal text-base-content/60">{{$b.Currency}}</span>
+                                <div class="flex flex-col items-end">
+                                    <div>
+                                        <span class="{{$b.AvailColor}}">{{$b.BalanceFormatted}}</span> <span class="text-xs font-normal text-base-content/60">{{$b.Currency}}</span>
+                                    </div>
+                                    {{- if $b.HasOverspentDeficit}}
+                                    <div class="flex flex-col items-end gap-1 mt-1">
+                                        {{- range $oc := $b.OverspentCurrencies}}
+                                        <div class="flex items-center gap-1.5 text-[11px] font-normal text-error bg-error/10 px-1.5 py-0.5 rounded-sm border border-error/20">
+                                            <span>↳ {{t $.Locale "budget-overspent-row-notice" "amount" $oc.BalanceFormatted "currency" $oc.Currency}}</span>
+                                            {{- if $oc.CanCover}}
+                                            <button type="button" class="btn btn-error btn-xs py-0 h-5 min-h-0 text-[10px] font-bold px-1.5 shadow-2xs" onclick="openAssignModal('{{$b.ID}}', '{{$b.EscapedName}}', '{{$oc.Currency}}', '{{$oc.CoverDeficitFormatted}}')">
+                                                {{t $.Locale "budget-overspent-cover-btn"}}
+                                            </button>
+                                            {{- else}}
+                                            <div class="tooltip tooltip-left tooltip-error" data-tip="{{t $.Locale "budget-overspent-cover-no-rta-tooltip" "available" $oc.RTASurplusFormatted}}">
+                                                <button type="button" disabled class="btn btn-disabled btn-xs py-0 h-5 min-h-0 text-[10px] font-bold px-1.5 opacity-50 cursor-not-allowed">
+                                                    {{t $.Locale "budget-overspent-cover-btn"}}
+                                                </button>
+                                            </div>
+                                            {{- end}}
+                                        </div>
+                                        {{- end}}
+                                    </div>
+                                    {{- end}}
+                                </div>
                             </td>
                             <td class="text-right">
                                 <div class="flex items-center justify-end gap-1">
@@ -514,6 +591,26 @@
                     <div>
                         <span class="text-[10px] uppercase font-bold text-base-content/50">Available</span>
                         <div class="font-mono font-bold text-base {{$b.AvailColor}}">{{$b.BalanceFormatted}} {{$b.Currency}}</div>
+                        {{- if $b.HasOverspentDeficit}}
+                        <div class="flex flex-col gap-1 mt-1">
+                            {{- range $oc := $b.OverspentCurrencies}}
+                            <div class="flex items-center gap-1.5 text-[11px] font-normal text-error bg-error/10 px-1.5 py-0.5 rounded-sm border border-error/20">
+                                <span>↳ {{t $.Locale "budget-overspent-row-notice" "amount" $oc.BalanceFormatted "currency" $oc.Currency}}</span>
+                                {{- if $oc.CanCover}}
+                                <button type="button" class="btn btn-error btn-xs py-0 h-5 min-h-0 text-[10px] font-bold px-1.5 shadow-2xs" onclick="openAssignModal('{{$b.ID}}', '{{$b.EscapedName}}', '{{$oc.Currency}}', '{{$oc.CoverDeficitFormatted}}')">
+                                    {{t $.Locale "budget-overspent-cover-btn"}}
+                                </button>
+                                {{- else}}
+                                <div class="tooltip tooltip-right tooltip-error" data-tip="{{t $.Locale "budget-overspent-cover-no-rta-tooltip" "available" $oc.RTASurplusFormatted}}">
+                                    <button type="button" disabled class="btn btn-disabled btn-xs py-0 h-5 min-h-0 text-[10px] font-bold px-1.5 opacity-50 cursor-not-allowed">
+                                        {{t $.Locale "budget-overspent-cover-btn"}}
+                                    </button>
+                                </div>
+                                {{- end}}
+                            </div>
+                            {{- end}}
+                        </div>
+                        {{- end}}
                     </div>
                     <div class="text-right">
                         <span class="text-[10px] uppercase font-bold text-base-content/50">Needed</span>

@@ -512,7 +512,7 @@ function openEditBucketModal(id, name, group) {
     setTimeout(() => inp.focus(), 50);
 }
 
-function openAssignModal(id, name, curr) {
+function openAssignModal(id, name, curr, prefillAmount) {
     document.getElementById('assign_funds_form').action = '/budgets/' + currentBudgetID + '/buckets/' + id + '/assign';
     document.getElementById('assign_bucket_name').innerText = name;
     const currSelect = document.getElementById('assign_currency');
@@ -537,8 +537,11 @@ function openAssignModal(id, name, curr) {
     }
     const currLbl = document.getElementById('assign_currency_label');
     if (currLbl) currLbl.innerText = curr;
-    assign_funds_modal.showModal();
     const inp = document.getElementById('assign_amount_input');
+    if (inp) {
+        inp.value = prefillAmount ? prefillAmount : '';
+    }
+    assign_funds_modal.showModal();
     if (inp) setTimeout(() => inp.focus(), 50);
 }
 

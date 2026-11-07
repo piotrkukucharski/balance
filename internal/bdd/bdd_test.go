@@ -5019,6 +5019,103 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		return nil
 	})
 
+	ctx.Step(`^the bucket "([^"]*)" has an overspent balance "([^"]*)" in currency "([^"]*)"$`, func(bucketName, amtStr, currency string) error {
+		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
+		if err != nil {
+			return err
+		}
+		var bID string
+		if err := bDB.QueryRow(`SELECT id FROM buckets_projection WHERE name = ? AND is_archived = 0`, bucketName).Scan(&bID); err != nil {
+			return fmt.Errorf("bucket %s not found: %w", bucketName, err)
+		}
+		minor, _, err := parseAmountWithCurrency(amtStr)
+		if err != nil {
+			minor = parseAmountStr(amtStr)
+		}
+		_, err = bDB.Exec(`
+			INSERT INTO bucket_currency_balances (bucket_id, currency, balance_minor)
+			VALUES (?, ?, ?)
+			ON CONFLICT(bucket_id, currency) DO UPDATE SET balance_minor = excluded.balance_minor`,
+			bID, currency, minor)
+		return err
+	})
+
+	ctx.Step(`^the overspent alert banner should be visible with deficits "([^"]*)"$`, func(expectedDeficits string) error {
+		if tc.lastResponse == nil {
+			return fmt.Errorf("no response available")
+		}
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, `id="overspent_alert_banner"`) {
+			return fmt.Errorf("expected overspent_alert_banner to be visible, body: %s", body)
+		}
+		parts := strings.Split(expectedDeficits, ",")
+		for _, p := range parts {
+			trimP := strings.TrimSpace(p)
+			if !strings.Contains(body, trimP) {
+				return fmt.Errorf("expected deficit %q in overspent_alert_banner, got:\n%s", trimP, body)
+			}
+		}
+		return nil
+	})
+
+	ctx.Step(`^the overspent alert banner should be hidden when filtering by overspent$`, func() error {
+		if tc.lastResponse == nil {
+			return fmt.Errorf("no response available")
+		}
+		body := tc.lastResponse.Body.String()
+		if strings.Contains(body, `id="overspent_alert_banner"`) {
+			return fmt.Errorf("expected overspent_alert_banner to be hidden when filtering by overspent, but was present")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the overspent filter button should display count "([^"]*)" and currency indicator "([^"]*)"$`, func(expectedCount, expectedIndicator string) error {
+		if tc.lastResponse == nil {
+			return fmt.Errorf("no response available")
+		}
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, fmt.Sprintf(`badge-error">%s</span>`, expectedCount)) {
+			return fmt.Errorf("expected overspent badge count %s in HTML", expectedCount)
+		}
+		if expectedIndicator != "" && !strings.Contains(body, expectedIndicator) {
+			return fmt.Errorf("expected currency indicator %q in overspent filter button", expectedIndicator)
+		}
+		return nil
+	})
+
+	ctx.Step(`^the Ready to Assign banner for "([^"]*)" should show deficit warning indicator$`, func(currency string) error {
+		if tc.lastResponse == nil {
+			return fmt.Errorf("no response available")
+		}
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, "tooltip-warning") || !strings.Contains(body, "⚠") {
+			return fmt.Errorf("expected tooltip-warning with ⚠ in RTA banner for %s", currency)
+		}
+		return nil
+	})
+
+	ctx.Step(`^bucket "([^"]*)" row should display previous deficit indicator "([^"]*)"$`, func(bucketName, expectedDeficit string) error {
+		if tc.lastResponse == nil {
+			return fmt.Errorf("no response available")
+		}
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, expectedDeficit) {
+			return fmt.Errorf("expected deficit %s to be displayed in bucket row %s", expectedDeficit, bucketName)
+		}
+		return nil
+	})
+
+	ctx.Step(`^bucket "([^"]*)" should be visible in the overspent list$`, func(bucketName string) error {
+		if tc.lastResponse == nil {
+			return fmt.Errorf("no response available")
+		}
+		body := tc.lastResponse.Body.String()
+		if !strings.Contains(body, bucketName) {
+			return fmt.Errorf("expected bucket %s to be visible in overspent list", bucketName)
+		}
+		return nil
+	})
+
 	ctx.Step(`^a bucket "([^"]*)" with the following targets in the active 30-day window:$`, func(bucketName string, table *godog.Table) error {
 		bDB, err := tc.tenantMgr.GetTenantDB(tc.activeBudgetID, true)
 		if err != nil {

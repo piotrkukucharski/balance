@@ -298,6 +298,24 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     When the advance overdue targets routine runs
     Then target "Internet Bill" due date should be advanced to the current or next cycle
 
+  Scenario: Multi-currency overspending alert, RTA deficit warning and row indicators
+    Given an open budget "Multi-Currency Workspace" with "3,000.00 PLN" in checking account
+    And an account named "Dollar Checking" of type "CHECKING" with currency "USD" and favicon emoji "💵"
+    And an existing bucket "Dining Out" with funded balance "-50.00 PLN"
+    And the bucket "Dining Out" has an overspent balance "-88.41 USD" in currency "USD"
+    When I request the budget view "/budgets/:budgetId/budget"
+    Then the response status should be 200 OK
+    And the overspent alert banner should be visible with deficits "-50.00 PLN, -88.41 USD"
+    And the overspent filter button should display count "1" and currency indicator "! USD"
+    And the Ready to Assign banner for "PLN" should show deficit warning indicator
+    And bucket "Dining Out" row should display previous deficit indicator "-50.00 PLN"
+    And bucket "Dining Out" row should display previous deficit indicator "-88.41 USD"
+    When I request the budget view "/budgets/:budgetId/budget?filter=overspent"
+    Then the response status should be 200 OK
+    And the overspent alert banner should be hidden when filtering by overspent
+    And bucket "Dining Out" should be visible in the overspent list
+
+
 
 
 
