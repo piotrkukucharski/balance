@@ -10,6 +10,7 @@ import (
 
 	"github.com/balance/balance/internal/budget"
 	"github.com/balance/balance/internal/clock"
+	"github.com/balance/balance/internal/config"
 	"github.com/balance/balance/internal/db"
 	"github.com/balance/balance/internal/fx"
 	"github.com/balance/balance/internal/logger"
@@ -300,7 +301,8 @@ func main() {
 	}
 	defer sched.Shutdown(ctx)
 
-	logger.Info(ctx, "Balance server starting", "port", port, "url", fmt.Sprintf("http://localhost:%s", port))
+	publicURL := config.GetPublicBaseURL(port)
+	logger.Info(ctx, "Balance server starting", "port", port, "url", fmt.Sprintf("http://localhost:%s", port), "public_url", publicURL)
 	if err := e.Start(":" + port); err != nil {
 		logger.Error(ctx, "Server stopped unexpectedly", "error", err.Error())
 		os.Exit(1)

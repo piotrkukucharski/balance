@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/balance/balance/internal/config"
 )
 
 type Institution struct {
@@ -87,7 +89,7 @@ func NewClient(secretID, secretKey, redirectURL string) *Client {
 		baseURL = "https://bankaccountdata.gocardless.com/api/v2"
 	}
 	if redirectURL == "" {
-		redirectURL = "http://localhost:8080/budgets/integrations/gocardless/callback"
+		redirectURL = config.BuildPublicURL("", "/budgets/integrations/gocardless/callback")
 	}
 	return &Client{
 		secretID:    secretID,

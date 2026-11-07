@@ -12,6 +12,7 @@ When running in production mode, Balance uses the following environment variable
 |---|---|---|---|
 | `PORT` | No | `8080` | HTTP server listening port inside the container. |
 | `DATA_DIR` | No | `/app/data` | Path to the directory housing SQLite databases (`main.db` and the `budgets/` tenant subdirectory). |
+| `APP_PUBLIC_URL` | No | `http://localhost:PORT` | Public base URL of the application (e.g. `https://balance.yourdomain.com`). Used for absolute link generation, API documentation, and OAuth callbacks. |
 | `APP_ENV` | No | `development` | Application runtime environment (`development` vs `production`/`prod`). In production mode, developer sandboxes and mock feeds are hidden from the UI. |
 | `ALLOW_REGISTRATION` | No | `true` | Public registration toggle. Set to `false` to restrict access and block new user account registrations. |
 | `ALLOW_MOCK_PROVIDERS` | No | `false` | Security guard preventing mock banking adapters in production builds (`false` for live environments). |
@@ -21,7 +22,7 @@ When running in production mode, Balance uses the following environment variable
 | `GOCARDLESS_SECRET_ID` | Optional | - | GoCardless Open Banking API secret ID. |
 | `GOCARDLESS_SECRET_KEY` | Optional | - | GoCardless Open Banking API secret key. |
 | `GOCARDLESS_ENVIRONMENT` | No | `live` | GoCardless environment mode (`live` or `sandbox`). |
-| `GOCARDLESS_REDIRECT_URL` | Optional | - | Callback redirect URL following bank authentication. |
+| `GOCARDLESS_REDIRECT_URL` | Optional | `${APP_PUBLIC_URL}/budgets/integrations/gocardless/callback` | Callback redirect URL following bank authentication. |
 
 ---
 
@@ -44,6 +45,8 @@ services:
     environment:
       - PORT=8080
       - DATA_DIR=/app/data
+      - APP_PUBLIC_URL=${APP_PUBLIC_URL:-https://balance.yourdomain.com}
+      - APP_ENV=production
       - ALLOW_REGISTRATION=${ALLOW_REGISTRATION:-true}
       - ALLOW_MOCK_PROVIDERS=false
       - GEMINI_API_KEY=${GEMINI_API_KEY}

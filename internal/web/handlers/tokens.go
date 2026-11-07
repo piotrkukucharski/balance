@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/balance/balance/internal/auth"
+	"github.com/balance/balance/internal/config"
 	"github.com/balance/balance/internal/domain"
 	"github.com/balance/balance/internal/i18n"
 	"github.com/balance/balance/internal/logger"
@@ -60,6 +61,7 @@ type tokensViewData struct {
 	CSRFToken               string
 	DateFormat              string
 	TimeFormat              string
+	PublicBaseURL           string
 	SidebarHTML             template.HTML
 	BottomDockHTML          template.HTML
 	DateTimeFormatterScript template.HTML
@@ -154,6 +156,7 @@ func (h *TokensHandler) TokensView(c echo.Context) error {
 		CSRFToken:               csrfToken,
 		DateFormat:              dFormat,
 		TimeFormat:              tFormat,
+		PublicBaseURL:           config.GetPublicBaseURL(""),
 		SidebarHTML:             template.HTML(RenderSidebarNavigation(budgetID, "tokens", userLocale)),
 		BottomDockHTML:          template.HTML(RenderBottomDock(budgetID, "settings", userLocale)),
 		DateTimeFormatterScript: template.HTML(DateTimeFormatterScript()),

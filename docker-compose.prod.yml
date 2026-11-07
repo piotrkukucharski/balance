@@ -10,6 +10,7 @@ services:
     environment:
       - PORT=8080
       - DATA_DIR=/app/data
+      - APP_PUBLIC_URL=${APP_PUBLIC_URL:-}
       - APP_ENV=production
       - ALLOW_REGISTRATION=${ALLOW_REGISTRATION:-true}
       - ALLOW_MOCK_PROVIDERS=false

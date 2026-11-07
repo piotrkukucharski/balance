@@ -118,7 +118,7 @@
                     <div class="mockup-code text-xs mt-3 bg-neutral text-neutral-content">
                         <pre data-prefix="$"><code>curl -H "Authorization: Bearer bal_pat_your_token_here" \</code></pre>
                         <pre data-prefix=" "><code>     -H "Accept: application/json" \</code></pre>
-                        <pre data-prefix=" "><code>     http://localhost:8080/api/v1/budgets/{{.BudgetID}}/buckets</code></pre>
+                        <pre data-prefix=" "><code>     {{.PublicBaseURL}}/api/v1/budgets/{{.BudgetID}}/buckets</code></pre>
                     </div>
                 </div>
             </div>

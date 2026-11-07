@@ -507,6 +507,9 @@ func TestSessionOrBearerAuthMiddleware(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), "Personal Access Tokens (PAT)") {
 			t.Fatalf("expected title in TokensView")
 		}
+		if !strings.Contains(rec.Body.String(), "/api/v1/budgets/"+budgetID+"/buckets") {
+			t.Fatalf("expected API usage example in TokensView")
+		}
 
 		// 2. Create Token via POST
 		form := url.Values{}

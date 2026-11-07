@@ -181,6 +181,7 @@ Always use `task` (defined in [`Taskfile.yml`](Taskfile.yml)) to run development
 - **Key Environment Variables**:
   - `PORT`: HTTP server port (default `8080` for maintree, isolated `10000..11000` in worktrees).
   - `DATA_DIR`: Base directory for SQLite databases (`./data`).
+  - `APP_PUBLIC_URL`: Public base URL of the application (e.g. `https://balance.yourdomain.com`). Defaults to `http://localhost:PORT`.
   - `GEMINI_API_KEY` & `GEMINI_MODEL`: Google Gemini API configuration for AI formula assistance (default model: `gemini-3.8-flash`).
   - `GOCARDLESS_SECRET_ID`, `GOCARDLESS_SECRET_KEY`, `GOCARDLESS_ENVIRONMENT`: Open Banking integration credentials (default environment: `sandbox`).
 
