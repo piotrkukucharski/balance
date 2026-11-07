@@ -253,7 +253,8 @@ func (h *WorkspaceHandler) SettingsView(c echo.Context) error {
 
 	// Fetch user default horizon and all horizons
 	userDefaultHorizon, _ := budget.GetUserDefaultHorizon(c.Request().Context(), tenantDB, userID)
-	userFirstDayOfWeek, _ := budget.GetUserFirstDayOfWeek(c.Request().Context(), tenantDB, userID)
+	locDefaults := i18n.GetLocaleDefaults(userLocale)
+	userFirstDayOfWeek, _ := budget.GetUserFirstDayOfWeek(c.Request().Context(), tenantDB, userID, locDefaults.FirstDayOfWeek)
 	allHorizons, _ := budget.ListBudgetHorizons(c.Request().Context(), tenantDB, false)
 
 	var horizonsViewData []horizonOptionViewData
@@ -606,6 +607,9 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 
 	budgetID := domain.NewUUIDv7()
 
+	userLocale := GetUserLocale(c)
+	locDefaults := i18n.GetLocaleDefaults(userLocale)
+
 	if h.appService != nil {
 		id, err := h.appService.CreateBudget(c.Request().Context(), service.CreateBudgetInput{
 			ID:              budgetID,
@@ -614,6 +618,7 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 			DefaultCurrency: curr,
 			Timezone:        tz,
 			DefaultHorizon:  defHorizon,
+			FirstDayOfWeek:  locDefaults.FirstDayOfWeek,
 		})
 		if err != nil {
 			logger.Error(ctx, "Failed creating budget via service", "error", err.Error())
@@ -702,6 +707,9 @@ func (h *WorkspaceHandler) CreateBudget(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to initialize tenant database")
 	}
 	_ = budget.SetUserDefaultHorizon(c.Request().Context(), tDB, userID, defHorizon)
+	if locDefaults.FirstDayOfWeek != "" && budget.IsValidFirstDayOfWeek(locDefaults.FirstDayOfWeek) {
+		_ = budget.SetUserFirstDayOfWeek(c.Request().Context(), tDB, userID, locDefaults.FirstDayOfWeek)
+	}
 
 	logger.Info(ctx, "New budget provisioned successfully", "budget_id", budgetID, "name", name, "currency", curr, "timezone", tz, "owner_id", userID)
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("/budgets/%s/budget", budgetID))
@@ -1144,7 +1152,8 @@ func (h *WorkspaceHandler) BudgetView(c echo.Context) error {
 	}
 
 	// 3. Fetch all active targets
-	userFirstDayOfWeek, _ := budget.GetUserFirstDayOfWeek(c.Request().Context(), tenantDB, userID)
+	userLocDefaults := i18n.GetLocaleDefaults(userLocale)
+	userFirstDayOfWeek, _ := budget.GetUserFirstDayOfWeek(c.Request().Context(), tenantDB, userID, userLocDefaults.FirstDayOfWeek)
 	snap, _ := budget.BuildBudgetSnapshot(c.Request().Context(), tenantDB, defaultCurr, windowDays, tz)
 
 	targetRows, err := tenantDB.QueryContext(c.Request().Context(), `

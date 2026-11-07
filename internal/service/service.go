@@ -203,6 +203,7 @@ type CreateBudgetInput struct {
 	DefaultCurrency string
 	Timezone        string
 	DefaultHorizon  string
+	FirstDayOfWeek  string
 	FirstActionAt   *time.Time
 	CorrelationID   string
 }
@@ -309,6 +310,11 @@ func (s *AppService) CreateBudget(ctx context.Context, input CreateBudgetInput) 
 		horizonToSet = "monthly"
 	}
 	_ = budget.SetUserDefaultHorizon(ctx, tenantDB, input.OwnerUserID, horizonToSet)
+
+	// Set owner's first day of week preference if provided
+	if firstDay := strings.TrimSpace(input.FirstDayOfWeek); firstDay != "" && budget.IsValidFirstDayOfWeek(firstDay) {
+		_ = budget.SetUserFirstDayOfWeek(ctx, tenantDB, input.OwnerUserID, firstDay)
+	}
 
 	return budgetID, nil
 }

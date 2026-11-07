@@ -129,6 +129,19 @@ func TestAuthAndWorkspaceFlow(t *testing.T) {
 	parts := strings.Split(loc, "/")
 	budgetID := parts[2]
 
+	// Verify default first_day_of_week preference initialized from locale (en-US -> SUNDAY)
+	tDB, err := tenantMgr.GetTenantDB(budgetID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDayPref, err := budget.GetUserFirstDayOfWeek(context.Background(), tDB, userID)
+	if err != nil {
+		t.Fatalf("GetUserFirstDayOfWeek failed: %v", err)
+	}
+	if firstDayPref != "SUNDAY" {
+		t.Fatalf("expected default first_day_of_week SUNDAY from en-US locale, got %s", firstDayPref)
+	}
+
 	// 4. Test View Budget
 	vReq := httptest.NewRequest(http.MethodGet, "/budgets/"+budgetID+"/budget", nil)
 	vRec := httptest.NewRecorder()

@@ -21,8 +21,22 @@ function populateScheduleSelects(selectedDow, selectedDom, selectedMoy) {
             7: 'Sunday'
         };
         // Order based on userFirstDayOfWeek
-        // If SUNDAY: 7=Sun, 1=Mon, 2=Tue... with relative numbering 1..7
-        const isoOrder = userFirstDayOfWeek === 'SUNDAY' ? [7, 1, 2, 3, 4, 5, 6] : [1, 2, 3, 4, 5, 6, 7];
+        // ISO days: 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat, 7=Sun
+        const dayMap = {
+            'MONDAY': 1,
+            'TUESDAY': 2,
+            'WEDNESDAY': 3,
+            'THURSDAY': 4,
+            'FRIDAY': 5,
+            'SATURDAY': 6,
+            'SUNDAY': 7
+        };
+        const startISO = dayMap[userFirstDayOfWeek] || 1;
+        const isoOrder = [];
+        for (let i = 0; i < 7; i++) {
+            const day = ((startISO - 1 + i) % 7) + 1;
+            isoOrder.push(day);
+        }
         isoOrder.forEach((isoDay, index) => {
             const relNum = index + 1;
             const opt = document.createElement('option');

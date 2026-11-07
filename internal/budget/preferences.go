@@ -10,25 +10,31 @@ import (
 
 const PrefFirstDayOfWeek = "first_day_of_week"
 
-// GetUserFirstDayOfWeek retrieves user's preferred first day of week ("MONDAY" or "SUNDAY") for the budget.
-// Defaults to "MONDAY" if not set.
-func GetUserFirstDayOfWeek(ctx context.Context, tenantDB *sql.DB, userID string) (string, error) {
+// GetUserFirstDayOfWeek retrieves user's preferred first day of week for the budget.
+// If optional defaultDay is provided and valid, it is used as fallback when preference is not found.
+// Otherwise, defaults to "MONDAY".
+func GetUserFirstDayOfWeek(ctx context.Context, tenantDB *sql.DB, userID string, defaultDay ...string) (string, error) {
+	fallback := FirstDayMonday
+	if len(defaultDay) > 0 && IsValidFirstDayOfWeek(defaultDay[0]) {
+		fallback = strings.ToUpper(strings.TrimSpace(defaultDay[0]))
+	}
+
 	if tenantDB == nil || strings.TrimSpace(userID) == "" {
-		return FirstDayMonday, nil
+		return fallback, nil
 	}
 
 	var val string
 	err := tenantDB.QueryRowContext(ctx, `SELECT value FROM budget_preferences WHERE user_id = ? AND key = ?`, userID, PrefFirstDayOfWeek).Scan(&val)
 	if err == nil {
 		val = strings.ToUpper(strings.TrimSpace(val))
-		if val == FirstDaySunday || val == FirstDayMonday {
+		if IsValidFirstDayOfWeek(val) {
 			return val, nil
 		}
 	}
-	return FirstDayMonday, nil
+	return fallback, nil
 }
 
-// SetUserFirstDayOfWeek stores user's preferred first day of week ("MONDAY" or "SUNDAY").
+// SetUserFirstDayOfWeek stores user's preferred first day of week (one of 7 weekdays).
 func SetUserFirstDayOfWeek(ctx context.Context, tenantDB *sql.DB, userID, firstDay string) error {
 	if tenantDB == nil {
 		return errors.New("tenantDB is required")
@@ -37,8 +43,8 @@ func SetUserFirstDayOfWeek(ctx context.Context, tenantDB *sql.DB, userID, firstD
 		return errors.New("userID is required")
 	}
 	val := strings.ToUpper(strings.TrimSpace(firstDay))
-	if val != FirstDaySunday && val != FirstDayMonday {
-		return errors.New("first_day_of_week must be MONDAY or SUNDAY")
+	if !IsValidFirstDayOfWeek(val) {
+		return errors.New("first_day_of_week must be a valid weekday (MONDAY..SUNDAY)")
 	}
 
 	now := time.Now().UTC().UnixMicro()

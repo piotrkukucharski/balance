@@ -99,3 +99,15 @@ func TestFormatMoneyMinor(t *testing.T) {
 		}
 	}
 }
+
+func TestLocaleFirstDayOfWeekDefaults(t *testing.T) {
+	enDefaults := i18n.GetLocaleDefaults("en-US")
+	if enDefaults.FirstDayOfWeek != "SUNDAY" {
+		t.Errorf("expected en-US FirstDayOfWeek to be SUNDAY, got %q", enDefaults.FirstDayOfWeek)
+	}
+
+	plDefaults := i18n.GetLocaleDefaults("pl-PL")
+	if plDefaults.FirstDayOfWeek != "MONDAY" {
+		t.Errorf("expected pl-PL FirstDayOfWeek to be MONDAY, got %q", plDefaults.FirstDayOfWeek)
+	}
+}

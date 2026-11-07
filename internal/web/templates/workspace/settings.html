@@ -104,6 +104,11 @@
                             </label>
                             <select name="first_day_of_week" class="select select-bordered w-full select-sm focus:select-primary text-xs font-semibold">
                                 <option value="MONDAY" {{if eq .UserFirstDayOfWeek "MONDAY"}}selected{{end}}>{{t .Locale "settings-first-day-opt-monday"}}</option>
+                                <option value="TUESDAY" {{if eq .UserFirstDayOfWeek "TUESDAY"}}selected{{end}}>{{t .Locale "settings-first-day-opt-tuesday"}}</option>
+                                <option value="WEDNESDAY" {{if eq .UserFirstDayOfWeek "WEDNESDAY"}}selected{{end}}>{{t .Locale "settings-first-day-opt-wednesday"}}</option>
+                                <option value="THURSDAY" {{if eq .UserFirstDayOfWeek "THURSDAY"}}selected{{end}}>{{t .Locale "settings-first-day-opt-thursday"}}</option>
+                                <option value="FRIDAY" {{if eq .UserFirstDayOfWeek "FRIDAY"}}selected{{end}}>{{t .Locale "settings-first-day-opt-friday"}}</option>
+                                <option value="SATURDAY" {{if eq .UserFirstDayOfWeek "SATURDAY"}}selected{{end}}>{{t .Locale "settings-first-day-opt-saturday"}}</option>
                                 <option value="SUNDAY" {{if eq .UserFirstDayOfWeek "SUNDAY"}}selected{{end}}>{{t .Locale "settings-first-day-opt-sunday"}}</option>
                             </select>
                             <span class="text-[11px] text-base-content/50 mt-1">{{t .Locale "settings-first-day-hint"}}</span>

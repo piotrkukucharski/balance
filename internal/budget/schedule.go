@@ -3,14 +3,37 @@ package budget
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
 // Weekday constants and helpers
 const (
-	FirstDayMonday = "MONDAY"
-	FirstDaySunday = "SUNDAY"
+	FirstDayMonday    = "MONDAY"
+	FirstDayTuesday   = "TUESDAY"
+	FirstDayWednesday = "WEDNESDAY"
+	FirstDayThursday  = "THURSDAY"
+	FirstDayFriday    = "FRIDAY"
+	FirstDaySaturday  = "SATURDAY"
+	FirstDaySunday    = "SUNDAY"
 )
+
+// ValidFirstDaysOfWeek contains all supported first day of week values.
+var ValidFirstDaysOfWeek = map[string]int{
+	FirstDayMonday:    1,
+	FirstDayTuesday:   2,
+	FirstDayWednesday: 3,
+	FirstDayThursday:  4,
+	FirstDayFriday:    5,
+	FirstDaySaturday:  6,
+	FirstDaySunday:    7,
+}
+
+// IsValidFirstDayOfWeek checks if the uppercase string is a valid first day.
+func IsValidFirstDayOfWeek(day string) bool {
+	_, ok := ValidFirstDaysOfWeek[strings.ToUpper(strings.TrimSpace(day))]
+	return ok
+}
 
 // RecurrenceSchedule encapsulates the specification of when a target repeats
 // and provides pure domain calculation for its next due date and end-of-month clamping.

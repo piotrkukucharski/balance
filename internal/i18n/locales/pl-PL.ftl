@@ -6,6 +6,7 @@ locale-number-decimal = ,
 locale-date-format = DD.MM.YYYY
 locale-time-format = 24h
 locale-currency-pattern = { $amount } { $currency }
+locale-first-day-of-week = MONDAY
 
 # Global / Navigation
 app-name = Balance
@@ -139,6 +140,11 @@ settings-first-day-card = Konfiguracja Tygodnia
 settings-first-day-desc = Skonfiguruj preferowany dzień początku tygodnia dla celów cyklicznych i widoków kalendarza.
 settings-first-day-label = Pierwszy dzień tygodnia
 settings-first-day-opt-monday = Poniedziałek
+settings-first-day-opt-tuesday = Wtorek
+settings-first-day-opt-wednesday = Środa
+settings-first-day-opt-thursday = Czwartek
+settings-first-day-opt-friday = Piątek
+settings-first-day-opt-saturday = Sobota
 settings-first-day-opt-sunday = Niedziela
 settings-first-day-hint = Harmonogramy celów tygodniowych oraz relatywna numeracja dni dostosują się do tego wyboru.
 settings-first-day-save-btn = Zapisz początek tygodnia

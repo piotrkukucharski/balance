@@ -33,6 +33,7 @@ type LocaleDefaults struct {
 	DateFormat      string
 	TimeFormat      string
 	CurrencyPattern string
+	FirstDayOfWeek  string
 }
 
 var (
@@ -103,6 +104,7 @@ func LoadLocales() error {
 		timeFormat, _, _ := bundle.FormatMessage("locale-time-format")
 		currencyPattern, _, _ := bundle.FormatMessage("locale-currency-pattern")
 		displayName, _, _ := bundle.FormatMessage("locale-name")
+		firstDayOfWeek, _, _ := bundle.FormatMessage("locale-first-day-of-week")
 
 		if displayName == "" {
 			displayName = localeCode
@@ -116,6 +118,10 @@ func LoadLocales() error {
 		if timeFormat == "" {
 			timeFormat = "24h"
 		}
+		firstDayOfWeek = strings.ToUpper(strings.TrimSpace(firstDayOfWeek))
+		if firstDayOfWeek == "" {
+			firstDayOfWeek = "MONDAY"
+		}
 
 		defaults[localeCode] = LocaleDefaults{
 			Tag:             localeCode,
@@ -125,6 +131,7 @@ func LoadLocales() error {
 			DateFormat:      dateFormat,
 			TimeFormat:      timeFormat,
 			CurrencyPattern: currencyPattern,
+			FirstDayOfWeek:  firstDayOfWeek,
 		}
 	}
 

@@ -283,6 +283,8 @@ Feature: Buckets, Targets, Health Statuses and Waterfall Auto-Assign
     Given an open budget "Family Home"
     When I set the budget first day of week preference to "SUNDAY"
     Then the user preference "first_day_of_week" should be "SUNDAY"
+    When I set the budget first day of week preference to "WEDNESDAY"
+    Then the user preference "first_day_of_week" should be "WEDNESDAY"
     When I create a bucket "Household" in group "Needs"
     And I add a target "Weekly Gardening" with cadence "WEEKLY", day of week 5, amount "100.00 PLN"
     And I add a target "Monthly Gym" with cadence "MONTHLY", day of month 31, amount "150.00 PLN"
