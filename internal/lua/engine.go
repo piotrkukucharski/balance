@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/jev"
 	glua "github.com/yuin/gopher-lua"
 	"github.com/yuin/gopher-lua/parse"
 )
@@ -30,6 +31,20 @@ var (
 	ErrHostCallLimitExceeded   = errors.New("lua host API call quota exceeded (32 calls)")
 	ErrInvalidReturnValue      = errors.New("lua formula must return a single numeric integer in minor units")
 )
+
+type evalConfig struct {
+	jevClient jev.JevClient
+}
+
+// EvaluationOption customizes Lua evaluation options.
+type EvaluationOption func(*evalConfig)
+
+// WithJevClient configures a JevClient to expose the `jev` module in the Lua VM.
+func WithJevClient(client jev.JevClient) EvaluationOption {
+	return func(c *evalConfig) {
+		c.jevClient = client
+	}
+}
 
 // TargetMeta represents an in-memory target snapshot
 type TargetMeta struct {
@@ -1643,7 +1658,12 @@ func registerAutomationTx(
 }
 
 // EvaluateAutomationJudge executes the judge script against a transaction context.
-func EvaluateAutomationJudge(ctx context.Context, script string, txCtx AutomationTxContext, snap *InMemoryBudgetSnapshot) (bool, error) {
+func EvaluateAutomationJudge(ctx context.Context, script string, txCtx AutomationTxContext, snap *InMemoryBudgetSnapshot, opts ...EvaluationOption) (bool, error) {
+	var cfg evalConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	trimmed := strings.TrimSpace(script)
 	if !strings.HasPrefix(trimmed, "return ") && !strings.HasPrefix(trimmed, "if ") && !strings.Contains(trimmed, "\n") {
 		trimmed = "return " + trimmed
@@ -1652,8 +1672,18 @@ func EvaluateAutomationJudge(ctx context.Context, script string, txCtx Automatio
 		return false, fmt.Errorf("judge script validation error: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, EmergencyTimeout)
-	defer cancel()
+	// If no context deadline is set or if Jev is not enabled, default to EmergencyTimeout (50ms).
+	// If JevClient is provided and context has deadline, respect the caller's context deadline.
+	// Otherwise apply a default automation timeout (e.g. 3500ms when Jev is enabled, 50ms otherwise).
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		timeout := EmergencyTimeout
+		if cfg.jevClient != nil {
+			timeout = 3500 * time.Millisecond
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 
 	L := glua.NewState(glua.Options{
 		CallStackSize:   16,
@@ -1677,6 +1707,9 @@ func EvaluateAutomationJudge(ctx context.Context, script string, txCtx Automatio
 	registerTextLib(L, checkHostCall)
 	registerDateLib(L, checkHostCall)
 	registerAutomationTx(L, txCtx, snap, checkHostCall, true, nil)
+	if cfg.jevClient != nil {
+		registerJevLib(ctx, L, cfg.jevClient)
+	}
 
 	if err := L.DoString(trimmed); err != nil {
 		return false, fmt.Errorf("judge execution error: %w", err)
@@ -1694,13 +1727,25 @@ func EvaluateAutomationJudge(ctx context.Context, script string, txCtx Automatio
 }
 
 // EvaluateAutomationExecutor executes the executor script against a transaction context.
-func EvaluateAutomationExecutor(ctx context.Context, script string, txCtx AutomationTxContext, snap *InMemoryBudgetSnapshot) (*AutomationOutcome, error) {
+func EvaluateAutomationExecutor(ctx context.Context, script string, txCtx AutomationTxContext, snap *InMemoryBudgetSnapshot, opts ...EvaluationOption) (*AutomationOutcome, error) {
+	var cfg evalConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	if err := ValidateLuaScript(script); err != nil {
 		return nil, fmt.Errorf("executor script validation error: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, EmergencyTimeout)
-	defer cancel()
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		timeout := EmergencyTimeout
+		if cfg.jevClient != nil {
+			timeout = 3500 * time.Millisecond
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 
 	L := glua.NewState(glua.Options{
 		CallStackSize:   16,
@@ -1728,6 +1773,9 @@ func EvaluateAutomationExecutor(ctx context.Context, script string, txCtx Automa
 	registerTextLib(L, checkHostCall)
 	registerDateLib(L, checkHostCall)
 	registerAutomationTx(L, txCtx, snap, checkHostCall, false, outcome)
+	if cfg.jevClient != nil {
+		registerJevLib(ctx, L, cfg.jevClient)
+	}
 
 	if err := L.DoString(script); err != nil {
 		return nil, fmt.Errorf("executor execution error: %w", err)

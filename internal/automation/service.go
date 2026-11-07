@@ -8,10 +8,32 @@ import (
 	"strings"
 	"time"
 
+	"github.com/balance/balance/internal/config"
 	"github.com/balance/balance/internal/domain"
+	"github.com/balance/balance/internal/jev"
 	"github.com/balance/balance/internal/lua"
 	"github.com/balance/balance/internal/transaction"
 )
+
+// DefaultJevClient is the instance-level JevClient used for automation runs.
+// Can be overridden in tests.
+var DefaultJevClient jev.JevClient
+
+func initJevClient() jev.JevClient {
+	if DefaultJevClient != nil {
+		return DefaultJevClient
+	}
+	apiKey := config.GetJevAPIKey()
+	if apiKey == "" {
+		return nil
+	}
+	return jev.NewHTTPClient(jev.Config{
+		Endpoint: config.GetJevEndpoint(),
+		APIKey:   apiKey,
+		Timeout:  1000 * time.Millisecond,
+	})
+}
+
 
 var (
 	ErrAutomationNotFound = errors.New("automation not found")
@@ -624,6 +646,7 @@ func ApplyAutomationsInTx(ctx context.Context, tx *sql.Tx, createdTxIDs []string
 	}
 
 	now := time.Now().UTC().UnixMicro()
+	jevCli := initJevClient()
 
 	for _, txID := range createdTxIDs {
 		txCtx, err := convertBudgetTxWithDBTX(ctx, tx, txID, snap)
@@ -633,7 +656,7 @@ func ApplyAutomationsInTx(ctx context.Context, tx *sql.Tx, createdTxIDs []string
 
 		currentTx := *txCtx
 		for _, a := range activeAutomations {
-			matched, err := lua.EvaluateAutomationJudge(ctx, a.JudgeScript, currentTx, snap)
+			matched, err := lua.EvaluateAutomationJudge(ctx, a.JudgeScript, currentTx, snap, lua.WithJevClient(jevCli))
 			if err != nil {
 				return fmt.Errorf("automation %q [%s] judge failed: %w", a.Name, a.ID, err)
 			}
@@ -641,7 +664,7 @@ func ApplyAutomationsInTx(ctx context.Context, tx *sql.Tx, createdTxIDs []string
 				continue
 			}
 
-			outcome, err := lua.EvaluateAutomationExecutor(ctx, a.ExecutorScript, currentTx, snap)
+			outcome, err := lua.EvaluateAutomationExecutor(ctx, a.ExecutorScript, currentTx, snap, lua.WithJevClient(jevCli))
 			if err != nil {
 				return fmt.Errorf("automation %q [%s] executor failed: %w", a.Name, a.ID, err)
 			}
@@ -1100,7 +1123,8 @@ func DryRunAutomation(
 		return false, nil, nil, fmt.Errorf("convert tx: %w", err)
 	}
 
-	matched, err = lua.EvaluateAutomationJudge(ctx, judgeScript, *txCtx, snap)
+	jevCli := initJevClient()
+	matched, err = lua.EvaluateAutomationJudge(ctx, judgeScript, *txCtx, snap, lua.WithJevClient(jevCli))
 	if err != nil {
 		return false, nil, nil, fmt.Errorf("evaluate judge: %w", err)
 	}
@@ -1108,7 +1132,7 @@ func DryRunAutomation(
 		return false, nil, txCtx, nil
 	}
 
-	outcome, err = lua.EvaluateAutomationExecutor(ctx, executorScript, *txCtx, snap)
+	outcome, err = lua.EvaluateAutomationExecutor(ctx, executorScript, *txCtx, snap, lua.WithJevClient(jevCli))
 	if err != nil {
 		return true, nil, txCtx, fmt.Errorf("evaluate executor: %w", err)
 	}
@@ -1152,6 +1176,7 @@ func RunAutomationsBatch(
 	result := &BatchExecutionResult{
 		ProcessedCount: len(txIDs),
 	}
+	jevCli := initJevClient()
 
 	for _, txID := range txIDs {
 		txCtx, err := ConvertBudgetTxToContext(txID, tenantDB, snap)
@@ -1173,7 +1198,7 @@ func RunAutomationsBatch(
 		var pendingReassign *lua.AccountPartyReassignment
 
 		for _, a := range activeAutomations {
-			matched, err := lua.EvaluateAutomationJudge(ctx, a.JudgeScript, currentTx, snap)
+			matched, err := lua.EvaluateAutomationJudge(ctx, a.JudgeScript, currentTx, snap, lua.WithJevClient(jevCli))
 			if err != nil {
 				return nil, fmt.Errorf("automation %q [%s] judge failed: %w", a.Name, a.ID, err)
 			}
@@ -1181,7 +1206,7 @@ func RunAutomationsBatch(
 				continue
 			}
 
-			outcome, err := lua.EvaluateAutomationExecutor(ctx, a.ExecutorScript, currentTx, snap)
+			outcome, err := lua.EvaluateAutomationExecutor(ctx, a.ExecutorScript, currentTx, snap, lua.WithJevClient(jevCli))
 			if err != nil {
 				return nil, fmt.Errorf("automation %q [%s] executor failed: %w", a.Name, a.ID, err)
 			}

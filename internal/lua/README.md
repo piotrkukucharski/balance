@@ -13,10 +13,15 @@ Embedded GopherLua sandboxed runtime for dynamic target calculations, user-defin
 - `type LuaEngine struct` [engine.go:95]
 - `func NewLuaEngine() *LuaEngine` [engine.go:100]
 - `func (e *LuaEngine) ExecuteFormula(ctx context.Context, script string, formulaCtx TargetFormulaContext) (int64, error)` [engine.go:120]
+- `func WithJevClient(client jev.JevClient) EvaluationOption` [engine.go:42]
+- `jev.choice(question, candidates, contextData) -> (result, confidence, err)` [jev_lib.go:27]
+- `jev.noul(question, contextData) -> (probability, confidence, err)` [jev_lib.go:75]
 
 ## Invariants
-- Lua state executes in a restricted sandbox without OS, IO, or network access [engine.go:100-115]
+- Lua state executes in a restricted sandbox without OS, IO, or raw network access [engine.go:100-115]
 - Script execution is strictly bounded by instruction step counters and execution timeouts [engine.go:125-140]
+- Banned syntax: while, for, repeat, goto, function declarations, string concatenation (..) [engine.go:170-180]
+- Jev System One integration: max 3 calls per script execution, 1.0s per-request timeout, error message token sanitization [jev_lib.go:12, jev/client.go:100]
 
 ## Side Effects
 - Allocates memory and executes CPU instructions within sandboxed GopherLua VM [engine.go:120-150]

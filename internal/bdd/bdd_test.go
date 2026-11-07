@@ -93,6 +93,31 @@ type bddTestContext struct {
 	testScheduler *scheduler.Scheduler
 	lastEvaluatedCount     int
 	lastCreatedTargetID    string
+
+	mockJevClient   *mockBDDJevClient
+	jevTestTx       lua.AutomationTxContext
+	jevJudgeResult  bool
+	jevJudgeError   error
+	jevReturnedErr  string
+}
+
+type mockBDDJevClient struct {
+	choiceFunc func(ctx context.Context, question string, candidates []string, contextData map[string]any) (string, float64, error)
+	noulFunc   func(ctx context.Context, question string, contextData map[string]any) (float64, float64, error)
+}
+
+func (m *mockBDDJevClient) Choice(ctx context.Context, question string, candidates []string, contextData map[string]any) (string, float64, error) {
+	if m.choiceFunc != nil {
+		return m.choiceFunc(ctx, question, candidates, contextData)
+	}
+	return "", 0, nil
+}
+
+func (m *mockBDDJevClient) Noul(ctx context.Context, question string, contextData map[string]any) (float64, float64, error) {
+	if m.noulFunc != nil {
+		return m.noulFunc(ctx, question, contextData)
+	}
+	return 0, 0, nil
 }
 
 func (tc *bddTestContext) setup() error {
@@ -8803,6 +8828,98 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 		}
 		return nil
 	})
+
+	// 20_lua_jev_automation.feature steps
+	ctx.Step(`^a mock Jev service returning choice "([^"]*)" with confidence ([0-9.]+) for question "([^"]*)"$`, func(choice string, conf float64, question string) error {
+		tc.mockJevClient = &mockBDDJevClient{
+			choiceFunc: func(ctx context.Context, q string, candidates []string, contextData map[string]any) (string, float64, error) {
+				return choice, conf, nil
+			},
+		}
+		return nil
+	})
+
+	ctx.Step(`^a mock Jev service returning probability ([0-9.]+) with confidence ([0-9.]+) for question "([^"]*)"$`, func(prob, conf float64, question string) error {
+		tc.mockJevClient = &mockBDDJevClient{
+			noulFunc: func(ctx context.Context, q string, contextData map[string]any) (float64, float64, error) {
+				return prob, conf, nil
+			},
+		}
+		return nil
+	})
+
+	ctx.Step(`^a mock Jev service responding to choice queries$`, func() error {
+		tc.mockJevClient = &mockBDDJevClient{
+			choiceFunc: func(ctx context.Context, q string, candidates []string, contextData map[string]any) (string, float64, error) {
+				if len(candidates) > 0 {
+					return candidates[0], 0.9, nil
+				}
+				return "", 0.0, nil
+			},
+		}
+		return nil
+	})
+
+	ctx.Step(`^a mock Jev service returning HTTP 500 with internal error details$`, func() error {
+		tc.mockJevClient = &mockBDDJevClient{
+			choiceFunc: func(ctx context.Context, q string, candidates []string, contextData map[string]any) (string, float64, error) {
+				return "", 0.0, errors.New("jev: system one service unavailable")
+			},
+		}
+		return nil
+	})
+
+	ctx.Step(`^a transaction with note "([^"]*)" and amount "([^"]*)"$`, func(note, amountStr string) error {
+		minor := parseAmountStr(amountStr)
+		curr := "PLN"
+		parts := strings.Fields(amountStr)
+		if len(parts) > 1 {
+			curr = parts[1]
+		}
+		n := note
+		tc.jevTestTx = lua.AutomationTxContext{
+			ID:                "test-tx-id",
+			Notes:             &n,
+			SourceAmountMinor: minor,
+			SourceCurrency:    curr,
+		}
+		return nil
+	})
+
+	ctx.Step(`^a user-submitted Lua automation script attempting to invoke Jev inside a loop:$`, func(doc *godog.DocString) error {
+		tc.unsafeScript = doc.Content
+		return nil
+	})
+
+	ctx.Step(`^the Lua automation judge evaluates script:$`, func(doc *godog.DocString) error {
+		script := doc.Content
+		matched, err := lua.EvaluateAutomationJudge(context.Background(), script, tc.jevTestTx, nil, lua.WithJevClient(tc.mockJevClient))
+		tc.jevJudgeResult = matched
+		tc.jevJudgeError = err
+		return nil
+	})
+
+	ctx.Step(`^the judge evaluation result should be true$`, func() error {
+		if tc.jevJudgeError != nil {
+			return fmt.Errorf("unexpected judge error: %w", tc.jevJudgeError)
+		}
+		if !tc.jevJudgeResult {
+			return fmt.Errorf("expected judge evaluation result to be true, got false")
+		}
+		return nil
+	})
+
+	ctx.Step(`^the Lua return error should not expose authorization tokens or sensitive headers$`, func() error {
+		// When judge returns string or error tuple
+		if tc.jevJudgeError != nil {
+			msg := tc.jevJudgeError.Error()
+			if strings.Contains(msg, "Bearer") && !strings.Contains(msg, "[REDACTED]") {
+				return fmt.Errorf("error exposed bearer token: %s", msg)
+			}
+		}
+		return nil
+	})
+
 }
 
 func TestFeatures(t *testing.T) {

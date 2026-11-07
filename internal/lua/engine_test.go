@@ -2,6 +2,7 @@ package lua
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -613,3 +614,106 @@ func TestTargetByIdAndExtractDependencies(t *testing.T) {
 		t.Fatalf("expected BucketID 'b-utilities', got %v", outcome.UpdatedTx.BucketID)
 	}
 }
+
+type mockJevClient struct {
+	choiceFunc func(ctx context.Context, question string, candidates []string, contextData map[string]any) (string, float64, error)
+	noulFunc   func(ctx context.Context, question string, contextData map[string]any) (float64, float64, error)
+}
+
+func (m *mockJevClient) Choice(ctx context.Context, question string, candidates []string, contextData map[string]any) (string, float64, error) {
+	if m.choiceFunc != nil {
+		return m.choiceFunc(ctx, question, candidates, contextData)
+	}
+	return "", 0, nil
+}
+
+func (m *mockJevClient) Noul(ctx context.Context, question string, contextData map[string]any) (float64, float64, error) {
+	if m.noulFunc != nil {
+		return m.noulFunc(ctx, question, contextData)
+	}
+	return 0, 0, nil
+}
+
+func TestJevIntegrationInAutomations(t *testing.T) {
+	ctx := context.Background()
+	notes := "UBER *TRIP 1234 HELP.UBER.COM"
+	tx := AutomationTxContext{
+		ID:                "tx-1",
+		Notes:             &notes,
+		SourceAmountMinor: 4500,
+		SourceCurrency:    "PLN",
+	}
+
+	mock := &mockJevClient{
+		choiceFunc: func(ctx context.Context, question string, candidates []string, contextData map[string]any) (string, float64, error) {
+			if question == "Which category?" && len(candidates) == 3 {
+				return "Transport", 0.95, nil
+			}
+			return candidates[0], 0.5, nil
+		},
+		noulFunc: func(ctx context.Context, question string, contextData map[string]any) (float64, float64, error) {
+			return 0.92, 0.88, nil
+		},
+	}
+
+	// 1. Choice happy path in Judge
+	judgeChoiceScript := `
+		local cat, conf, err = jev.choice("Which category?", {"Transport", "Food", "Bills"}, {note = tx.notes})
+		return err == nil and cat == "Transport" and conf > 0.9
+	`
+	matched, err := EvaluateAutomationJudge(ctx, judgeChoiceScript, tx, nil, WithJevClient(mock))
+	if err != nil {
+		t.Fatalf("judge choice failed: %v", err)
+	}
+	if !matched {
+		t.Fatalf("expected judge choice to match")
+	}
+
+	// 2. Noul happy path in Judge
+	judgeNoulScript := `
+		local prob, conf, err = jev.noul("Is recurring subscription?", {note = tx.notes})
+		return err == nil and prob > 0.9
+	`
+	matched, err = EvaluateAutomationJudge(ctx, judgeNoulScript, tx, nil, WithJevClient(mock))
+	if err != nil {
+		t.Fatalf("judge noul failed: %v", err)
+	}
+	if !matched {
+		t.Fatalf("expected judge noul to match")
+	}
+
+	// 3. Quota limit of max 3 calls
+	judgeQuotaScript := `
+		local c1, _, err1 = jev.choice("q1", {"A", "B"}, {})
+		local c2, _, err2 = jev.choice("q2", {"A", "B"}, {})
+		local c3, _, err3 = jev.choice("q3", {"A", "B"}, {})
+		local c4, _, err4 = jev.choice("q4", {"A", "B"}, {})
+		return err4 ~= nil and text.contains(err4, "quota exceeded")
+	`
+	matched, err = EvaluateAutomationJudge(ctx, judgeQuotaScript, tx, nil, WithJevClient(mock))
+	if err != nil {
+		t.Fatalf("judge quota failed: %v", err)
+	}
+	if !matched {
+		t.Fatalf("expected judge quota to trigger and match")
+	}
+
+	// 4. Upstream error handling
+	mockErr := &mockJevClient{
+		choiceFunc: func(ctx context.Context, question string, candidates []string, contextData map[string]any) (string, float64, error) {
+			return "", 0.0, errors.New("jev: system one service unavailable")
+		},
+	}
+	judgeErrorScript := `
+		local cat, conf, err = jev.choice("q", {"A"}, {})
+		return err ~= nil and text.contains(err, "unavailable")
+	`
+	matched, err = EvaluateAutomationJudge(ctx, judgeErrorScript, tx, nil, WithJevClient(mockErr))
+	if err != nil {
+		t.Fatalf("judge error handling failed: %v", err)
+	}
+	if !matched {
+		t.Fatalf("expected judge to handle upstream error")
+	}
+}
+

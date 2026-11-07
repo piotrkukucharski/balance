@@ -303,7 +303,9 @@ Available variables:
 - text.regex_match(pattern, str) -- NOTE SIGNATURE: pattern first, str second! e.g. text.regex_match(".*(bolt|uber|freenow|taxi).*", text.lower(tx.notes))
 - text.lower(str), text.upper(str), text.trim(str)
 - date.year(tx.date), date.month(tx.date), date.day(tx.date), date.weekday(tx.date)
-Strict restrictions: NO loops (while, for), NO function declarations, NO '..' concat operator.
+- jev.choice(question, candidates_table, context_table) -- returns (choice_str, conf_num, err_str), e.g. local cat, conf, err = jev.choice("Category?", {"Food", "Transport"}, {note = tx.notes})
+- jev.noul(question, context_table) -- returns (probability_num, conf_num, err_str), e.g. local prob, conf, err = jev.noul("Is subscription?", {note = tx.notes})
+Strict restrictions: NO loops (while, for), NO function declarations, NO '..' concat operator. Max 3 Jev calls per execution.
 Output ONLY raw Lua code, without markdown formatting or code blocks.`
 
 	userPrompt := buildUserPromptWithContext(genCtx) + formatBudgetSnapshotContext(snap)
@@ -362,7 +364,9 @@ String helper functions in text module:
 - text.ends_with(str, suffix)
 - text.regex_match(pattern, str) -- NOTE SIGNATURE: pattern first, str second! e.g. text.regex_match(".*(bolt|uber|freenow|taxi).*", text.lower(tx.notes))
 - text.lower(str), text.upper(str), text.trim(str)
-Strict restrictions: NO loops, NO function declarations, NO '..' concat operator.
+- jev.choice(question, candidates_table, context_table) -- returns (choice_str, conf_num, err_str)
+- jev.noul(question, context_table) -- returns (probability_num, conf_num, err_str)
+Strict restrictions: NO loops, NO function declarations, NO '..' concat operator. Max 3 Jev calls per script.
 Return ONLY valid JSON.`
 
 	userPrompt := buildUserPromptWithContext(genCtx) + formatBudgetSnapshotContext(snap)

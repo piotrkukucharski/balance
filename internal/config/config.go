@@ -63,3 +63,22 @@ func BuildPublicURL(fallbackPort string, subpath string) string {
 	}
 	return base + subpath
 }
+
+// DefaultJevEndpoint is the default API gateway for TypeSafe Jev System One.
+const DefaultJevEndpoint = "https://gateway-us.pydantic.dev/proxy/typesafe/v1/systemone"
+
+// GetJevAPIKey returns the configured API key for Jev from JEV_API_KEY.
+func GetJevAPIKey() string {
+	return strings.TrimSpace(os.Getenv("JEV_API_KEY"))
+}
+
+// GetJevEndpoint returns the configured endpoint for Jev from JEV_ENDPOINT,
+// falling back to DefaultJevEndpoint.
+func GetJevEndpoint() string {
+	endpoint := strings.TrimSpace(os.Getenv("JEV_ENDPOINT"))
+	if endpoint == "" {
+		return DefaultJevEndpoint
+	}
+	return strings.TrimRight(endpoint, "/")
+}
+
